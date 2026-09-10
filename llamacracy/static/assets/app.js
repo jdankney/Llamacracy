@@ -50,11 +50,36 @@ const h = (tag, attrs = {}, ...kids) => {
 };
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-// Markdown -> sanitised HTML. marked + DOMPurify come from the CDN (like
-// Tailwind); if they didn't load we fall back to escaped text with fenced
-// code blocks so a message is never unreadable.
+// LaTeX -> KaTeX HTML, done BEFORE marked so markdown doesn't eat the
+// backslashes in \(...\) and \[...\]. Each math span is pulled out, rendered,
+// and swapped back in after marked via a placeholder markdown ignores.
+// Handles $$…$$, \[…\], \(…\) and a guarded $…$ (skips currency-looking text).
+const _KA = '', _KB = '';
+function extractMath(src) {
+  if (!window.katex) return { src, spans: [] };
+  const spans = [];
+  const stash = (tex, display, orig) => {
+    try {
+      spans.push(katex.renderToString(tex.trim(), { displayMode: display, throwOnError: false, output: 'html' }));
+      return _KA + (spans.length - 1) + _KB;
+    } catch { return orig; }
+  };
+  const code = [];                        // shield code so we don't scan $ inside it
+  src = src.replace(/```[\s\S]*?```|`[^`\n]+`/g, m => (code.push(m), `${code.length - 1}`));
+  src = src.replace(/\$\$([\s\S]+?)\$\$/g, (m, t) => stash(t, true, m));
+  src = src.replace(/\\\[([\s\S]+?)\\\]/g, (m, t) => stash(t, true, m));
+  src = src.replace(/\\\(([\s\S]+?)\\\)/g, (m, t) => stash(t, false, m));
+  src = src.replace(/(^|[^\\$\d])\$(?!\s)((?:\\.|[^\\$\n])+?)\$(?!\d)/g,
+    (m, pre, t) => (/\s$/.test(t) || /^[\s\d.,]*$/.test(t)) ? m : pre + stash(t, false, '$' + t + '$'));
+  src = src.replace(/(\d+)/g, (_, i) => code[+i]);
+  return { src, spans };
+}
+
 if (window.marked) marked.setOptions({ gfm: true, breaks: true });
-function renderMD(src) {
+// Markdown (+ math) -> sanitised HTML. marked + DOMPurify + KaTeX come from the
+// CDN (like Tailwind); if they didn't load we fall back to escaped text with
+// fenced code blocks so a message is never unreadable.
+function renderMD(src, math = true) {
   src = src || '';
   if (!src) return '';
   if (!window.marked || !window.DOMPurify) {
@@ -63,17 +88,21 @@ function renderMD(src) {
       .replace(/`([^`\n]+)`/g, '<code>$1</code>')
       .split(/\n{2,}/).map(p => p.startsWith('<pre>') ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
   }
-  return DOMPurify.sanitize(marked.parse(src), { ADD_ATTR: ['target'] });
+  const { src: pre, spans } = math ? extractMath(src) : { src, spans: [] };
+  let html = marked.parse(pre);
+  if (spans.length) html = html.replace(new RegExp(_KA + '(\\d+)' + _KB, 'g'), (_, i) => spans[+i] ?? '');
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
 }
-// render markdown into a live element; highlight code once the text is settled
-function mdInto(el, src, highlight = true) {
-  el.innerHTML = renderMD(src) || '<span class="text-zinc-600">…</span>';
-  if (highlight && window.hljs) {
+// render markdown into a live element; the heavy passes (highlight, math) run
+// only once the text has stopped streaming
+function mdInto(el, src, finalize = true) {
+  el.innerHTML = renderMD(src, finalize) || '<span class="text-zinc-600">…</span>';
+  if (finalize && window.hljs) {
     el.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch { /* unknown language */ } });
   }
   el.querySelectorAll('a[href]').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
 }
-const mdBlock = (src, attrs = {}) => { const el = h('div', { class: 'prose-chat', ...attrs }); mdInto(el, src); return el; };
+const mdBlock = (src, attrs = {}, finalize = true) => { const el = h('div', { class: 'prose-chat', ...attrs }); mdInto(el, src, finalize); return el; };
 const fmtDur = s => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 const untilStr = ts => { const d = ts * 1000 - Date.now(); return d <= 0 ? 'now' : fmtDur(d / 1000); };
 const credits = n => n < 10 ? n.toFixed(1) : Math.round(n).toLocaleString();
@@ -204,7 +233,7 @@ function activeBubble() {
         status,
         h('div', { class: 'flex-1' }),
         h('button', { class: 'text-zinc-500 hover:text-danger', onclick: cancelActive }, 'cancel')),
-      mdBlock(a.text, { id: 'active-body' })));
+      mdBlock(a.text, { id: 'active-body' }, false)));
 }
 const modelName = id => S.models.find(m => m.id === id)?.display || id;
 
@@ -363,6 +392,7 @@ async function sendMessage(e) {
         const first = S.active.state !== 'generating';
         S.active.state = 'generating'; S.active.text += ev.text;
         if (first) render(); else { const b = document.getElementById('active-body'); if (b) { mdInto(b, S.active.text, false); scrollThread(); } }
+        // (math + highlight are applied on the final render, see the 'done' branch)
       }
       else if (ev.type === 'reasoning') { /* thinking hidden in v1 */ }
       else if (ev.type === 'done') {

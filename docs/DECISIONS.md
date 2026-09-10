@@ -43,9 +43,24 @@ Newest first.
   same as the big hosted UIs.
 - Kept a regex fallback (`renderMD` when `window.marked` is missing) so a
   blocked CDN degrades to readable text instead of nothing. If the CDN
-  dependency ever bites (full-tunnel NetBird, offline), vendor the three files
-  into `static/assets/vendor/`.
+  dependency ever bites (full-tunnel NetBird, offline), vendor the files into
+  `static/assets/vendor/`.
 - Server unchanged — static files, so a browser refresh picks it up.
+
+### LaTeX / math (2026-09-10, follow-up)
+
+- Added **KaTeX** (cdnjs) for `$$…$$`, `\[…\]`, `\(…\)`, and a guarded `$…$`
+  (skips currency-looking text like "$5 for lunch").
+- Rendered **before** `marked`, not after: markdown treats `\(` `\[` as
+  escaped punctuation and strips the backslash, which kills the exact
+  delimiters the models emit most. `extractMath()` shields fenced/inline code,
+  pulls each math span out to a private-use-area placeholder, `katex`-renders
+  it, and swaps the HTML back in after `marked.parse` — then the whole thing
+  goes through DOMPurify (verified it keeps every KaTeX `class`/`style`).
+  `marked-katex-extension` was the obvious pick but it's `$`-only (no `\(`),
+  and not on cdnjs.
+- `output: 'html'` (no MathML) and `throwOnError: false`. Math + highlighting
+  both run only on the settled message, not per streamed token.
 
 ## Phase 6 — deployment (2026-09-09)
 
