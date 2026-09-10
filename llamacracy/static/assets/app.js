@@ -49,12 +49,31 @@ const h = (tag, attrs = {}, ...kids) => {
   return e;
 };
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-function mdLite(s) {
-  s = esc(s);
-  s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (_, l, c) => `<pre><code>${c.replace(/\n$/, '')}</code></pre>`);
-  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-  return s.split(/\n{2,}/).map(p => p.startsWith('<pre>') ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+
+// Markdown -> sanitised HTML. marked + DOMPurify come from the CDN (like
+// Tailwind); if they didn't load we fall back to escaped text with fenced
+// code blocks so a message is never unreadable.
+if (window.marked) marked.setOptions({ gfm: true, breaks: true });
+function renderMD(src) {
+  src = src || '';
+  if (!src) return '';
+  if (!window.marked || !window.DOMPurify) {
+    return esc(src)
+      .replace(/```(\w*)\n([\s\S]*?)```/g, (_, l, c) => `<pre><code>${c.replace(/\n$/, '')}</code></pre>`)
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+      .split(/\n{2,}/).map(p => p.startsWith('<pre>') ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+  }
+  return DOMPurify.sanitize(marked.parse(src), { ADD_ATTR: ['target'] });
 }
+// render markdown into a live element; highlight code once the text is settled
+function mdInto(el, src, highlight = true) {
+  el.innerHTML = renderMD(src) || '<span class="text-zinc-600">…</span>';
+  if (highlight && window.hljs) {
+    el.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch { /* unknown language */ } });
+  }
+  el.querySelectorAll('a[href]').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
+}
+const mdBlock = (src, attrs = {}) => { const el = h('div', { class: 'prose-chat', ...attrs }); mdInto(el, src); return el; };
 const fmtDur = s => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 const untilStr = ts => { const d = ts * 1000 - Date.now(); return d <= 0 ? 'now' : fmtDur(d / 1000); };
 const credits = n => n < 10 ? n.toFixed(1) : Math.round(n).toLocaleString();
@@ -167,7 +186,7 @@ function msgBubble(m) {
   return h('div', { class: 'flex ' + (mine ? 'justify-end' : 'justify-start') },
     h('div', { class: 'max-w-[46rem] rounded-lg px-3 py-2 text-sm ' +
         (mine ? 'bg-accent/15 border border-accent/30' : 'bg-panel border border-line') },
-      h('div', { class: 'prose-chat', html: mdLite(m.content) }),
+      mdBlock(m.content),
       m.completion_tokens != null ? h('div', { class: 'mt-1 text-[11px] text-zinc-600' },
         `${m.model_id || ''} · ${m.prompt_tokens || 0}+${m.completion_tokens} tok` +
         (m.usage_estimated ? ' (est)' : '')) : null));
@@ -184,7 +203,7 @@ function activeBubble() {
         status,
         h('div', { class: 'flex-1' }),
         h('button', { class: 'text-zinc-500 hover:text-danger', onclick: cancelActive }, 'cancel')),
-      h('div', { id: 'active-body', class: 'prose-chat', html: a.text ? mdLite(a.text) : '<span class="text-zinc-600">…</span>' })));
+      mdBlock(a.text, { id: 'active-body' })));
 }
 const modelName = id => S.models.find(m => m.id === id)?.display || id;
 
@@ -342,7 +361,7 @@ async function sendMessage(e) {
       else if (ev.type === 'token') {
         const first = S.active.state !== 'generating';
         S.active.state = 'generating'; S.active.text += ev.text;
-        if (first) render(); else { const b = document.getElementById('active-body'); if (b) { b.innerHTML = mdLite(S.active.text); scrollThread(); } }
+        if (first) render(); else { const b = document.getElementById('active-body'); if (b) { mdInto(b, S.active.text, false); scrollThread(); } }
       }
       else if (ev.type === 'reasoning') { /* thinking hidden in v1 */ }
       else if (ev.type === 'done') {

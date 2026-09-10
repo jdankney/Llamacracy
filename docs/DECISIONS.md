@@ -3,6 +3,29 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Frontend — full markdown rendering (2026-09-10)
+
+- The chat renderer was a ~5-line regex (`mdLite`: fenced + inline code only).
+  Models lean on markdown hard (headings, lists, tables, bold), so replaced it
+  with **marked** (parser) + **DOMPurify** (sanitiser) + **highlight.js** (code),
+  all from cdnjs — same "script tag, no build step" pattern as the Tailwind CDN
+  the SPA already uses.
+- **DOMPurify is not optional**: `marked` passes raw HTML through, so a model
+  emitting `<img onerror=…>` would otherwise run. Everything rendered goes
+  `marked.parse` → `DOMPurify.sanitize` → DOM. Links are then forced to
+  `target=_blank rel=noopener`.
+- `marked` config: `gfm: true`, `breaks: true` (a single newline → `<br>`, which
+  is what you want in chat).
+- Streaming: re-parse the whole partial message per token (cheap at these
+  sizes); syntax-highlight only on the *final* render, not mid-stream. Partial/
+  unclosed markdown (a `` ``` `` with no close yet) renders as its block —
+  same as the big hosted UIs.
+- Kept a regex fallback (`renderMD` when `window.marked` is missing) so a
+  blocked CDN degrades to readable text instead of nothing. If the CDN
+  dependency ever bites (full-tunnel NetBird, offline), vendor the three files
+  into `static/assets/vendor/`.
+- Server unchanged — static files, so a browser refresh picks it up.
+
 ## Phase 6 — deployment (2026-09-09)
 
 - Three **systemd user units** (`deploy/systemd/`): `llama-swap` (`127.0.0.1:8091`,

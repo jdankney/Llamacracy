@@ -18,7 +18,8 @@ WorkingDirectory=%h/Documents/Coding/Llamacracy
 # discover the wt0 address and write it where oauth2-proxy will read it
 ExecStartPre=/bin/sh -c 'a=$(ip -4 -o addr show wt0 | awk "{print \\$4}" | cut -d/ -f1); \
   echo "OAUTH2_PROXY_HTTP_ADDRESS=$a:4180" > %t/llamacracy-auth.env'
-EnvironmentFile=%t/llamacracy-auth.env
+# written by ExecStartPre above; `-` so a missing file isn't fatal before it runs
+EnvironmentFile=-%t/llamacracy-auth.env
 EnvironmentFile=%h/Documents/Coding/Llamacracy/deploy/oauth2-proxy.env
 ExecStart=%h/.local/bin/oauth2-proxy --config %h/Documents/Coding/Llamacracy/deploy/oauth2-proxy.cfg
 Restart=on-failure
