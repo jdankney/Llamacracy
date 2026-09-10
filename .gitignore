@@ -1,0 +1,23 @@
+# secrets / local config
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# runtime data
+*.db
+*.db-wal
+*.db-shm
+data/
+*.log
+
+# phase 0 output is committed deliberately (see bench/), but scratch runs are not
+bench/raw/
+bench/*.tmp.json
+*.output
