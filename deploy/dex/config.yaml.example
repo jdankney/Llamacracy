@@ -1,0 +1,51 @@
+# deploy/dex/config.yaml  --  copy to config.yaml (gitignored) and fill in.
+#
+# Dex is Llamacracy's identity provider. It runs in Docker on myhost and is
+# published on the NetBird interface ONLY (see docker-compose.yml), so every
+# hop -- friend's browser -> Dex -> oauth2-proxy -> app -- stays inside the
+# WireGuard tunnel. Nothing new is exposed to the public internet.
+#
+# NetBird's own combined server embeds a Dex too, but it only knows about the
+# dashboard + CLI clients and has no supported way to add a third one
+# (netbirdio/netbird#5335), hence this second, separate instance.
+
+# Must exactly match `oidc_issuer_url` in deploy/oauth2-proxy.cfg and the URL
+# oauth2-proxy resolves. myhost.netbird.selfhosted is this peer's NetBird
+# FQDN -- stable unless the peer is re-enrolled.
+issuer: http://myhost.netbird.selfhosted:5556
+
+storage:
+  type: sqlite3
+  config:
+    file: /var/dex/dex.db
+
+web:
+  http: 0.0.0.0:5556          # container-internal; compose publishes it on wt0 only
+
+oauth2:
+  skipApprovalScreen: true    # one client, trusted users -- skip the consent page
+  passwordConnector: local
+
+staticClients:
+  - id: llamacracy
+    name: Llamacracy
+    # Generate:  openssl rand -hex 32
+    # The SAME value goes in deploy/oauth2-proxy.env as OAUTH2_PROXY_CLIENT_SECRET.
+    secret: "REPLACE_WITH_openssl_rand_hex_32"
+    redirectURIs:
+      - http://myhost.netbird.selfhosted:4180/oauth2/callback
+
+# Email + password login from the list below. bcrypt each password with
+#   deploy/dex/gen-hash.sh 'their-password'
+# userID must be unique and stable -- it's what ends up as the OIDC `sub`, which
+# is how Llamacracy keys users (email/name can change, sub can't).
+enablePasswordDB: true
+staticPasswords:
+  - email: you@example.com
+    username: j4mes
+    userID: "u-j4mes"
+    hash: "REPLACE_WITH_BCRYPT_HASH"
+  # - email: friend@example.com
+  #   username: friend
+  #   userID: "u-friend"
+  #   hash: "REPLACE_WITH_BCRYPT_HASH"

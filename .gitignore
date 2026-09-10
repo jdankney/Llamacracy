@@ -22,3 +22,4 @@ bench/raw/
 bench/*.tmp.json
 *.output
 deploy/oauth2-proxy.env
+deploy/dex/config.yaml

@@ -16,7 +16,7 @@ See [docs/SPEC.md](docs/SPEC.md) for the full design brief.
 | 3 | Metering — credits, session/weekly limits, cost model, tests | **done** (`metering.py`, 28 tests) |
 | 4 | Frontend — chat UI, model picker, live queue, usage page | **done** (`static/`) |
 | 5 | Admin dashboard | **done** (`admin.py`) |
-| 6 | Deployment — systemd units, oauth2-proxy, NetBird binding | next |
+| 6 | Deployment — systemd units, local Dex, oauth2-proxy, NetBird binding | **done** (`deploy/`) |
 
 ## Hardware
 
@@ -49,12 +49,17 @@ uv run uvicorn llamacracy.app:app --host 127.0.0.1 --port 8000   # DEV_MODE=1 in
 uv run pytest -q
 ```
 
-**Production** (systemd user units + oauth2-proxy on the NetBird interface):
+**Production** (systemd user units + a local Dex + oauth2-proxy, all on the
+NetBird interface — nothing public):
 ```bash
-./deploy/install.sh
+cd deploy/dex && cp config.yaml.example config.yaml   # set secret + a hash per user
+docker compose up -d                                  # the identity provider
+cd ../.. && ./deploy/install.sh                        # app + auth edge + units
 ```
-See [deploy/OPERATIONS.md](deploy/OPERATIONS.md) for restarts, adding a model,
-adjusting limits, and backup.
+Users sign in at `http://myhost.netbird.selfhosted:4180`. See
+[deploy/OPERATIONS.md](deploy/OPERATIONS.md) for adding a user, restarts,
+adding a model, adjusting limits, and backup;
+[deploy/dex/README.md](deploy/dex/README.md) for the IdP.
 
 ## Design
 

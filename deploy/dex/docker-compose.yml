@@ -1,0 +1,25 @@
+# Llamacracy's identity provider. Run on myhost:
+#
+#   cd deploy/dex
+#   cp config.yaml.example config.yaml      # then fill in the secret + hashes
+#   docker compose up -d
+#
+# The port is bound to the NetBird address only. If wt0's address ever changes
+# (peer re-enrol), update the binding below to match `ip -4 -o addr show wt0`
+# and `docker compose up -d` again. On a cold boot Docker may start before
+# NetBird is up; `restart: unless-stopped` retries until the bind succeeds.
+
+services:
+  dex:
+    image: ghcr.io/dexidp/dex:v2.44.0
+    container_name: llamacracy-dex
+    restart: unless-stopped
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./config.yaml:/etc/dex/config.yaml:ro
+      - dex-data:/var/dex
+    ports:
+      - "100.x.y.z:5556:5556"
+
+volumes:
+  dex-data:

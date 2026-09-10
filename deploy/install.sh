@@ -34,13 +34,22 @@ if [ ! -x "$BIN/oauth2-proxy" ]; then
 fi
 
 # --- 4. config files --------------------------------------------------------
-[ -f "$REPO/.env" ] || { cp "$REPO/.env.example" "$REPO/.env"; warn "created .env from example -- fill in OIDC + rate values"; }
+[ -f "$REPO/.env" ] || { cp "$REPO/.env.example" "$REPO/.env"; warn "created .env from example -- fill in rate values (OIDC is via oauth2-proxy)"; }
 [ -f "$REPO/deploy/oauth2-proxy.env" ] || {
   cp "$REPO/deploy/oauth2-proxy.env.example" "$REPO/deploy/oauth2-proxy.env"
   secret="$(openssl rand -base64 32 | tr -- '+/' '-_' | tr -d '=')"
   sed -i "s#^OAUTH2_PROXY_COOKIE_SECRET=.*#OAUTH2_PROXY_COOKIE_SECRET=${secret}#" "$REPO/deploy/oauth2-proxy.env"
-  warn "created deploy/oauth2-proxy.env with a fresh cookie secret -- add CLIENT_ID / CLIENT_SECRET"
+  warn "created deploy/oauth2-proxy.env with a fresh cookie secret -- add OAUTH2_PROXY_CLIENT_SECRET"
 }
+if [ ! -f "$REPO/deploy/dex/config.yaml" ]; then
+  cp "$REPO/deploy/dex/config.yaml.example" "$REPO/deploy/dex/config.yaml"
+  cs="$(openssl rand -hex 32)"
+  sed -i "s#^\( *secret:\).*#\1 ${cs}#" "$REPO/deploy/dex/config.yaml"
+  sed -i "s#^\(OAUTH2_PROXY_CLIENT_SECRET=\).*#\1${cs}#" "$REPO/deploy/oauth2-proxy.env"
+  warn "created deploy/dex/config.yaml with a fresh client secret (matched into oauth2-proxy.env)"
+  warn "  -> add a staticPasswords entry per user (deploy/dex/gen-hash.sh 'password'), then:"
+  warn "     cd deploy/dex && docker compose up -d"
+fi
 
 # --- 5. llama-swap config (from the last benchmark) -------------------------
 [ -f "$REPO/config/llama-swap.yaml" ] || ( cd "$REPO" && python3 bench/gen_llamaswap_config.py )
@@ -53,23 +62,41 @@ cp "$REPO"/deploy/systemd/*.service "$UNIT_DIR/"
 systemctl --user daemon-reload
 systemctl --user enable --now llama-swap.service llamacracy.service
 
-# --- 7. auth: show the redirect URI the IdP needs, then start -------------
+# --- 7. auth: Dex (docker) + oauth2-proxy --------------------------------
 if ip -4 -o addr show wt0 >/dev/null 2>&1; then
   addr="$(ip -4 -o addr show wt0 | awk '{print $4}' | cut -d/ -f1)"
-  say "NetBird interface wt0 = $addr"
-  echo
-  echo "  Register this redirect URI in the NetBird IdP, then put CLIENT_ID/SECRET"
-  echo "  in deploy/oauth2-proxy.env:"
-  echo
-  echo "      http://$addr:4180/oauth2/callback"
-  echo
-  if grep -q '^OAUTH2_PROXY_CLIENT_ID=.\+' "$REPO/deploy/oauth2-proxy.env"; then
-    systemctl --user enable --now llamacracy-auth.service
-    say "auth edge up at http://$addr:4180"
+  fqdn="$(netbird status 2>/dev/null | awk -F': ' '/FQDN/{print $2; exit}')"
+  fqdn="${fqdn:-myhost.netbird.selfhosted}"
+  say "NetBird: wt0 = $addr   FQDN = $fqdn"
+
+  # keep the compose port binding pointed at the current wt0 address
+  if [ -f "$REPO/deploy/dex/docker-compose.yml" ]; then
+    sed -i "s#\"[0-9.]*:5556:5556\"#\"$addr:5556:5556\"#" "$REPO/deploy/dex/docker-compose.yml"
+  fi
+
+  dex_ok=false
+  if curl -sf -o /dev/null "http://$fqdn:5556/.well-known/openid-configuration"; then
+    dex_ok=true
   else
-    warn "skipping llamacracy-auth.service until CLIENT_ID is set. Then:"
+    warn "Dex not reachable at http://$fqdn:5556 -- bring it up:"
+    warn "  cd $REPO/deploy/dex && cp -n config.yaml.example config.yaml && \$EDITOR config.yaml"
+    warn "  (set staticPasswords hashes; the client secret is already generated) then:"
+    warn "  docker compose up -d"
+  fi
+
+  secret_set=false
+  grep -q '^OAUTH2_PROXY_CLIENT_SECRET=.\+' "$REPO/deploy/oauth2-proxy.env" && secret_set=true
+
+  if $dex_ok && $secret_set; then
+    systemctl --user enable --now llamacracy-auth.service
+    say "auth edge up -- users reach Llamacracy at  http://$fqdn:4180"
+  else
+    warn "not starting llamacracy-auth yet (need Dex up + OAUTH2_PROXY_CLIENT_SECRET set). Then:"
     warn "  systemctl --user enable --now llamacracy-auth.service"
   fi
+  echo
+  echo "  Everyone must use  http://$fqdn:4180  -- NOT http://$addr:4180"
+  echo "  (the login redirect is pinned to the FQDN; the raw IP will loop)."
 else
   warn "wt0 not present -- run 'netbird up' first, then re-run this script"
 fi

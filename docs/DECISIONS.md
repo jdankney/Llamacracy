@@ -18,17 +18,42 @@ Newest first.
 - oauth2-proxy config split: non-secret `deploy/oauth2-proxy.cfg` (in git) +
   `deploy/oauth2-proxy.env` (gitignored: client id/secret, cookie secret which
   `install.sh` generates). `cookie_secure = false` — plain HTTP is fine inside
-  the WireGuard tunnel; if the IdP refuses a non-HTTPS redirect URI, front it
-  with Caddy `tls internal` (noted in OPERATIONS.md).
+  the WireGuard tunnel.
 - oauth2-proxy binary comes from the GitHub release (`v7.6.0`), not pacman
   (not currently in the Arch repos).
 - **Verified** the production identity path (no `DEV_MODE`): missing headers →
   503 + loud log; `X-Forwarded-User/Email` → user upserted on `sub`; admin
   gate honours `ADMIN_EMAILS` (non-admin → 403, admin → 200).
 - `jobs.picked_at` added in Phase 5 for the queue-impact metric.
-- **Owner still needs to:** register an OIDC client in the NetBird IdP
-  (redirect `http://<wt0>:4180/oauth2/callback`) and fill
-  `deploy/oauth2-proxy.env` + the OIDC/rate values in `.env`.
+
+### Auth: our own Dex, not NetBird's (2026-09-09, revised)
+
+- The spec assumed a reusable OIDC IdP behind the NetBird dashboard. Reality:
+  this NetBird install is the **combined `netbird-server`** image, whose
+  embedded Dex (`/oauth2` issuer) only registers the dashboard + CLI clients
+  and exposes **no config hook for a third client**
+  ([netbirdio/netbird#5335](https://github.com/netbirdio/netbird/issues/5335)).
+  So Llamacracy can't ride NetBird's IdP.
+- Decision: run **our own Dex** (`deploy/dex/`, Docker, `ghcr.io/dexidp/dex`)
+  on myhost, published on `wt0` only. Issuer
+  `http://myhost.netbird.selfhosted:5556`. Users are a `staticPasswords`
+  list in `deploy/dex/config.yaml` (gitignored) — email + bcrypt, ~5 people,
+  no external dependency. Whole chain (browser → Dex → oauth2-proxy → app)
+  stays inside WireGuard; nothing added to the public internet.
+- Issuer + `redirect_url` pinned to the NetBird **FQDN**, which is stable
+  across reconnects; only the Dex container's port binding is IP-literal and
+  `install.sh` rewrites it each run. **Users must hit the FQDN**, not the raw
+  `100.x` — a bare-IP visit gets a cookie-host mismatch and loops.
+- `scope` gains `offline_access` so oauth2-proxy gets a refresh token for its
+  1 h `cookie_refresh`.
+- Rejected: Pocket-ID on the public Traefik (nice UI, but a public login page +
+  a DNS record, and passkeys need HTTPS); GitHub as the provider (least infra,
+  but an external auth dependency and everyone needs a GitHub account).
+
+- **Owner still needs to:** `cp deploy/dex/config.yaml.example config.yaml`,
+  set the client `secret:` + a `staticPasswords` hash per user
+  (`deploy/dex/gen-hash.sh`), `docker compose up -d`, then `./deploy/install.sh`.
+  Fill the rate values in `.env`.
 
 ---
 
