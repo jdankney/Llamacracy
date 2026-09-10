@@ -3,6 +3,59 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Phase 8 — more useful features (2026-09-10, in progress)
+
+Post-launch additions the owner wants, tackled one at a time. Agreed order:
+**(5) max context ✓ → (3) context wheel → (1) SearXNG → (4) multimodal →
+(2) Continue.dev**, then "compact context" later.
+
+- **1 · SearXNG**: composer "Search" toggle, *we* run one query and inject the
+  top ~4 results with citations before a single inference — not model-driven
+  tool calls (unreliable on local models, thrashes context, murky billing).
+  SearXNG is up at `127.0.0.1:8085`, JSON API works.
+- **2 · Continue.dev**: OpenAI-compat endpoint authed by a per-user bearer key
+  (`api_keys` table, generated in `/usage`); still flows through the FIFO
+  queue + metering. v1 scope = chat + `/v1/models` only, no editor autocomplete
+  (would swamp the queue).
+- **4 · Multimodal**: two llama-swap entries per vision model (text vs
+  `--mmproj`), image upload → `data/uploads/`, route to the `-vision` variant
+  only when a message carries an image, vision credit multiplier. mmproj for
+  FamilyA-35B and moe-26b only.
+
+### 5 · Max out context per model (done 2026-09-10)
+
+- `bench/phase0_bench.py --ctx-sweep`: per model, walk a `(ctx, kv_type,
+  n_cpu_moe)` ladder low→high, stop at the first miss, keep the largest fit.
+  `--headroom-mib 700`.
+- **Every rung fit on VRAM — the ceiling was system RAM**, not VRAM. The
+  `--no-mmap` heavies load 14–22 GB of weights into 32 GB; raising `n_cpu_moe`
+  to free VRAM for KV pushes *more* into RAM → swap.
+- Bonus finding: `q8_0` KV (vs `f16`) made the heavies **faster** at equal or
+  larger context — less VRAM bandwidth pressure. Also: FamilyB takes `q8_0` KV
+  fine with `-fa on` (the original bench just never tried it).
+- Picks (owner chose the last two):
+
+  | model | was | now | KV | tok/s | swap Δ |
+  |---|---|---|---|---|---|
+  | fast-4b | 32K | **128K** | q8_0 | 50 (=) | — |
+  | daily-9b | 32K | **96K** | q8_0 | 33 (=) | — |
+  | alt-4b | 32K | **64K** | f16→q8_0 | 44 (=) | — |
+  | moe-26b | 16K | **24K** (nc18→20) | f16→q8_0 | 33→35 | 0 |
+  | moe-30b | 16K | **24K** (nc28→32) | f16→q8_0 | 29→29 | 0 |
+  | moe-35b | 16K | **48K** (nc28→32) | f16→q8_0 | 35→32 | +1 GB |
+
+- The 35B at 48K sits at ~6.1 GB swap (of 16 GB) with the model resident —
+  owner's deliberate call for long documents. If it thrashes under
+  concurrent use, drop it to the 32K rung (`serve_ctx` in `inventory()`,
+  re-run `gen_llamaswap_config.py`). Fallback documented; 32K was faster and
+  swap-neutral.
+- `gen_llamaswap_config.py` `OVERRIDES` emptied — the sweep bakes tuned
+  `(ctx, kv_type, n_cpu_moe)` into `recommended`. `inventory()` defaults
+  updated to match so a plain re-bench is consistent.
+- **Future experiment**: drop `--no-mmap` on the heavies so the OS pages
+  weights instead of swapping — might unlock 64K+ on the 35B at the cost of a
+  slower first token. Not tried yet.
+
 ## Queue + metering tweaks (2026-09-10)
 
 - **`IDLE_TTL_SECONDS`** — the spec's idle unload is minutes-only (default 15).

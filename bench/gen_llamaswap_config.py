@@ -38,10 +38,10 @@ THREADS = 6
 TTL_BACKSTOP_S = 1200        # app enforces the real IDLE_TTL_MINUTES; this is a safety net
 HEALTH_TIMEOUT_S = 480       # cold --no-mmap load of the 22 GB MoE
 
-# serving overrides on top of bench-results "recommended"
-OVERRIDES: dict[str, dict] = {
-    "moe-30b": {"n_cpu_moe": 30},
-}
+# serving overrides on top of bench-results "recommended". Empty since the
+# Phase 8 --ctx-sweep bakes the tuned (ctx, kv_type, n_cpu_moe) per model
+# straight into `recommended`.
+OVERRIDES: dict[str, dict] = {}
 
 # Models that emit a <think> block by default. `--reasoning-budget 0` does NOT
 # stop it (verified: 102 completion tokens -> 4 once thinking is off). We

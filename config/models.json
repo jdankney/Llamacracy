@@ -33,12 +33,12 @@
         "top_k": 20,
         "min_p": 0.0
       },
-      "ctx": 32768,
-      "seed_cold_load_s": 2.8,
-      "seed_tg_tok_s": 44.3,
-      "seed_pp_tok_s": 1268.7,
-      "vram_used_mib": 5155,
-      "gpu_gen_watts": 208.8,
+      "ctx": 131072,
+      "seed_cold_load_s": 2.74,
+      "seed_tg_tok_s": 50.0,
+      "seed_pp_tok_s": 1394.3,
+      "vram_used_mib": 7125,
+      "gpu_gen_watts": 219.6,
       "max_tokens_default": 2048
     },
     "daily-9b": {
@@ -55,12 +55,12 @@
         "top_k": 20,
         "min_p": 0.0
       },
-      "ctx": 32768,
-      "seed_cold_load_s": 3.9,
-      "seed_tg_tok_s": 30.4,
-      "seed_pp_tok_s": 705.0,
-      "vram_used_mib": 7125,
-      "gpu_gen_watts": 261.7,
+      "ctx": 98304,
+      "seed_cold_load_s": 3.86,
+      "seed_tg_tok_s": 32.9,
+      "seed_pp_tok_s": 764.1,
+      "vram_used_mib": 8377,
+      "gpu_gen_watts": 273.7,
       "max_tokens_default": 2048
     },
     "alt-4b": {
@@ -72,12 +72,12 @@
       "blurb": "FamilyB 4B \u2014 alt community finetune, not stock Gemma.",
       "reasoning": "none",
       "sampling": {},
-      "ctx": 32768,
+      "ctx": 65536,
       "seed_cold_load_s": 4.51,
-      "seed_tg_tok_s": 39.8,
-      "seed_pp_tok_s": 1140.4,
-      "vram_used_mib": 5641,
-      "gpu_gen_watts": 208.4,
+      "seed_tg_tok_s": 43.8,
+      "seed_pp_tok_s": 1266.3,
+      "vram_used_mib": 6057,
+      "gpu_gen_watts": 223.5,
       "max_tokens_default": 2048
     },
     "moe-26b": {
@@ -89,12 +89,12 @@
       "blurb": "MoE, experts on CPU. Strong quality, ~34 tok/s, ~12 s cold start.",
       "reasoning": "off",
       "sampling": {},
-      "ctx": 16384,
-      "seed_cold_load_s": 12.19,
-      "seed_tg_tok_s": 33.8,
-      "seed_pp_tok_s": 416.9,
-      "vram_used_mib": 7556,
-      "gpu_gen_watts": 143.6,
+      "ctx": 24576,
+      "seed_cold_load_s": 11.91,
+      "seed_tg_tok_s": 34.8,
+      "seed_pp_tok_s": 398.9,
+      "vram_used_mib": 6787,
+      "gpu_gen_watts": 135.8,
       "max_tokens_default": 2048
     },
     "moe-30b": {
@@ -109,12 +109,12 @@
         "temperature": 1.0,
         "top_p": 0.95
       },
-      "ctx": 16384,
-      "seed_cold_load_s": 13.56,
-      "seed_tg_tok_s": 29.1,
-      "seed_pp_tok_s": 288.3,
-      "vram_used_mib": 9138,
-      "gpu_gen_watts": 138.3,
+      "ctx": 24576,
+      "seed_cold_load_s": 16.87,
+      "seed_tg_tok_s": 29.4,
+      "seed_pp_tok_s": 271.8,
+      "vram_used_mib": 8063,
+      "gpu_gen_watts": 132.1,
       "max_tokens_default": 2048
     },
     "moe-35b": {
@@ -131,12 +131,12 @@
         "top_k": 20,
         "min_p": 0.0
       },
-      "ctx": 16384,
-      "seed_cold_load_s": 25.36,
-      "seed_tg_tok_s": 31.8,
-      "seed_pp_tok_s": 299.5,
-      "vram_used_mib": 8474,
-      "gpu_gen_watts": 138.5,
+      "ctx": 49152,
+      "seed_cold_load_s": 22.95,
+      "seed_tg_tok_s": 32.0,
+      "seed_pp_tok_s": 278.4,
+      "vram_used_mib": 7155,
+      "gpu_gen_watts": 132.5,
       "max_tokens_default": 2048
     }
   }

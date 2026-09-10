@@ -22,6 +22,17 @@ Stdlib only. Drives the real `llama-server` over HTTP.
     python3 bench/phase0_bench.py --only daily-9b
     python3 bench/phase0_bench.py                 # every model, resumable
     python3 bench/phase0_bench.py --no-fa-off     # skip the fa=off comparison
+
+Phase 8 -- push context as far as VRAM allows:
+
+    python3 bench/phase0_bench.py --ctx-sweep                 # all models
+    python3 bench/phase0_bench.py --ctx-sweep --only moe-30b
+
+  Per model it walks a ladder of (ctx, kv_type, n_cpu_moe) low->high, stops at
+  the first that doesn't fit with headroom, and records the largest that did as
+  `recommended`. Re-runs even models already benched. Review the tg_tok_s
+  column afterwards -- bigger context on the MoE heavies trades generation
+  speed for headroom.
 """
 
 from __future__ import annotations
@@ -125,43 +136,45 @@ def inventory() -> list[ModelSpec]:
         ModelSpec(
             "fast-4b", "FamilyA 4B (Q8_0)",
             M / "FamilyA" / "fast-4b" / "fast-4b.gguf",
-            kind="chat", serve_ctx=32768, kv_type="q8_0", no_mmap=True,
+            kind="chat", serve_ctx=131072, kv_type="q8_0", no_mmap=True,
             reasoning_budget=0, extra=list(qwen_sampling),
-            note="Tier 3. Owner runs reasoning disabled."),
+            note="Tier 3. Reasoning disabled. Phase 8: 128K (fully GPU, free)."),
         ModelSpec(
             "daily-9b", "FamilyA 9B (Q6_K)",
             M / "FamilyA" / "daily-9b" / "daily-9b.gguf",
-            kind="chat", serve_ctx=32768, kv_type="q8_0", no_mmap=True,
+            kind="chat", serve_ctx=98304, kv_type="q8_0", no_mmap=True,
             extra=list(qwen_sampling),
-            note="Tier 2 daily driver. Fully in VRAM."),
+            note="Tier 2 daily driver. Fully in VRAM. Phase 8: 96K."),
         ModelSpec(
             "alt-4b",
             "FamilyB 4B (alt finetune, Q8_0)",
             M / "FamilyB" / "alt-4b"
             / "alt-4b.gguf",
-            kind="chat", serve_ctx=32768,
+            kind="chat", serve_ctx=65536, kv_type="q8_0",
             extra=["--chat-template-file",
                    str(M / "FamilyB" / "alt-4b" / "chat_template.jinja")],
             note="Not stock Gemma. Owner runs c=225280; we serve less. "
-                 "Label as a finetune in the picker."),
+                 "Phase 8: q8_0 KV works fine here, 64K."),
         ModelSpec(
             "moe-26b", "FamilyB 26B QAT (Q4_0, MoE)",
             M / "FamilyB" / "moe-26b" / "moe-26b.gguf",
-            kind="chat", serve_ctx=16384, n_cpu_moe=18, no_mmap=True,
-            extra=list(gemma_batch), note="MoE, expert offload. Owner n_cpu_moe=18."),
+            kind="chat", serve_ctx=24576, kv_type="q8_0", n_cpu_moe=20, no_mmap=True,
+            extra=list(gemma_batch),
+            note="MoE, expert offload. Phase 8: q8_0 KV + nc20 @ 24K (faster than nc18/f16/16K)."),
         ModelSpec(
             "moe-30b", "FamilyC Flash (Q4_K_M, MoE)",
             M / "moe-30b" / "moe-30b.gguf",
-            kind="chat", serve_ctx=16384, n_cpu_moe=28, no_mmap=True,
+            kind="chat", serve_ctx=24576, kv_type="q8_0", n_cpu_moe=32, no_mmap=True,
             extra=["--jinja", "--temp", "1.0", "--top-p", "0.95"],
-            note="MoE, expert offload. Owner n_cpu_moe=28 @ c=16384."),
+            note="MoE (deepseek2 arch). Phase 8: q8_0 KV + nc32 @ 24K. "
+                 "32K rung added +1.5 GB swap -- not worth it."),
         ModelSpec(
             "moe-35b", "FamilyA 35B (Q4_K_M, MoE)",
             M / "moe-35b" / "moe-35b.gguf",
-            kind="chat", serve_ctx=16384, n_cpu_moe=28, no_mmap=True,
+            kind="chat", serve_ctx=49152, kv_type="q8_0", n_cpu_moe=32, no_mmap=True,
             extra=list(qwen_sampling),
-            note="MoE, expert offload. Owner n_cpu_moe=28 @ c=32768/4-slot; "
-                 "tightest on system RAM (~22 GB weights, --no-mmap)."),
+            note="MoE, expert offload. Tightest on RAM (~22 GB weights, --no-mmap). "
+                 "Phase 8: q8_0 KV + nc32 @ 48K, ~+1 GB swap (owner's call, long docs)."),
     ]
     missing = [s.key for s in specs if not s.path.exists()]
     if missing:
@@ -406,12 +419,41 @@ def _bench(spec: ModelSpec, base_url: str, r: RunResult) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Phase 8 context sweep. Each entry: (ctx, kv_type, n_cpu_moe). Walked low->high;
+# first entry is the current known-good config (baseline), the rest push higher.
+# The MoE heavies also raise n_cpu_moe as ctx grows -- offloading a few more
+# expert layers to CPU frees VRAM for the KV cache, at some tok/s cost.
+# --------------------------------------------------------------------------- #
+CTX_SWEEP: dict[str, list[tuple[int, str, int | None]]] = {
+    "fast-4b": [
+        (32768, "q8_0", None), (65536, "q8_0", None),
+        (98304, "q8_0", None), (131072, "q8_0", None)],
+    "daily-9b": [
+        (32768, "q8_0", None), (49152, "q8_0", None),
+        (65536, "q8_0", None), (98304, "q8_0", None)],
+    "alt-4b": [
+        (32768, "f16", None), (32768, "q8_0", None),
+        (49152, "q8_0", None), (65536, "q8_0", None)],
+    "moe-26b": [
+        (16384, "f16", 18), (24576, "q8_0", 20), (32768, "q8_0", 24)],
+    "moe-30b": [
+        (16384, "f16", 30), (24576, "q8_0", 32), (32768, "q8_0", 36)],
+    "moe-35b": [
+        (16384, "f16", 28), (32768, "q8_0", 30),
+        (49152, "q8_0", 32), (65536, "q8_0", 34)],
+}
+
+
+# --------------------------------------------------------------------------- #
 # per-model plan: primary (owner config, fa=on) + fa=off + fit fallbacks
 # --------------------------------------------------------------------------- #
-def plan(spec: ModelSpec) -> list[RunResult]:
-    runs = [RunResult(label="primary_fa-on", fa="on", ctx=spec.serve_ctx,
+def plan(spec: ModelSpec, ctx_sweep: bool = False) -> list[RunResult]:
+    if ctx_sweep and spec.key in CTX_SWEEP:
+        return [RunResult(label=f"ctx{c}-{kv}", fa="on", ctx=c,
+                          n_cpu_moe=ncm, kv_type=kv)
+                for (c, kv, ncm) in CTX_SWEEP[spec.key]]
+    return [RunResult(label="primary_fa-on", fa="on", ctx=spec.serve_ctx,
                       n_cpu_moe=spec.n_cpu_moe, kv_type=spec.kv_type)]
-    return runs
 
 
 def fit_fallbacks(spec: ModelSpec, failed: RunResult) -> list[RunResult]:
@@ -427,7 +469,8 @@ def fit_fallbacks(spec: ModelSpec, failed: RunResult) -> list[RunResult]:
     return out
 
 
-def bench_model(spec: ModelSpec, vram_base, ram_base, idle_w, do_fa_off) -> dict:
+def bench_model(spec: ModelSpec, vram_base, ram_base, idle_w, do_fa_off,
+                ctx_sweep: bool = False) -> dict:
     meta = gguf_summarize(spec.path)
     size_gb = round(spec.path.stat().st_size / 1e9, 2)
     print(f"\n=== {spec.key} :: {spec.display} ===")
@@ -436,6 +479,23 @@ def bench_model(spec: ModelSpec, vram_base, ram_base, idle_w, do_fa_off) -> dict
           f"n_cpu_moe={spec.n_cpu_moe} kv={spec.kv_type}")
 
     runs: list[RunResult] = []
+
+    if ctx_sweep and spec.key in CTX_SWEEP:
+        # walk the ladder low->high; keep the largest that fits, stop on the
+        # first miss (bigger will only be worse)
+        working = None
+        for rr in plan(spec, ctx_sweep=True):
+            print(f"    sweep: {rr.label} (n_cpu_moe={rr.n_cpu_moe})")
+            res = run_once(spec, rr, vram_base, ram_base, idle_w)
+            runs.append(res)
+            _report(res)
+            if res.ok and res.fits:
+                working = res
+            elif working is not None:
+                print(f"    -> {rr.label} did not fit; keeping {working.label}")
+                break
+        return _finish_model(spec, meta, size_gb, runs, working)
+
     primary = run_once(spec, plan(spec)[0], vram_base, ram_base, idle_w)
     runs.append(primary)
     _report(primary)
@@ -464,6 +524,11 @@ def bench_model(spec: ModelSpec, vram_base, ram_base, idle_w, do_fa_off) -> dict
                 and res.tg_tok_s > working.tg_tok_s * 1.03:
             working = res
 
+    return _finish_model(spec, meta, size_gb, runs, working)
+
+
+def _finish_model(spec: ModelSpec, meta: dict, size_gb: float,
+                  runs: list[RunResult], working: RunResult | None) -> dict:
     rec = None
     if working is not None:
         rec = {
@@ -513,13 +578,22 @@ def load_existing() -> dict:
 
 
 def main() -> int:
+    global VRAM_HEADROOM_MIB
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", default=[])
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--fresh", action="store_true")
     ap.add_argument("--no-fa-off", action="store_true",
                     help="skip the fa=off comparison run")
+    ap.add_argument("--ctx-sweep", action="store_true",
+                    help="Phase 8: walk each model's context ladder, keep the "
+                         "largest that fits. Re-runs models already benched.")
+    ap.add_argument("--headroom-mib", type=int, default=VRAM_HEADROOM_MIB,
+                    help=f"free VRAM to keep or call it 'does not fit' "
+                         f"(default {VRAM_HEADROOM_MIB}; use ~700 for --ctx-sweep "
+                         f"so a config isn't chosen that OOMs under desktop use)")
     args = ap.parse_args()
+    VRAM_HEADROOM_MIB = args.headroom_mib
 
     if not LLAMA_SERVER.exists():
         print(f"llama-server not found at {LLAMA_SERVER}")
@@ -534,6 +608,11 @@ def main() -> int:
 
     if args.dry_run:
         for s in specs:
+            if args.ctx_sweep and s.key in CTX_SWEEP:
+                print(f"\n{s.key}  ({s.kind}) -- ctx ladder:")
+                for (c, kv, ncm) in CTX_SWEEP[s.key]:
+                    print(f"  c={c:<7} kv={kv:<5} n_cpu_moe={ncm}")
+                continue
             print(f"\n{s.key}  ({s.kind}, serve_ctx={s.serve_ctx})")
             print("  " + " ".join(shlex.quote(c) for c in
                                   s.base_cmd("on", s.serve_ctx, s.n_cpu_moe)
@@ -571,12 +650,16 @@ def main() -> int:
 
     for spec in specs:
         done = results["models"].get(spec.key, {})
-        if not args.fresh and done.get("runs"):
+        if args.ctx_sweep and spec.key not in CTX_SWEEP:
+            print(f"skip {spec.key} (no context ladder)")
+            continue
+        if not args.fresh and not args.ctx_sweep and done.get("runs"):
             print(f"skip {spec.key} (done; --fresh to redo)")
             continue
         try:
             results["models"][spec.key] = bench_model(
-                spec, vram_base, ram_base, idle["power_w"], not args.no_fa_off)
+                spec, vram_base, ram_base, idle["power_w"], not args.no_fa_off,
+                ctx_sweep=args.ctx_sweep)
         except KeyboardInterrupt:
             print("\ninterrupted; writing partial results")
             OUT_PATH.write_text(json.dumps(results, indent=2, default=str))
