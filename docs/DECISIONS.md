@@ -3,6 +3,70 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Phase 0 — owner answers + follow-up recon (2026-09-09)
+
+- **Users:** owner + 3–4 friends (4–5 total). Small, casual. Owner still uses
+  the box himself sometimes.
+- **Session limit:** owner asked to lower it "a bit" → **SESSION_CREDIT_LIMIT =
+  4500** (75 min of continuous 35B generation). WEEKLY stays **12000** (≈2.7×
+  session; a casual user won't reach it).
+- **Reasoning:** owner chose the "token / energy saver" default → **reasoning
+  disabled by default on every model** (`--reasoning-budget 0` for FamilyA /
+  FamilyA; equivalent for FamilyC where supported). Keeps per-answer cost
+  predictable.
+- **NetBird:** box is joined. `wt0` = **100.x.y.z/16**. Management
+  `https://netbird.21stgalleryportal.uk:443/`, NetBird 0.78.1, FQDN
+  `myhost.netbird.selfhosted`. oauth2-proxy will bind `100.x.y.z`.
+- **IdP:** NetBird 0.78 self-hosted *requires* an OIDC IdP, so one exists
+  behind that dashboard — but it is not at the dashboard root and not on an
+  `auth.` / `id.` / `zitadel.` subdomain. Identity blocked until the owner
+  pastes the client's IdP config (`sudo cat /var/lib/netbird/default.json`,
+  filtered). Llamacracy will register its own client in that same IdP.
+- **Wattage:** no wall meter, and this box exposes **no whole-system power
+  sensor** — `intel-rapl` energy counters are empty, `k10temp` is temperature
+  only, `amd_energy` not loaded. `nvidia-smi` GPU `power.draw` is the only real
+  number. **Refinement to the cost model:** record measured mean `gpu_watts`
+  per job and compute `system_watts = gpu_watts + NON_GPU_LOAD_WATTS`
+  (default 110 W: Ryzen 3600 + board + RAM + NVMe + fans + PSU loss under
+  load), instead of one flat `LOAD_WATTS`. MoE jobs (GPU ~140 W) then price
+  below dense jobs (GPU ~230 W), both from live data.
+
+### the utility rate (from the a recent statement)
+
+Rate **the TOU plan, climate zone**, household is on a discount program, generation
+via **the local generation provider** CCA ("the TOU plan, 2022 vintage"). *(Account
+holder PII is deliberately NOT stored in this repo — only the rate structure.)*
+
+TOU periods (from the statement):
+
+| Period | Weekday | Weekend / holiday |
+|---|---|---|
+| On-Peak | 16:00–21:00 | 16:00–21:00 |
+| Super Off-Peak | 00:00–06:00, 10:00–14:00 | 00:00–14:00 |
+| Off-Peak | all other hours | all other hours |
+
+Summer (Jun 1 – Oct 31) marginal $/kWh, built from delivery + CCA generation +
+PCIA 2022 + surcharges:
+
+| Period | standard | discounted (≈0.56×, empirical from the bill) |
+|---|---|---|
+| On-Peak | ~$0.665 | ~$0.37 |
+| Off-Peak | ~$0.456 | ~$0.25 |
+| Super Off-Peak | ~$0.374 | ~$0.21 |
+
+- the utility delivery is flat **$0.32948/kWh** (not TOU-differentiated on this rate);
+  all TOU variation is in the CCA generation ($0.30138 / $0.09194 / $0.01000
+  on/off/super summer). PCIA 2022 $0.03005/kWh flat.
+- Bill cross-check: $299.46 for 1,059 kWh (ex. one-time climate credit) =
+  **$0.283/kWh** all-in discounted blended.
+- **Open:** bill friends at discounted (owner's true cost) or standard standard
+  rates (a discount is household-specific; standard is the defensible
+  "cost to run it" and survives a discount-status change). Recommend **standard**.
+- **Open:** winter (Nov 1 – May 31) generation rates not in this statement;
+  seed with summer (slightly conservative) and update from the next bill.
+
+---
+
 ## Phase 0 — benchmark results (2026-09-09)
 
 llama.cpp `2d8d612e4`, `GGML_CUDA_FORCE_MMQ=ON`. All runs `-np 1` (strict FIFO,
