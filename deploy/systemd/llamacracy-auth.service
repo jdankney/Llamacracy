@@ -1,0 +1,27 @@
+# ~/.config/systemd/user/llamacracy-auth.service
+# oauth2-proxy: the ONLY public-facing process. Binds the NetBird interface
+# (wt0, a 100.x address, discovered at start), authenticates against the
+# NetBird IdP, and forwards X-Forwarded-{Email,User,Preferred-Username} to
+# the app on 127.0.0.1:8000.
+[Unit]
+Description=Llamacracy auth edge (oauth2-proxy on wt0)
+After=llamacracy.service
+Wants=llamacracy.service
+# don't even try if NetBird isn't up
+ConditionPathExists=/sys/class/net/wt0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Coding/Llamacracy
+# discover the wt0 address and write it where oauth2-proxy will read it
+ExecStartPre=/bin/sh -c 'a=$(ip -4 -o addr show wt0 | awk "{print \\$4}" | cut -d/ -f1); \
+  echo "OAUTH2_PROXY_HTTP_ADDRESS=$a:4180" > %t/llamacracy-auth.env; \
+  echo "OAUTH2_PROXY_REDIRECT_URL=http://$a:4180/oauth2/callback" >> %t/llamacracy-auth.env'
+EnvironmentFile=%t/llamacracy-auth.env
+EnvironmentFile=%h/Documents/Coding/Llamacracy/deploy/oauth2-proxy.env
+ExecStart=%h/.local/bin/oauth2-proxy --config %h/Documents/Coding/Llamacracy/deploy/oauth2-proxy.cfg
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

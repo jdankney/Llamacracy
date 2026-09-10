@@ -108,8 +108,6 @@ def build_cmd(key: str, m: dict) -> list[str]:
     rec = m["recommended"]
     ov = OVERRIDES.get(key, {})
     n_cpu_moe = ov.get("n_cpu_moe", rec["n_cpu_moe"])
-    is_fim = m["kind"] == "fim"
-
     cmd = ["${server}", "-m", m["path"],
            "--host", "127.0.0.1", "--port", "${PORT}",
            "-c", str(rec["ctx"]), "-ngl", "99", "-fa", rec["fa"],

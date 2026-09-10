@@ -39,10 +39,27 @@ python3 bench/phase0_bench.py --only fast-4b   # one model
 Output: `bench/bench-results.json` (committed — it seeds the llama-swap
 config, the queue's load-time estimates, and the credit limits).
 
-## Running (dev)
+## Running
 
+**Dev** (single user, fake identity):
 ```bash
+uv sync
 ~/.local/bin/llama-swap -config config/llama-swap.yaml -listen 127.0.0.1:8091 &
 uv run uvicorn llamacracy.app:app --host 127.0.0.1 --port 8000   # DEV_MODE=1 in .env
 uv run pytest -q
 ```
+
+**Production** (systemd user units + oauth2-proxy on the NetBird interface):
+```bash
+./deploy/install.sh
+```
+See [deploy/OPERATIONS.md](deploy/OPERATIONS.md) for restarts, adding a model,
+adjusting limits, and backup.
+
+## Design
+
+- [docs/SPEC.md](docs/SPEC.md) — the brief
+- [docs/DECISIONS.md](docs/DECISIONS.md) — every non-obvious choice, with the why
+- [bench/bench-results.json](bench/bench-results.json) — measured per-model
+  load / throughput / VRAM / GPU watts (seeds the config, the queue estimates,
+  and the credit limits)

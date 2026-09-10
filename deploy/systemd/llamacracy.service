@@ -1,0 +1,18 @@
+# ~/.config/systemd/user/llamacracy.service
+# The FastAPI app. Binds 127.0.0.1 only -- oauth2-proxy (llamacracy-auth.service)
+# is the only thing that should reach it.
+[Unit]
+Description=Llamacracy app (FastAPI)
+After=llama-swap.service network.target
+Wants=llama-swap.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Coding/Llamacracy
+ExecStart=%h/Documents/Coding/Llamacracy/.venv/bin/uvicorn llamacracy.app:app --host 127.0.0.1 --port 8000 --no-server-header
+Restart=on-failure
+RestartSec=3
+# read OIDC secrets etc. from the gitignored .env in the working dir (pydantic-settings)
+
+[Install]
+WantedBy=default.target

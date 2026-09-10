@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shlex
 import signal
 import socket
@@ -284,7 +283,7 @@ def _wait_healthy(proc, base_url, timeout):
             with urllib.request.urlopen(base_url + "/health", timeout=3) as r:
                 if r.status == 200:
                     return True
-        except (urllib.error.URLError, socket.timeout, ConnectionError):
+        except (TimeoutError, urllib.error.URLError, ConnectionError):
             pass
         time.sleep(0.5)
     return f"not healthy within {timeout:.0f}s"

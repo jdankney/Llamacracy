@@ -1,0 +1,18 @@
+# ~/.config/systemd/user/llama-swap.service
+# The inference layer. Owns model loading/swapping; the app never spawns llama-server.
+[Unit]
+Description=llama-swap (Llamacracy inference layer)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Coding/Llamacracy
+ExecStart=%h/.local/bin/llama-swap -config %h/Documents/Coding/Llamacracy/config/llama-swap.yaml -listen 127.0.0.1:8091 -watch-config
+Restart=on-failure
+RestartSec=3
+# llama-server children can briefly spike RAM on the 22 GB MoE load
+OOMScoreAdjust=-200
+Nice=-5
+
+[Install]
+WantedBy=default.target

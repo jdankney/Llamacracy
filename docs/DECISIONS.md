@@ -3,6 +3,35 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Phase 6 — deployment (2026-09-09)
+
+- Three **systemd user units** (`deploy/systemd/`): `llama-swap` (`127.0.0.1:8091`,
+  `-watch-config`), `llamacracy` (`127.0.0.1:8000`, `.venv/bin/uvicorn`),
+  `llamacracy-auth` (oauth2-proxy). `install.sh` enables linger so they run
+  without a login session.
+- **oauth2-proxy** is the only public-facing process. `ExecStartPre` reads the
+  `wt0` address at start and writes `OAUTH2_PROXY_HTTP_ADDRESS` +
+  `OAUTH2_PROXY_REDIRECT_URL` to `%t/llamacracy-auth.env` — so a NetBird
+  reconnect just needs `systemctl --user restart llamacracy-auth`, no config
+  edit. `ConditionPathExists=/sys/class/net/wt0` keeps it from flapping when
+  NetBird is down.
+- oauth2-proxy config split: non-secret `deploy/oauth2-proxy.cfg` (in git) +
+  `deploy/oauth2-proxy.env` (gitignored: client id/secret, cookie secret which
+  `install.sh` generates). `cookie_secure = false` — plain HTTP is fine inside
+  the WireGuard tunnel; if the IdP refuses a non-HTTPS redirect URI, front it
+  with Caddy `tls internal` (noted in OPERATIONS.md).
+- oauth2-proxy binary comes from the GitHub release (`v7.6.0`), not pacman
+  (not currently in the Arch repos).
+- **Verified** the production identity path (no `DEV_MODE`): missing headers →
+  503 + loud log; `X-Forwarded-User/Email` → user upserted on `sub`; admin
+  gate honours `ADMIN_EMAILS` (non-admin → 403, admin → 200).
+- `jobs.picked_at` added in Phase 5 for the queue-impact metric.
+- **Owner still needs to:** register an OIDC client in the NetBird IdP
+  (redirect `http://<wt0>:4180/oauth2/callback`) and fill
+  `deploy/oauth2-proxy.env` + the OIDC/rate values in `.env`.
+
+---
+
 ## Phase 3 — metering (2026-09-09)
 
 - **`credits = occupancy_seconds - load_seconds * (1 - LOAD_TIME_MULTIPLIER)`**
