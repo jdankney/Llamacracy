@@ -137,11 +137,12 @@ function loadedBadge() {
 }
 function gauge(label, g) {
   if (!g) return h('span');
-  const col = g.pct >= 90 ? 'text-danger' : g.pct >= 75 ? 'text-warn' : 'text-zinc-400';
+  const col = g.uncapped ? 'text-accent'
+    : g.pct >= 90 ? 'text-danger' : g.pct >= 75 ? 'text-warn' : 'text-zinc-400';
   return h('div', { class: 'text-xs ' + col, title: `${credits(g.used)} / ${credits(g.cap)} credits` +
-      (g.reset_at ? ` · resets in ${untilStr(g.reset_at)}` : '') },
+      (g.uncapped ? ' · uncapped (never blocked)' : g.reset_at ? ` · resets in ${untilStr(g.reset_at)}` : '') },
     h('span', { class: 'hidden sm:inline' }, label + ' '),
-    h('span', { class: 'font-mono' }, Math.round(g.pct) + '%'));
+    h('span', { class: 'font-mono' }, Math.round(g.pct) + '%' + (g.uncapped ? ' ∞' : '')));
 }
 
 /* sidebar */
@@ -457,7 +458,7 @@ function adminLive(d) {
 function adminUsers(rows, controls) {
   if (!rows) return 'loading…';
   const cols = [
-    { label: 'User', get: r => r.email + (r.is_admin ? ' ★' : '') },
+    { label: 'User', get: r => r.email + (r.is_admin ? ' ★' : '') + (r.uncapped ? ' ∞' : '') },
     { label: 'Session %', mono: 1, get: r => r.session.pct + '%' },
     { label: 'Week %', mono: 1, get: r => r.weekly.pct + '%' },
     { label: 'All-time tok', mono: 1, get: r => r.all_time.tokens.toLocaleString() },
@@ -469,6 +470,10 @@ function adminUsers(rows, controls) {
       h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-xs', placeholder: 'sess', value: r.session_override ?? '', id: `so-${r.id}` }),
       h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-xs ml-1', placeholder: 'week', value: r.weekly_override ?? '', id: `wo-${r.id}` }),
       h('button', { class: 'text-accent text-xs ml-1', onclick: () => saveLimits(r.id) }, 'set')) },
+    { label: 'Uncapped', get: r => h('button', {
+      class: 'text-xs ' + (r.uncapped ? 'text-accent' : 'text-zinc-500'),
+      onclick: () => adminPost(`/api/admin/users/${r.id}/uncapped`, { uncapped: !r.uncapped }),
+    }, r.uncapped ? '∞ on' : 'off') },
     { label: '', get: r => h('button', {
       class: 'text-xs ' + (r.disabled ? 'text-good' : 'text-danger'),
       onclick: () => adminPost(`/api/admin/users/${r.id}/disabled`, { disabled: !r.disabled }),
@@ -477,10 +482,13 @@ function adminUsers(rows, controls) {
   return table(cols, rows);
 }
 async function saveLimits(id) {
-  await adminPost(`/api/admin/users/${id}/limits`, {
-    session_override: document.getElementById(`so-${id}`).value || null,
-    weekly_override: document.getElementById(`wo-${id}`).value || null,
-  });
+  try {
+    await api.post(`/api/admin/users/${id}/limits`, {
+      session_override: document.getElementById(`so-${id}`).value || null,
+      weekly_override: document.getElementById(`wo-${id}`).value || null,
+    });
+    loadAdmin();
+  } catch (e) { flashError(e.message); }
 }
 
 function adminUsage(d) {

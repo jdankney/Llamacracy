@@ -235,6 +235,26 @@ async def test_per_user_limit_override(meter):
     assert (s_cap, w_cap) == (1000.0, 2000.0)
 
 
+@pytest.mark.asyncio
+async def test_uncapped_user_is_never_blocked(meter):
+    now = time.time()
+    # way over both caps: full session + double the weekly
+    await meter.db.insert(
+        "INSERT INTO sessions (user_id, started_at, expires_at, credits_used) "
+        "VALUES (1, ?, ?, ?)", (now - 60, now + 3600, 9999))
+    await _add_job(meter.db, credits=25000, finished_at=now - DAY)
+    assert (await meter.check_limits(1, "m")).allowed is False   # normal user: blocked
+
+    await meter.db.execute("UPDATE users SET uncapped = 1 WHERE id = 1")
+    d = await meter.check_limits(1, "m")
+    assert d.allowed is True and d.session_id is not None
+
+    v = (await meter.usage_view(1)).as_dict()
+    assert v["uncapped"] is True
+    assert v["warn"] is False                    # no nagging when uncapped
+    assert v["session"]["pct"] > 100 and v["weekly"]["pct"] > 100
+
+
 # --------------------------------------------------------------------------- #
 # estimated-fraction guard
 # --------------------------------------------------------------------------- #

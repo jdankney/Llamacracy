@@ -119,7 +119,7 @@ class QueueManager:
         self._idle_since: float = time.time()
         self._load_ewma: dict[str, float] = {}
         self._tasks: list[asyncio.Task] = []
-        self._idle_poll_s = 30.0
+        self._idle_poll_s = 10.0    # cheap local check; keeps a short IDLE_TTL responsive
         self._running_poll_s = 10.0
         # hook points filled by metering (Phase 3)
         self.check_limits = None       # async (user_id, model_id) -> LimitDecision | None
@@ -410,11 +410,11 @@ class QueueManager:
     async def _idle_monitor(self) -> None:
         while True:
             await asyncio.sleep(self._idle_poll_s)
-            ttl = self.cfg.idle_ttl_minutes * 60
+            ttl = self.cfg.idle_ttl_effective_seconds
             if self._active or self._pending:
                 continue
             if self._loaded_model and time.time() - self._idle_since > ttl:
-                log.info("idle %ds -> unloading %s", ttl, self._loaded_model)
+                log.info("idle %.0fs -> unloading %s", ttl, self._loaded_model)
                 if await self.up.unload_all():
                     self._loaded_model = None
                     await self._broadcast()

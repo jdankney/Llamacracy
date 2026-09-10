@@ -16,6 +16,13 @@ from .config import get_settings
 
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text()
 
+# Additive, idempotent migrations for DBs created before a column existed.
+# Fresh DBs get the column straight from schema.sql; these just catch up
+# existing ones. "duplicate column name" means it's already applied.
+_MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN uncapped INTEGER NOT NULL DEFAULT 0",
+]
+
 
 class Database:
     def __init__(self, path: str):
@@ -24,6 +31,12 @@ class Database:
         self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        for stmt in _MIGRATIONS:
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e):
+                    raise
         self._lock = asyncio.Lock()
 
     def close(self) -> None:

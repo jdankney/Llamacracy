@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     # --- queue -----------------------------------------------------------
     idle_ttl_minutes: int = 15
+    idle_ttl_seconds: float | None = None    # if set, wins over idle_ttl_minutes
     small_model_fast_lane: bool = False
     fast_lane_vram_threshold_gb: float = 6.0
 
@@ -68,6 +69,14 @@ class Settings(BaseSettings):
     @property
     def session_window_seconds(self) -> float:
         return self.session_window_hours * 3600
+
+    @property
+    def idle_ttl_effective_seconds(self) -> float:
+        """Seconds a model may sit idle in VRAM before it's unloaded.
+        IDLE_TTL_SECONDS wins if set; otherwise IDLE_TTL_MINUTES * 60."""
+        if self.idle_ttl_seconds is not None:
+            return max(0.0, self.idle_ttl_seconds)
+        return self.idle_ttl_minutes * 60
 
     @property
     def tou_table(self) -> dict[int, float] | None:

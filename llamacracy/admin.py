@@ -88,6 +88,7 @@ async def users(db: Database = Depends(get_db), meter: Meter = Depends(_meter)):
         out.append({
             "id": u["id"], "email": u["email"], "display_name": u["display_name"],
             "is_admin": bool(u["is_admin"]), "disabled": bool(u["disabled"]),
+            "uncapped": bool(u["uncapped"]),
             "last_active_at": u["last_active_at"],
             "session": {"used": round(s_used, 1), "cap": s_cap,
                         "pct": round(100 * s_used / s_cap, 1) if s_cap else 0},
@@ -281,6 +282,15 @@ async def set_disabled(user_id: int, body: dict,
         raise HTTPException(400, "cannot disable yourself")
     await db.execute("UPDATE users SET disabled = ? WHERE id = ?",
                      (1 if body.get("disabled") else 0, user_id))
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/uncapped")
+async def set_uncapped(user_id: int, body: dict, db: Database = Depends(get_db)):
+    """Uncapped users are never blocked at enqueue. Their session/weekly % is
+    still computed and shown (and can sail past 100%)."""
+    await db.execute("UPDATE users SET uncapped = ? WHERE id = ?",
+                     (1 if body.get("uncapped") else 0, user_id))
     return {"ok": True}
 
 

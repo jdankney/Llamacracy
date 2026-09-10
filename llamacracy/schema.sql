@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name                TEXT NOT NULL DEFAULT '',
     is_admin                    INTEGER NOT NULL DEFAULT 0,  -- cached from ADMIN_EMAILS; auth still checks config
     disabled                    INTEGER NOT NULL DEFAULT 0,
+    uncapped                    INTEGER NOT NULL DEFAULT 0,  -- never blocked at enqueue; usage % still shown (can exceed 100)
     session_credit_limit_override  REAL,
     weekly_credit_limit_override   REAL,
     created_at                  REAL NOT NULL,

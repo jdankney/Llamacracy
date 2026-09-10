@@ -126,9 +126,16 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 | `NON_GPU_LOAD_WATTS` | added to measured GPU watts for the cost model. Default 110. |
 | `MARKUP` | multiplier on `cost_usd`. Default 1.0 -- raise to 2-3x for non-trivial invoices. |
 | `IDLE_TTL_MINUTES` | unload the resident model after this long idle. Default 15. |
+| `IDLE_TTL_SECONDS` | seconds-granularity idle unload; wins over `IDLE_TTL_MINUTES` when set. `.env` ships 60. Short = frees VRAM fast but quick follow-ups re-pay the cold load. |
 
-**Per-user** overrides (session/weekly caps, disable) are in the admin
-dashboard → Controls, no restart needed.
+**Per-user**, in the admin dashboard → Admin → Users tab (no restart):
+- **Overrides** — type a number in the `sess` / `week` box and hit *set* to give
+  someone a different cap (blank = fall back to the global default). Good for a
+  boosted allowance for a specific project.
+- **Uncapped** — toggle `∞ on`: that user is never blocked at enqueue. Their
+  usage % is still tracked and shown (and will climb past 100%); the 75/90%
+  warnings are silenced for them.
+- **disable / enable** — hard-stop an account, keeping its history.
 
 Changing a rate only affects **future** jobs -- `rate_used` and `cost_usd` are
 frozen on each job row when it finishes.

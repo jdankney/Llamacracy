@@ -9,9 +9,8 @@ import pytest
 
 from llamacracy.config import Settings
 from llamacracy.db import Database
-from llamacracy.queue import Job, JobState, QueueManager
+from llamacracy.queue import Job, QueueManager
 from llamacracy.registry import ModelInfo, Registry
-
 from tests.conftest import FakeUpstream
 
 
@@ -173,7 +172,8 @@ async def test_cold_start_detection_and_load_estimate_learns(tmp_db_path):
 async def test_idle_ttl_unloads(tmp_db_path):
     up = FakeUpstream()
     cfg = Settings()
-    object.__setattr__(cfg, "idle_ttl_minutes", 0)  # unload as soon as idle
+    object.__setattr__(cfg, "idle_ttl_minutes", 0)   # unload as soon as idle
+    object.__setattr__(cfg, "idle_ttl_seconds", 0.0)  # (wins over minutes; also ignore any .env value)
     qm = await _make_qm(tmp_db_path, up, cfg)
     qm._idle_poll_s = 0.05
     try:

@@ -54,7 +54,7 @@ class FakeUpstream:
         model = payload.get("model")
         deltas = self.script.get(model, ["hello", " world"])
         self.loaded = model
-        for i, d in enumerate(deltas):
+        for d in deltas:
             await asyncio.sleep(self.delay)
             yield StreamChunk(raw={}, content_delta=d)
         yield StreamChunk(raw={}, usage=dict(self.usage), timings=dict(self.timings))

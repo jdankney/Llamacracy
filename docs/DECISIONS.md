@@ -3,6 +3,27 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Queue + metering tweaks (2026-09-10)
+
+- **`IDLE_TTL_SECONDS`** — the spec's idle unload is minutes-only (default 15).
+  Owner wanted the model out of VRAM/RAM within ~a minute of going quiet, so
+  added a seconds-granularity override; when set it wins over
+  `IDLE_TTL_MINUTES`. `.env` ships `IDLE_TTL_SECONDS=60`. Idle-monitor poll
+  dropped 30s → 10s so a short TTL is actually responsive. Trade-off (noted in
+  `.env.example`): a follow-up prompt after the TTL re-pays the cold load
+  (~12-25s heavyweight, half-billed to whoever triggers it).
+- **`users.uncapped`** flag — `check_limits` returns "allowed" unconditionally
+  for these users (session still opens; nothing gates). Their session/weekly
+  **percentages are still computed and shown** and can exceed 100% — the gauge
+  goes accent-coloured with an `∞`, and the 75%/90% warnings are suppressed.
+  Admin-only toggle (Users tab → "Uncapped"); not self-restricted, since the
+  intended use is the admin exempting themselves while still watching the
+  number climb. Additive migration in `db.py` (`_MIGRATIONS`) for the existing
+  DB; column also in `schema.sql` for fresh ones.
+- Per-user cap overrides (`session_credit_limit_override` /
+  `weekly_credit_limit_override`) already existed — Users tab → Overrides. Used
+  for e.g. a boosted allowance without touching the global default.
+
 ## Frontend — full markdown rendering (2026-09-10)
 
 - The chat renderer was a ~5-line regex (`mdLite`: fenced + inline code only).

@@ -71,6 +71,7 @@ class UsageView:
     weekly_used: float
     weekly_cap: float
     weekly_reset_at: float | None
+    uncapped: bool = False              # limits are informational only for this user
 
     def _pct(self, used: float, cap: float) -> float:
         return round(100 * used / cap, 1) if cap else 0.0
@@ -79,12 +80,14 @@ class UsageView:
         return {
             "session": {"used": round(self.session_used, 1), "cap": self.session_cap,
                         "pct": self._pct(self.session_used, self.session_cap),
-                        "reset_at": self.session_reset_at},
+                        "reset_at": self.session_reset_at, "uncapped": self.uncapped},
             "weekly": {"used": round(self.weekly_used, 1), "cap": self.weekly_cap,
                        "pct": self._pct(self.weekly_used, self.weekly_cap),
-                       "reset_at": self.weekly_reset_at},
-            "warn": max(self._pct(self.session_used, self.session_cap),
-                        self._pct(self.weekly_used, self.weekly_cap)) >= 75,
+                       "reset_at": self.weekly_reset_at, "uncapped": self.uncapped},
+            "uncapped": self.uncapped,
+            "warn": (not self.uncapped) and max(
+                self._pct(self.session_used, self.session_cap),
+                self._pct(self.weekly_used, self.weekly_cap)) >= 75,
         }
 
 
@@ -133,6 +136,10 @@ class Meter:
              else self.cfg.weekly_credit_limit)
         return float(s), float(w)
 
+    async def is_uncapped(self, user_id: int) -> bool:
+        row = await self.db.fetch_one("SELECT uncapped FROM users WHERE id = ?", (user_id,))
+        return bool(row["uncapped"]) if row else False
+
     async def active_session(self, user_id: int, at: float):
         return await self.db.fetch_one(
             "SELECT * FROM sessions WHERE user_id = ? AND started_at <= ? "
@@ -178,6 +185,12 @@ class Meter:
         Rejects only if the user is ALREADY at/over a cap (overshoot allowed)."""
         at = now()
         session = await self.get_or_open_session(user_id, at)
+
+        # uncapped users are never blocked -- their session still exists (and
+        # their usage % still climbs), it just never gates.
+        if await self.is_uncapped(user_id):
+            return LimitDecision(True, session["id"])
+
         s_cap, w_cap = await self.effective_limits(user_id)
 
         s_used = float(session["credits_used"])
@@ -215,10 +228,11 @@ class Meter:
     async def usage_view(self, user_id: int) -> UsageView:
         at = now()
         s_cap, w_cap = await self.effective_limits(user_id)
+        uncapped = await self.is_uncapped(user_id)
         session = await self.active_session(user_id, at)
         s_used = float(session["credits_used"]) if session else 0.0
         s_reset = session["expires_at"] if session else None
         w_used = await self.weekly_credits(user_id, at)
         w_reset = (await self.weekly_reset_at(user_id, w_cap, at)
-                   if w_used >= w_cap * 0.75 else None)
-        return UsageView(s_used, s_cap, s_reset, w_used, w_cap, w_reset)
+                   if not uncapped and w_used >= w_cap * 0.75 else None)
+        return UsageView(s_used, s_cap, s_reset, w_used, w_cap, w_reset, uncapped)
