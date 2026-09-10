@@ -14,8 +14,8 @@ See [docs/SPEC.md](docs/SPEC.md) for the full design brief.
 | 1 | Inference layer — llama-swap config from bench data | **done** (`config/`) |
 | 2 | Backend — FastAPI, FIFO queue worker, SSE proxy, cancellation, SQLite | **done** (`llamacracy/`) |
 | 3 | Metering — credits, session/weekly limits, cost model, tests | **done** (`metering.py`, 28 tests) |
-| 4 | Frontend — chat UI, model picker, live queue, usage page | next |
-| 5 | Admin dashboard | not started |
+| 4 | Frontend — chat UI, model picker, live queue, usage page | **done** (`static/`) |
+| 5 | Admin dashboard | next |
 | 6 | Deployment — systemd units, oauth2-proxy, NetBird binding | not started |
 
 ## Hardware
