@@ -10,9 +10,9 @@ See [docs/SPEC.md](docs/SPEC.md) for the full design brief.
 
 | Phase | What | State |
 |---|---|---|
-| 0 | Measure reality — benchmark every GGUF | **in progress** |
-| 1 | Inference layer (llama-swap config from bench data) | not started |
-| 2 | Backend — FastAPI, FIFO queue worker, SSE proxy, cancellation, SQLite | not started |
+| 0 | Measure reality — benchmark every GGUF | **done** (`bench-results.json`) |
+| 1 | Inference layer — llama-swap config from bench data | **done** (`config/`) |
+| 2 | Backend — FastAPI, FIFO queue worker, SSE proxy, cancellation, SQLite | next |
 | 3 | Metering — credits, session/weekly limits, cost model, tests | not started |
 | 4 | Frontend — chat UI, model picker, live queue, usage page | not started |
 | 5 | Admin dashboard | not started |

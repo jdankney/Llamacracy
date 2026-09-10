@@ -83,7 +83,7 @@
       "tier": "heavy",
       "in_picker": true,
       "blurb": "MoE, experts on CPU. Strong quality, ~34 tok/s, ~12 s cold start.",
-      "reasoning": "none",
+      "reasoning": "off",
       "sampling": {},
       "ctx": 16384,
       "seed_cold_load_s": 12.19,

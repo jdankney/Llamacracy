@@ -128,6 +128,10 @@ models:
     proxy: "http://127.0.0.1:${PORT}"
     checkEndpoint: "/health"
     ttl: 1200
+    filters:
+      setParams:
+        chat_template_kwargs:
+          enable_thinking: false
 
   "moe-30b":
     # FamilyC Flash (Q4_K_M, MoE) | 29.1 tok/s | 13.56s cold | 9138 MiB VRAM

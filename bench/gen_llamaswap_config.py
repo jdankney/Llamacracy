@@ -43,12 +43,14 @@ OVERRIDES: dict[str, dict] = {
     "moe-30b": {"n_cpu_moe": 30},
 }
 
-# Models whose chat template has a thinking toggle. `--reasoning-budget 0` does
-# NOT stop FamilyA emitting a full think block (verified: 102 completion
-# tokens -> 4 once thinking is off). We disable it via llama-swap's
-# `filters.setParams`, which injects `chat_template_kwargs` into every request
-# body server-side -- cleaner than a CLI arg with JSON quoting.
-REASONING_MODELS = {"fast-4b", "daily-9b", "moe-35b", "moe-30b"}
+# Models that emit a <think> block by default. `--reasoning-budget 0` does NOT
+# stop it (verified: 102 completion tokens -> 4 once thinking is off). We
+# disable it with `chat_template_kwargs: {enable_thinking: false}` injected via
+# llama-swap's `filters.setParams` -- cleaner than a CLI arg with JSON quoting.
+# Verified per-model through llama-swap. FamilyB 4B does NOT think; FamilyB 26B
+# QAT does.
+NOTHINK_MODELS = {"fast-4b", "daily-9b", "moe-35b", "moe-30b",
+                  "moe-26b"}
 
 # human-facing metadata + sampling the app should apply as per-model defaults
 REGISTRY_META: dict[str, dict] = {
@@ -68,7 +70,7 @@ REGISTRY_META: dict[str, dict] = {
         sampling=dict(),
         blurb="FamilyB 4B — alt community finetune, not stock Gemma."),
     "moe-26b": dict(
-        tier="heavy", picker=True, reasoning="none",
+        tier="heavy", picker=True, reasoning="off",
         sampling=dict(),
         blurb="MoE, experts on CPU. Strong quality, ~34 tok/s, ~12 s cold start."),
     "moe-30b": dict(
@@ -169,7 +171,7 @@ def main() -> None:
         y.append('    proxy: "http://127.0.0.1:${PORT}"')
         y.append('    checkEndpoint: "/health"')
         y.append(f"    ttl: {TTL_BACKSTOP_S}")
-        if key in REASONING_MODELS:
+        if key in NOTHINK_MODELS:
             y.append("    filters:")
             y.append("      setParams:")
             y.append("        chat_template_kwargs:")

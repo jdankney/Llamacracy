@@ -3,6 +3,60 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Phase 1 — inference layer (2026-09-09)
+
+- **llama-swap v255** installed at `~/.local/bin/llama-swap`. Chosen over
+  `llama-server` router mode: `groups` for co-residency control, explicit
+  `/running` + unload endpoints the queue needs, and `filters.setParams` for
+  clean server-side request shaping.
+- **`bench/gen_llamaswap_config.py`** generates both `config/llama-swap.yaml`
+  (llama-swap schema only) and `config/models.json` (the app's registry: tier,
+  blurb, sampling defaults, and the measured load/throughput/VRAM seeds).
+  Re-run whenever `bench-results.json` changes.
+- **llama-swap fork/execs directly** — no shell, no `~` expansion. The
+  generator writes absolute paths (`/home/you/.local/bin/llama-server`).
+- **Reasoning off**: `--reasoning-budget 0` does NOT stop FamilyA (or
+  moe-26b QAT, or FamilyC) emitting a full `<think>` block — verified 102
+  completion tokens for a one-word answer. The fix is
+  `chat_template_kwargs: {enable_thinking: false}`, injected per-request via
+  llama-swap `filters.setParams`. Verified per model (102 → 4 tokens).
+  FamilyB **4B does not think**; FamilyB **26B QAT does**.
+- **FamilyC** runs at `--n-cpu-moe 30` (bench's 28 left only ~0.8 GB VRAM free).
+- **FIM model** is `unlisted` in llama-swap (absent from `/v1/models`) and
+  `kind=fim` / `in_picker=false` in the registry — two independent guards
+  against it being chatted with.
+- **Verified end-to-end through llama-swap** (load → stream → unload → swap):
+  all 7 models. Streaming with `stream_options:{include_usage:true}` returns a
+  final `usage` + `timings` chunk — the metering hook. Heavyweight RAM under
+  load: moe-26b swap→5.5 GB, FamilyC→5.2 GB, FamilyA-35B→5.0 GB with
+  ~11 GB still available. All usable with the desktop running.
+- **App-side unload TTL** (`IDLE_TTL_MINUTES`, default 15) is authoritative;
+  llama-swap `ttl: 1200` is only a backstop.
+
+### IdP identified
+
+OIDC discovery: **`https://netbird.21stgalleryportal.uk/oauth2/.well-known/openid-configuration`**
+
+```
+issuer:                        https://netbird.21stgalleryportal.uk/oauth2
+authorization_endpoint:        .../oauth2/auth
+token_endpoint:                .../oauth2/token
+device_authorization_endpoint: .../oauth2/device/code
+jwks_uri:                      .../oauth2/keys
+userinfo_endpoint:             .../oauth2/userinfo
+scopes:      openid email profile groups offline_access
+PKCE:        S256
+claims:      sub, email, email_verified, preferred_username, name, locale
+```
+
+Looks like **Pocket ID** (or possibly Dex) behind the NetBird dashboard —
+vendor doesn't matter, it's standard OIDC. Auth-code + PKCE, `sub` claim
+present (billing keys on `sub`). **Owner action for Phase 6:** create a new
+OIDC client for Llamacracy in that IdP's admin UI, redirect URI
+`https://<app-host>/oauth2/callback`, and drop client id/secret into `.env`.
+
+---
+
 ## Phase 0 — owner answers + follow-up recon (2026-09-09)
 
 - **Users:** owner + 3–4 friends (4–5 total). Small, casual. Owner still uses
