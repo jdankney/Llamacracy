@@ -12,8 +12,8 @@ See [docs/SPEC.md](docs/SPEC.md) for the full design brief.
 |---|---|---|
 | 0 | Measure reality — benchmark every GGUF | **done** (`bench-results.json`) |
 | 1 | Inference layer — llama-swap config from bench data | **done** (`config/`) |
-| 2 | Backend — FastAPI, FIFO queue worker, SSE proxy, cancellation, SQLite | next |
-| 3 | Metering — credits, session/weekly limits, cost model, tests | not started |
+| 2 | Backend — FastAPI, FIFO queue worker, SSE proxy, cancellation, SQLite | **done** (`llamacracy/`) |
+| 3 | Metering — credits, session/weekly limits, cost model, tests | next |
 | 4 | Frontend — chat UI, model picker, live queue, usage page | not started |
 | 5 | Admin dashboard | not started |
 | 6 | Deployment — systemd units, oauth2-proxy, NetBird binding | not started |
@@ -38,3 +38,11 @@ python3 bench/phase0_bench.py --only fast-4b   # one model
 
 Output: `bench/bench-results.json` (committed — it seeds the llama-swap
 config, the queue's load-time estimates, and the credit limits).
+
+## Running (dev)
+
+```bash
+~/.local/bin/llama-swap -config config/llama-swap.yaml -listen 127.0.0.1:8091 &
+uv run uvicorn llamacracy.app:app --host 127.0.0.1 --port 8000   # DEV_MODE=1 in .env
+uv run pytest -q
+```
