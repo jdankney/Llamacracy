@@ -3,6 +3,81 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Phase 0 — benchmark results (2026-09-09)
+
+llama.cpp `2d8d612e4`, `GGML_CUDA_FORCE_MMQ=ON`. All runs `-np 1` (strict FIFO,
+one slot). VRAM baseline 1193 MiB (desktop). RAM ~24.4 GiB available with the
+owner's normal apps up. Full data: `bench/bench-results.json`.
+
+| Model | serve ctx | n_cpu_moe | KV | fa | cold load | prompt t/s | gen t/s | VRAM used | VRAM free | RAM + | GPU W (gen) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Coder 1.5B (FIM) | 8192 | – | f16 | on | 1.5 s | 3784 | **110** | 2.0 GB | 8.0 GB | 0.3 GB | 194 |
+| FamilyA 4B (reasoning off) | 32768 | – | q8_0 | on | 2.8 s | 1269 | **44** | 5.2 GB | 4.8 GB | 1.0 GB | 209 |
+| FamilyA 9B Q6_K | 32768 | – | q8_0 | on | 3.9 s | 705 | **30** | 7.1 GB | 2.8 GB | 1.0 GB | 262 |
+| FamilyB 4B (alt) | 32768 | – | f16 | on | 4.5 s | 1140 | **40** | 5.6 GB | 4.3 GB | 0.3 GB | 208 |
+| FamilyB 26B QAT (MoE) | 16384 | 18 | f16 | on | 12.2 s | 417 | **34** | 7.6 GB | 2.4 GB | 8.0 GB | 144 |
+| FamilyC Flash (MoE) | 16384 | 28 | f16 | on | 13.6 s | 288 | **29** | 9.1 GB | **0.8 GB** | 9.5 GB | 138 |
+| FamilyA 35B (MoE) | 16384 | 28 | f16 | on | 25.4 s | 300 | **32** | 8.5 GB | 1.5 GB | 12.4 GB | 139 |
+
+Findings vs the owner's estimates:
+
+- **Generation is much faster than the spec's "8–15 tok/s" guess** — all three
+  MoE heavyweights land at 29–34 tok/s (MoE = only 3–4 B active params at
+  Q4). moe-26b QAT (34) actually beats the dense FamilyA 9B (30).
+- **`-fa on` is mandatory, not optional, on this stack:** quantized (q8_0) KV
+  requires flash attention in llama.cpp (FamilyA 4B/9B fail to start with
+  `-fa off`), and for FamilyC `-fa off` doesn't fit in VRAM. `-fa on` is also
+  faster for prompt processing on every model tested. So we don't expose a
+  toggle; `-fa on` everywhere.
+- **FamilyC at n_cpu_moe=28 / ctx 16384 leaves only ~0.8 GB VRAM free** — too
+  little for compute-buffer growth. Phase 1 should run it at **n_cpu_moe=30**
+  (the owner's own "coding" variant) or ctx 12288 for headroom.
+- **FamilyA-35B works with the desktop running** (~32 tok/s) but pushed zram
+  swap from 1.5 GB to 3.6 GB during load. Fine solo; risky if other big apps
+  are open. `--no-mmap` + n_cpu_moe=28 puts ~12 GB in RAM, ~8.5 GB in VRAM.
+- Cold loads (model-file page cache evicted first): 1.5–4.5 s for the small
+  models, 12–25 s for the heavyweights. These seed the queue's load-time
+  estimates.
+- Serving contexts chosen: 32768 for the small models (room to spare),
+  **16384 for the MoE heavyweights** (the owner runs `-c 32768` but with
+  llama-server's default 4 slots that is ~8 k effective per request; at `-np 1`
+  we give a real 16 k and keep KV off the tight VRAM budget).
+
+### Proposed credit limits (owner to confirm)
+
+`1 credit = 1 second of exclusive box time.`
+
+**SESSION_CREDIT_LIMIT = 5400** (5-hour window)
+- Spec target: a heavy user on the 35B hits the cap in ~90 min of continuous
+  generation. FamilyA-35B measured at 31.8 tok/s → 90 min × 60 = **5400 s**.
+- = ~171,700 generated tokens ≈ 84 max-length (2048-tok) responses.
+- Model-load surcharge is rounding noise (10 cold 35B loads × 25.4 s × 0.5 =
+  127 credits).
+- A casual user on the 9B (30 tok/s) would need ~270 six-hundred-token replies
+  in one 5-hour window to reach it — it only ever bites a heavy 35B user.
+
+**WEEKLY_CREDIT_LIMIT = 12000** (rolling 7-day) — *needs headcount to finalise*
+- ≈ 2.2 × the session cap: a heavy user gets ~2 big sessions a week then waits
+  for the rolling window to clear.
+- = ~5.7 h of 35B generation, or ~100 max-length 35B answers, per week.
+- For a casual user that is 10+ evenings of chat — effectively unlimited.
+- Revisit once real usage data exists; it is a one-line config change.
+
+**Cost model** — *needs the real the utility rate*
+- Measured GPU-only draw (nvidia-smi): idle 20–62 W; MoE generation ~138–144 W
+  (GPU waits on CPU experts); dense generation 208–262 W.
+- Whole-system estimate (GPU + Ryzen 3600 + board/RAM/NVMe/fans): idle ~95 W,
+  generation ~230–350 W depending on model, load ~160 W.
+- Proposed defaults: `IDLE_WATTS=95`, `LOAD_WATTS=300` (blended generation).
+- `cost_usd = credits × (LOAD_WATTS/1000) × ELECTRICITY_RATE × MARKUP`
+- Worked example at a **placeholder** $0.45/kWh: a full 5400-credit session =
+  1.5 h × 0.30 kW × $0.45 = **$0.20**. The weekly cap ≈ **$0.45/week** for the
+  single heaviest user. the utility on-peak (~$0.80/kWh) roughly doubles that.
+- Even the heaviest friend costs well under $1/week in electricity; set
+  `MARKUP` to 2–3× if invoices should feel non-trivial.
+
+---
+
 ## Phase 0 — environment recon (2026-09-09)
 
 ### Confirmed from the box

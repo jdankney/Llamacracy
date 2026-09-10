@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """Phase 0 -- measure reality.
 
-For every GGUF we intend to serve, find a working llama-server config and
-record what it costs and how fast it runs. Output feeds:
-  - the llama-swap config (Phase 1): per-model -ngl / --n-cpu-moe / -fa / KV type
-  - the UI cold-start estimates and load-time billing (the queue, Phase 2)
-  - the credit-limit arithmetic (metering, Phase 3)
+The owner already has a tuned `llama-server` invocation for every model (see
+their ~/.bashrc). So Phase 0 is not a config search: it validates each
+known-good config under our actual serving mode (`-np 1`, strict FIFO, one
+model at a time) and records what it costs and how fast it runs.
 
-Stdlib only, so it runs on the system Python with nothing installed. Drives
-the real `llama-server` binary over HTTP rather than llama-bench, because we
-need cold load time and resident VRAM for the exact flag set we'll deploy.
+Per model we measure:
+  - cold load time from disk (page cache evicted first)
+  - resident VRAM (nvidia-smi delta over the desktop baseline)
+  - prompt-processing tok/s and generation tok/s (llama-server's own timings)
+  - GPU power draw (nvidia-smi) at idle and during generation
+  - fa=on (owner's setting) vs fa=off, since Pascal FA is not a given
 
-Usage:
-    python3 bench/phase0_bench.py                 # full sweep, resumable
-    python3 bench/phase0_bench.py --only fast-4b
-    python3 bench/phase0_bench.py --dry-run       # print the plan, run nothing
-    python3 bench/phase0_bench.py --fresh         # ignore existing results
+Output feeds the llama-swap config (Phase 1), the queue's load-time estimates
+(Phase 2), and the credit-limit arithmetic (Phase 3).
 
-Results stream to bench/bench-results.json after every model so a heavyweight
-that OOM-kills the box doesn't lose the earlier data.
+Stdlib only. Drives the real `llama-server` over HTTP.
+
+    python3 bench/phase0_bench.py --dry-run
+    python3 bench/phase0_bench.py --only daily-9b
+    python3 bench/phase0_bench.py                 # every model, resumable
+    python3 bench/phase0_bench.py --no-fa-off     # skip the fa=off comparison
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ import argparse
 import json
 import os
 import re
-import shutil
+import shlex
 import signal
 import socket
 import statistics
@@ -43,67 +46,155 @@ from pathlib import Path
 from gguf_meta import summarize as gguf_summarize
 
 REPO = Path(__file__).resolve().parent.parent
-MODELS_DIR = Path(os.path.expanduser("~/models"))
+M = Path(os.path.expanduser("~/models"))
 LLAMA_SERVER = Path(os.path.expanduser("~/.local/bin/llama-server"))
 LLAMA_CPP_DIR = Path(os.path.expanduser("~/llama.cpp"))
 OUT_PATH = REPO / "bench" / "bench-results.json"
 LOG_DIR = REPO / "bench" / "raw"
 
-# VRAM budget. The 1080 Ti reports ~11162 MiB total; the desktop (Xorg +
-# kwin_wayland) holds ~1.1 GB, so llama-server sees ~9.8 GB free. Leave a
-# safety margin below that for compute-buffer growth at longer contexts.
-VRAM_TOTAL_MIB = 11162
-VRAM_HEADROOM_MIB = 450
+# 1080 Ti reports ~11264 MiB; desktop (Xorg + kwin) holds ~1.2 GB.
+VRAM_TOTAL_MIB = 11264
+VRAM_HEADROOM_MIB = 400          # keep this much unused or we call it "does not fit"
 
-# Benchmark shapes.
-CHAT_CTX = 8192          # context we plan to serve chat models at
-HEAVY_CTX = 4096         # MoE heavyweights: keep KV small
-GEN_TOKENS = 256
+GEN_TOKENS = 320
 BENCH_REPS = 3
-HEALTH_TIMEOUT_S = 360
-THREADS = 6             # Ryzen 5 3600 physical cores
+HEALTH_TIMEOUT_S = 420           # --no-mmap heavyweights load ~20 GB from disk
+THREADS = 6
 
-# ~1000 tokens of filler so prompt-processing throughput is measurable.
 _PARA = (
     "The quick brown fox jumps over the lazy dog while the committee debates "
     "the merits of a strictly first-in-first-out scheduling policy for a "
     "single shared accelerator. Each participant weighs latency against "
-    "fairness, and the discussion returns repeatedly to the question of how "
-    "to price exclusive occupancy of a scarce resource. "
+    "fairness, and the discussion returns repeatedly to how one should price "
+    "exclusive wall-clock occupancy of a scarce resource. "
 )
-BENCH_PROMPT = (_PARA * 12).strip()
+BENCH_PROMPT = (_PARA * 12).strip()   # ~1000 tokens
 
 
+# --------------------------------------------------------------------------- #
+# model inventory -- the owner's tuned configs, minus their personal
+# web-UI / MCP flags (we proxy the OpenAI endpoint, no tool use in v1).
+# --------------------------------------------------------------------------- #
 @dataclass
 class ModelSpec:
-    key: str                 # short id used in configs and results
+    key: str
     display: str
     path: Path
-    kind: str                # "chat" | "fim"
+    kind: str                       # "chat" | "fim"
+    serve_ctx: int                  # -c we serve at, with -np 1
+    extra: list[str] = field(default_factory=list)  # sampling / batch / template
+    n_cpu_moe: int | None = None
+    kv_type: str = "f16"
+    no_mmap: bool = False
+    reasoning_budget: int | None = None
     note: str = ""
 
+    def base_cmd(self, fa: str, ctx: int, n_cpu_moe: int | None) -> list[str]:
+        cmd = [
+            str(LLAMA_SERVER),
+            "-m", str(self.path),
+            "--host", "127.0.0.1",
+            "-c", str(ctx),
+            "-ngl", "99",
+            "-fa", fa,
+            "-t", str(THREADS),
+            "-np", "1",                       # strict FIFO: single slot
+            "--no-webui", "--no-warmup",
+        ]
+        if n_cpu_moe is not None:
+            cmd += ["--n-cpu-moe", str(n_cpu_moe)]
+        if self.kv_type != "f16":
+            cmd += ["-ctk", self.kv_type, "-ctv", self.kv_type]
+        if self.no_mmap:
+            cmd += ["--no-mmap"]
+        if self.reasoning_budget is not None:
+            cmd += ["--reasoning-budget", str(self.reasoning_budget)]
+        cmd += self.extra
+        return cmd
 
+
+def inventory() -> list[ModelSpec]:
+    qwen_sampling = ["--jinja", "--temp", "0.6", "--top-p", "0.95",
+                     "--top-k", "20", "--min-p", "0", "-b", "2048", "-ub", "512"]
+    gemma_batch = ["-b", "2048", "-ub", "512"]
+    specs = [
+        ModelSpec(
+            "coder-1.5b-fim", "Coder Coder 1.5B (FIM / infill only)",
+            M / "coder-1.5b-fim" / "coder-1.5b-fim.gguf",
+            kind="fim", serve_ctx=8192,
+            note="FIM/infill endpoint only. MUST NOT appear in the chat picker."),
+        ModelSpec(
+            "fast-4b", "FamilyA 4B (Q8_0)",
+            M / "FamilyA" / "fast-4b" / "fast-4b.gguf",
+            kind="chat", serve_ctx=32768, kv_type="q8_0", no_mmap=True,
+            reasoning_budget=0, extra=list(qwen_sampling),
+            note="Tier 3. Owner runs reasoning disabled."),
+        ModelSpec(
+            "daily-9b", "FamilyA 9B (Q6_K)",
+            M / "FamilyA" / "daily-9b" / "daily-9b.gguf",
+            kind="chat", serve_ctx=32768, kv_type="q8_0", no_mmap=True,
+            extra=list(qwen_sampling),
+            note="Tier 2 daily driver. Fully in VRAM."),
+        ModelSpec(
+            "alt-4b",
+            "FamilyB 4B (alt finetune, Q8_0)",
+            M / "FamilyB" / "alt-4b"
+            / "alt-4b.gguf",
+            kind="chat", serve_ctx=32768,
+            extra=["--chat-template-file",
+                   str(M / "FamilyB" / "alt-4b" / "chat_template.jinja")],
+            note="Not stock Gemma. Owner runs c=225280; we serve less. "
+                 "Label as a finetune in the picker."),
+        ModelSpec(
+            "moe-26b", "FamilyB 26B QAT (Q4_0, MoE)",
+            M / "FamilyB" / "moe-26b" / "moe-26b.gguf",
+            kind="chat", serve_ctx=16384, n_cpu_moe=18, no_mmap=True,
+            extra=list(gemma_batch), note="MoE, expert offload. Owner n_cpu_moe=18."),
+        ModelSpec(
+            "moe-30b", "FamilyC Flash (Q4_K_M, MoE)",
+            M / "moe-30b" / "moe-30b.gguf",
+            kind="chat", serve_ctx=16384, n_cpu_moe=28, no_mmap=True,
+            extra=["--jinja", "--temp", "1.0", "--top-p", "0.95"],
+            note="MoE, expert offload. Owner n_cpu_moe=28 @ c=16384."),
+        ModelSpec(
+            "moe-35b", "FamilyA 35B (Q4_K_M, MoE)",
+            M / "moe-35b" / "moe-35b.gguf",
+            kind="chat", serve_ctx=16384, n_cpu_moe=28, no_mmap=True,
+            extra=list(qwen_sampling),
+            note="MoE, expert offload. Owner n_cpu_moe=28 @ c=32768/4-slot; "
+                 "tightest on system RAM (~22 GB weights, --no-mmap)."),
+    ]
+    missing = [s.key for s in specs if not s.path.exists()]
+    if missing:
+        print(f"WARNING missing GGUFs: {missing}")
+    return [s for s in specs if s.path.exists()]
+
+
+# --------------------------------------------------------------------------- #
+# result records
+# --------------------------------------------------------------------------- #
 @dataclass
 class RunResult:
+    label: str
     fa: str
-    n_gpu_layers: int
-    n_cpu_moe: int | None
-    cache_type_k: str
-    cache_type_v: str
     ctx: int
+    n_cpu_moe: int | None
+    kv_type: str
+    cmd: list[str] = field(default_factory=list)
     ok: bool = False
     fits: bool = False
     error: str = ""
     cold_load_s: float | None = None
-    warm_load_s: float | None = None
-    vram_used_mib: int | None = None            # nvidia-smi delta over baseline
-    vram_reported_mib: int | None = None        # summed CUDA0 buffers from server log
+    vram_used_mib: int | None = None
+    vram_free_after_load_mib: int | None = None
     pp_tok_s: float | None = None
     tg_tok_s: float | None = None
     gpu_idle_w: float | None = None
     gpu_gen_w_mean: float | None = None
     gpu_gen_w_max: float | None = None
     gpu_temp_max: float | None = None
+    ram_used_delta_mib: int | None = None
+    swap_used_mib: int | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -112,29 +203,35 @@ class RunResult:
 def nvidia_sample() -> dict:
     out = subprocess.run(
         ["nvidia-smi",
-         "--query-gpu=memory.used,memory.total,power.draw,temperature.gpu",
+         "--query-gpu=memory.used,memory.total,memory.free,power.draw,temperature.gpu",
          "--format=csv,noheader,nounits"],
         capture_output=True, text=True, check=True,
     ).stdout.strip().splitlines()[0]
-    used, total, power, temp = (x.strip() for x in out.split(","))
-    return {
-        "mem_used_mib": int(float(used)),
-        "mem_total_mib": int(float(total)),
-        "power_w": float(power),
-        "temp_c": float(temp),
-    }
+    used, total, free, power, temp = (x.strip() for x in out.split(","))
+    return {"mem_used_mib": int(float(used)), "mem_total_mib": int(float(total)),
+            "mem_free_mib": int(float(free)), "power_w": float(power),
+            "temp_c": float(temp)}
+
+
+def mem_sample() -> dict:
+    d = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        k, _, v = line.partition(":")
+        d[k] = int(v.strip().split()[0]) // 1024  # kB -> MiB
+    return {"mem_avail_mib": d.get("MemAvailable", 0),
+            "swap_used_mib": d.get("SwapTotal", 0) - d.get("SwapFree", 0),
+            "committed_mib": d.get("Committed_AS", 0)}
 
 
 def free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
+    p = s.getsockname()[1]
     s.close()
-    return port
+    return p
 
 
-def evict_page_cache(path: Path) -> bool:
-    """Drop this file from the page cache so the next load is genuinely cold."""
+def evict_page_cache(path: Path) -> None:
     try:
         subprocess.run(["sync"], check=True)
         fd = os.open(path, os.O_RDONLY)
@@ -142,10 +239,8 @@ def evict_page_cache(path: Path) -> bool:
             os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
         finally:
             os.close(fd)
-        return True
     except OSError as e:
-        print(f"    ! could not evict page cache: {e}")
-        return False
+        print(f"    ! page-cache evict failed ({e}); load time will read warm")
 
 
 class PowerSampler(threading.Thread):
@@ -171,104 +266,20 @@ class PowerSampler(threading.Thread):
         self.join(timeout=2)
 
 
-_LOG_PATTERNS = {
-    "cuda_buffers": re.compile(r"CUDA0.*?buffer size\s*=\s*([\d.]+)\s*MiB"),
-    "load_time_ms": re.compile(r"load time\s*=\s*([\d.]+)\s*ms"),
-    "n_layer": re.compile(r"n_layer\s*=\s*(\d+)"),
-}
-
-
-def parse_server_log(text: str) -> dict:
-    cuda = [float(x) for x in _LOG_PATTERNS["cuda_buffers"].findall(text)]
-    out: dict = {}
-    if cuda:
-        out["vram_reported_mib"] = int(sum(cuda))
-    m = _LOG_PATTERNS["load_time_ms"].search(text)
-    if m:
-        out["load_time_ms"] = float(m.group(1))
-    return out
-
-
-def http_json(url: str, payload: dict | None = None, timeout: float = 600) -> dict:
+def http_json(url: str, payload: dict | None = None, timeout: float = 900) -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
-        url, data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST" if data else "GET",
-    )
+        url, data=data, method="POST" if data else "GET",
+        headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
-# --------------------------------------------------------------------------- #
-# one llama-server run
-# --------------------------------------------------------------------------- #
-def run_config(spec: ModelSpec, cfg: RunResult, baseline_mib: int,
-               idle_w: float) -> RunResult:
-    port = free_port()
-    log_path = LOG_DIR / f"{spec.key}_fa-{cfg.fa}_ncmoe-{cfg.n_cpu_moe}.log"
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    cmd = [
-        str(LLAMA_SERVER),
-        "-m", str(spec.path),
-        "--host", "127.0.0.1", "--port", str(port),
-        "-c", str(cfg.ctx),
-        "-ngl", str(cfg.n_gpu_layers),
-        "-fa", cfg.fa,
-        "-ctk", cfg.cache_type_k, "-ctv", cfg.cache_type_v,
-        "-t", str(THREADS),
-        "-np", "1",              # strict FIFO: one slot, KV cache = 1 * ctx
-        "--no-webui", "--no-warmup",
-    ]
-    if cfg.n_cpu_moe is not None:
-        cmd += ["--n-cpu-moe", str(cfg.n_cpu_moe)]
-
-    cfg.gpu_idle_w = idle_w
-    evict_page_cache(spec.path)
-
-    logf = log_path.open("w")
-    logf.write("+ " + " ".join(cmd) + "\n\n")
-    logf.flush()
-    t0 = time.monotonic()
-    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
-                            preexec_fn=os.setsid)
-
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        ready = _wait_healthy(proc, base_url, HEALTH_TIMEOUT_S)
-        if ready is not True:
-            cfg.error = ready or "server exited before ready"
-            return cfg
-        cfg.cold_load_s = round(time.monotonic() - t0, 2)
-
-        time.sleep(1.0)
-        smp = nvidia_sample()
-        cfg.vram_used_mib = smp["mem_used_mib"] - baseline_mib
-        cfg.fits = smp["mem_used_mib"] <= VRAM_TOTAL_MIB - VRAM_HEADROOM_MIB
-
-        _bench_throughput(spec, base_url, cfg)
-        cfg.ok = cfg.pp_tok_s is not None and cfg.tg_tok_s is not None
-    except Exception as e:  # noqa: BLE001
-        cfg.error = f"{type(e).__name__}: {e}"
-    finally:
-        _kill(proc)
-        logf.close()
-        try:
-            cfg2 = parse_server_log(log_path.read_text(errors="replace"))
-            cfg.vram_reported_mib = cfg2.get("vram_reported_mib")
-        except OSError:
-            pass
-        _wait_vram_free(baseline_mib)
-
-    return cfg
-
-
-def _wait_healthy(proc, base_url: str, timeout: float):
+def _wait_healthy(proc, base_url, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            return f"exit code {proc.returncode} (see log)"
+            return f"exited rc={proc.returncode} before healthy (see log)"
         try:
             with urllib.request.urlopen(base_url + "/health", timeout=3) as r:
                 if r.status == 200:
@@ -279,56 +290,12 @@ def _wait_healthy(proc, base_url: str, timeout: float):
     return f"not healthy within {timeout:.0f}s"
 
 
-def _bench_throughput(spec: ModelSpec, base_url: str, cfg: RunResult) -> None:
-    # warmup
-    endpoint = "/v1/completions" if spec.kind == "fim" else "/v1/chat/completions"
-
-    def one(prompt: str) -> dict:
-        if spec.kind == "fim":
-            body = {"prompt": prompt, "n_predict": GEN_TOKENS,
-                    "temperature": 0, "cache_prompt": False}
-        else:
-            body = {"messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": GEN_TOKENS, "temperature": 0,
-                    "stream": False, "cache_prompt": False}
-        return http_json(base_url + endpoint, body)
-
-    try:
-        one("Say hello.")
-    except Exception as e:  # noqa: BLE001
-        cfg.error = f"warmup failed: {e}"
-        return
-
-    pp, tg = [], []
-    sampler = PowerSampler()
-    sampler.start()
-    for i in range(BENCH_REPS):
-        # perturb the prompt so nothing is cached
-        r = one(f"[{i}] {BENCH_PROMPT}\n\nSummarise the paragraph above.")
-        tm = r.get("timings") or {}
-        if "prompt_per_second" in tm:
-            pp.append(tm["prompt_per_second"])
-        if "predicted_per_second" in tm:
-            tg.append(tm["predicted_per_second"])
-    sampler.stop()
-
-    if pp:
-        cfg.pp_tok_s = round(statistics.median(pp), 1)
-    if tg:
-        cfg.tg_tok_s = round(statistics.median(tg), 1)
-    if sampler.power:
-        cfg.gpu_gen_w_mean = round(statistics.mean(sampler.power), 1)
-        cfg.gpu_gen_w_max = round(max(sampler.power), 1)
-    if sampler.temp:
-        cfg.gpu_temp_max = round(max(sampler.temp), 1)
-
-
-def _kill(proc) -> None:
+def _kill(proc):
     if proc.poll() is not None:
         return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=15)
+        proc.wait(timeout=20)
     except (ProcessLookupError, subprocess.TimeoutExpired):
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -336,7 +303,7 @@ def _kill(proc) -> None:
             pass
 
 
-def _wait_vram_free(baseline_mib: int, timeout: float = 30) -> None:
+def _wait_vram_free(baseline_mib, timeout=45):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if nvidia_sample()["mem_used_mib"] <= baseline_mib + 300:
@@ -345,175 +312,195 @@ def _wait_vram_free(baseline_mib: int, timeout: float = 30) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# per-model plan
+# one run
 # --------------------------------------------------------------------------- #
-def plan_configs(spec: ModelSpec, meta: dict) -> list[RunResult]:
-    n_layer = meta["n_layer"] or 48
-    is_moe = meta["is_moe"]
-    ctx = HEAVY_CTX if is_moe else CHAT_CTX
-    # Tight-fit models get q8_0 KV; roomy small ones keep f16 for quality.
-    tight = is_moe or meta.get("_est_weights_gb", 0) > 6
-    ctk = ctv = "q8_0" if tight else "f16"
+def run_once(spec: ModelSpec, r: RunResult, vram_base: int, ram_base: int,
+             idle_w: float) -> RunResult:
+    port = free_port()
+    cmd = spec.base_cmd(r.fa, r.ctx, r.n_cpu_moe) + ["--port", str(port)]
+    r.cmd = cmd
+    r.gpu_idle_w = idle_w
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"{spec.key}__{r.label}.log"
 
-    configs: list[RunResult] = []
-    if is_moe:
-        # All non-expert weights on GPU (-ngl 999); sweep how many layers' worth
-        # of experts to keep in system RAM. Higher n_cpu_moe = less VRAM, slower.
-        for frac in (1.0, 0.8, 0.65, 0.5, 0.4, 0.3):
-            n = max(1, min(n_layer, round(n_layer * frac)))
-            configs.append(RunResult(
-                fa="off", n_gpu_layers=999, n_cpu_moe=n,
-                cache_type_k=ctk, cache_type_v=ctv, ctx=ctx))
-        # de-dupe n values, keep order
-        seen, uniq = set(), []
-        for c in configs:
-            if c.n_cpu_moe not in seen:
-                seen.add(c.n_cpu_moe)
-                uniq.append(c)
-        return uniq
-    else:
-        # Dense: try full offload first, then partial if it won't fit.
-        for ngl in (999, n_layer - 8, n_layer - 16, n_layer // 2):
-            if ngl <= 0:
-                continue
-            configs.append(RunResult(
-                fa="off", n_gpu_layers=ngl, n_cpu_moe=None,
-                cache_type_k=ctk, cache_type_v=ctv, ctx=ctx))
-        return configs
+    evict_page_cache(spec.path)
+    logf = log_path.open("w")
+    logf.write("+ " + " ".join(shlex.quote(c) for c in cmd) + "\n\n")
+    logf.flush()
+
+    t0 = time.monotonic()
+    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                            preexec_fn=os.setsid)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        ready = _wait_healthy(proc, base_url, HEALTH_TIMEOUT_S)
+        if ready is not True:
+            r.error = ready
+            return r
+        r.cold_load_s = round(time.monotonic() - t0, 2)
+        time.sleep(1.5)
+
+        g = nvidia_sample()
+        m = mem_sample()
+        r.vram_used_mib = g["mem_used_mib"] - vram_base
+        r.vram_free_after_load_mib = g["mem_free_mib"]
+        r.ram_used_delta_mib = ram_base - m["mem_avail_mib"]
+        r.swap_used_mib = m["swap_used_mib"]
+        r.fits = g["mem_free_mib"] >= VRAM_HEADROOM_MIB
+
+        _bench(spec, base_url, r)
+        r.ok = r.pp_tok_s is not None and r.tg_tok_s is not None
+    except Exception as e:  # noqa: BLE001
+        r.error = f"{type(e).__name__}: {e}"
+    finally:
+        _kill(proc)
+        logf.close()
+        _wait_vram_free(vram_base)
+    return r
 
 
-def bench_model(spec: ModelSpec, baseline_mib: int, idle_w: float) -> dict:
+def _bench(spec: ModelSpec, base_url: str, r: RunResult) -> None:
+    endpoint = "/v1/completions" if spec.kind == "fim" else "/v1/chat/completions"
+
+    def one(text: str) -> dict:
+        if spec.kind == "fim":
+            body = {"prompt": text, "n_predict": GEN_TOKENS, "temperature": 0,
+                    "cache_prompt": False}
+        else:
+            body = {"messages": [{"role": "user", "content": text}],
+                    "max_tokens": GEN_TOKENS, "temperature": 0, "stream": False,
+                    "cache_prompt": False}
+        return http_json(base_url + endpoint, body)
+
+    try:
+        one("Reply with the single word: ready.")
+    except Exception as e:  # noqa: BLE001
+        r.error = f"warmup request failed: {e}"
+        return
+
+    pp, tg = [], []
+    sampler = PowerSampler()
+    sampler.start()
+    for i in range(BENCH_REPS):
+        try:
+            resp = one(f"[{i}] {BENCH_PROMPT}\n\nSummarise the paragraph above "
+                       f"in two sentences.")
+        except Exception as e:  # noqa: BLE001
+            r.error = f"bench request {i} failed: {e}"
+            break
+        tm = resp.get("timings") or {}
+        if "prompt_per_second" in tm:
+            pp.append(tm["prompt_per_second"])
+        if "predicted_per_second" in tm:
+            tg.append(tm["predicted_per_second"])
+    sampler.stop()
+
+    if pp:
+        r.pp_tok_s = round(statistics.median(pp), 1)
+    if tg:
+        r.tg_tok_s = round(statistics.median(tg), 1)
+    if sampler.power:
+        r.gpu_gen_w_mean = round(statistics.mean(sampler.power), 1)
+        r.gpu_gen_w_max = round(max(sampler.power), 1)
+    if sampler.temp:
+        r.gpu_temp_max = round(max(sampler.temp), 1)
+
+
+# --------------------------------------------------------------------------- #
+# per-model plan: primary (owner config, fa=on) + fa=off + fit fallbacks
+# --------------------------------------------------------------------------- #
+def plan(spec: ModelSpec) -> list[RunResult]:
+    runs = [RunResult(label="primary_fa-on", fa="on", ctx=spec.serve_ctx,
+                      n_cpu_moe=spec.n_cpu_moe, kv_type=spec.kv_type)]
+    return runs
+
+
+def fit_fallbacks(spec: ModelSpec, failed: RunResult) -> list[RunResult]:
+    out = []
+    if spec.n_cpu_moe is not None:
+        out.append(RunResult(label=f"ncmoe-{spec.n_cpu_moe + 6}_fa-on", fa="on",
+                             ctx=spec.serve_ctx, n_cpu_moe=spec.n_cpu_moe + 6,
+                             kv_type="q8_0"))
+    if spec.serve_ctx > 8192:
+        out.append(RunResult(label="ctx-8192_fa-on", fa="on", ctx=8192,
+                             n_cpu_moe=(spec.n_cpu_moe + 6) if spec.n_cpu_moe
+                             else None, kv_type="q8_0"))
+    return out
+
+
+def bench_model(spec: ModelSpec, vram_base, ram_base, idle_w, do_fa_off) -> dict:
     meta = gguf_summarize(spec.path)
-    meta["_est_weights_gb"] = round(spec.path.stat().st_size / 1e9, 2)
+    size_gb = round(spec.path.stat().st_size / 1e9, 2)
     print(f"\n=== {spec.key} :: {spec.display} ===")
     print(f"    arch={meta['architecture']} layers={meta['n_layer']} "
-          f"moe={meta['is_moe']} size={meta['_est_weights_gb']}GB")
+          f"moe={meta['is_moe']} size={size_gb}GB serve_ctx={spec.serve_ctx} "
+          f"n_cpu_moe={spec.n_cpu_moe} kv={spec.kv_type}")
 
-    planned = plan_configs(spec, meta)
     runs: list[RunResult] = []
+    primary = run_once(spec, plan(spec)[0], vram_base, ram_base, idle_w)
+    runs.append(primary)
+    _report(primary)
 
-    # Phase A: sweep the primary axis with fa=off.
-    best: RunResult | None = None
-    for cfg in planned:
-        print(f"    -> fa=off ngl={cfg.n_gpu_layers} "
-              f"n_cpu_moe={cfg.n_cpu_moe} kv={cfg.cache_type_k}")
-        res = run_config(spec, cfg, baseline_mib, idle_w)
+    working = primary if (primary.ok and primary.fits) else None
+
+    if working is None:
+        for fb in fit_fallbacks(spec, primary):
+            print(f"    fallback: {fb.label}")
+            res = run_once(spec, fb, vram_base, ram_base, idle_w)
+            runs.append(res)
+            _report(res)
+            if res.ok and res.fits:
+                working = res
+                break
+
+    if working is not None and do_fa_off:
+        off = RunResult(label="fa-off", fa="off", ctx=working.ctx,
+                        n_cpu_moe=working.n_cpu_moe, kv_type=working.kv_type)
+        print("    comparison: fa=off")
+        res = run_once(spec, off, vram_base, ram_base, idle_w)
         runs.append(res)
         _report(res)
-        if res.ok and res.fits:
-            best = res
-            break  # first config that both loads and fits is our pick
-        if res.error and "exit code" in res.error and cfg.n_cpu_moe is None:
-            continue  # OOM on dense -> try next smaller ngl
+        # keep whichever generates faster as the recommendation
+        if res.ok and res.fits and res.tg_tok_s and working.tg_tok_s \
+                and res.tg_tok_s > working.tg_tok_s * 1.03:
+            working = res
 
-    # Phase B: at the winning split, does fa=on help on Pascal?
-    if best is not None:
-        fa_on = RunResult(
-            fa="on", n_gpu_layers=best.n_gpu_layers, n_cpu_moe=best.n_cpu_moe,
-            cache_type_k=best.cache_type_k, cache_type_v=best.cache_type_v,
-            ctx=best.ctx)
-        print(f"    -> fa=on  ngl={fa_on.n_gpu_layers} n_cpu_moe={fa_on.n_cpu_moe}")
-        res = run_config(spec, fa_on, baseline_mib, idle_w)
-        runs.append(res)
-        _report(res)
-        if res.ok and res.fits and res.tg_tok_s and best.tg_tok_s:
-            if res.tg_tok_s >= best.tg_tok_s:
-                best = res
-
-    recommended = None
-    if best is not None:
-        recommended = {
-            "fa": best.fa,
-            "n_gpu_layers": best.n_gpu_layers,
-            "n_cpu_moe": best.n_cpu_moe,
-            "cache_type_k": best.cache_type_k,
-            "cache_type_v": best.cache_type_v,
-            "ctx": best.ctx,
-            "cold_load_s": best.cold_load_s,
-            "pp_tok_s": best.pp_tok_s,
-            "tg_tok_s": best.tg_tok_s,
-            "vram_used_mib": best.vram_used_mib,
+    rec = None
+    if working is not None:
+        rec = {
+            "fa": working.fa, "ctx": working.ctx, "n_cpu_moe": working.n_cpu_moe,
+            "kv_type": working.kv_type, "cold_load_s": working.cold_load_s,
+            "pp_tok_s": working.pp_tok_s, "tg_tok_s": working.tg_tok_s,
+            "vram_used_mib": working.vram_used_mib,
+            "vram_free_after_load_mib": working.vram_free_after_load_mib,
+            "ram_used_delta_mib": working.ram_used_delta_mib,
+            "swap_used_mib": working.swap_used_mib,
+            "gpu_gen_w_mean": working.gpu_gen_w_mean,
+            "cmd": working.cmd,
         }
 
     return {
-        "key": spec.key,
-        "display": spec.display,
-        "path": str(spec.path),
-        "kind": spec.kind,
-        "note": spec.note,
+        "key": spec.key, "display": spec.display, "path": str(spec.path),
+        "kind": spec.kind, "note": spec.note, "size_gb": size_gb,
+        "reasoning_budget": spec.reasoning_budget,
         "meta": {k: v for k, v in meta.items() if not k.startswith("_")},
-        "size_gb": meta["_est_weights_gb"],
-        "runs": [vars(r) for r in runs],
-        "recommended": recommended,
-        "usable": recommended is not None,
+        "runs": [vars(x) for x in runs],
+        "recommended": rec, "usable": rec is not None,
     }
 
 
 def _report(r: RunResult) -> None:
     if r.error:
-        print(f"       FAIL: {r.error}")
+        print(f"       FAIL [{r.label}]: {r.error}")
         return
-    print(f"       load={r.cold_load_s}s vram={r.vram_used_mib}MiB "
-          f"fits={r.fits} pp={r.pp_tok_s} tg={r.tg_tok_s} tok/s "
-          f"gpu_w={r.gpu_gen_w_mean}")
+    print(f"       [{r.label}] load={r.cold_load_s}s vram={r.vram_used_mib}MiB "
+          f"free={r.vram_free_after_load_mib}MiB fits={r.fits} "
+          f"ram+={r.ram_used_delta_mib}MiB swap={r.swap_used_mib}MiB "
+          f"pp={r.pp_tok_s} tg={r.tg_tok_s} t/s gpuW={r.gpu_gen_w_mean}")
 
 
 # --------------------------------------------------------------------------- #
-# model inventory
-# --------------------------------------------------------------------------- #
-def discover_models() -> list[ModelSpec]:
-    m = MODELS_DIR
-    specs = [
-        ModelSpec("coder-1.5b-fim",
-                  "Coder Coder 1.5B (FIM / infill only)",
-                  m / "coder-1.5b-fim" / "coder-1.5b-fim.gguf",
-                  kind="fim",
-                  note="FIM/infill endpoint only. Must NOT appear in the chat picker."),
-        ModelSpec("fast-4b",
-                  "FamilyA 4B (Q8_0)",
-                  m / "FamilyA" / "fast-4b" / "fast-4b.gguf",
-                  kind="chat"),
-        ModelSpec("daily-9b",
-                  "FamilyA 9B (Q6_K)",
-                  m / "FamilyA" / "daily-9b" / "daily-9b.gguf",
-                  kind="chat"),
-        ModelSpec("alt-4b",
-                  "FamilyB 4B (alt finetune, Q8_0)",
-                  m / "FamilyB" / "alt-4b"
-                  / "alt-4b.gguf",
-                  kind="chat",
-                  note="Not stock Gemma. Label clearly in the picker."),
-        ModelSpec("moe-26b",
-                  "FamilyB 26B QAT (Q4_0, MoE)",
-                  m / "FamilyB" / "moe-26b"
-                  / "moe-26b.gguf",
-                  kind="chat", note="MoE, CPU expert offload."),
-        ModelSpec("moe-30b",
-                  "FamilyC Flash (Q4_K_M, MoE)",
-                  m / "moe-30b" / "moe-30b.gguf",
-                  kind="chat", note="MoE, CPU expert offload."),
-        ModelSpec("moe-35b",
-                  "FamilyA 35B (Q4_K_M, MoE)",
-                  m / "moe-35b"
-                  / "moe-35b.gguf",
-                  kind="chat", note="MoE, CPU expert offload. Tightest on RAM."),
-    ]
-    missing = [s.key for s in specs if not s.path.exists()]
-    if missing:
-        print(f"WARNING: missing GGUFs: {missing}")
-    return [s for s in specs if s.path.exists()]
-
-
-# --------------------------------------------------------------------------- #
-# main
-# --------------------------------------------------------------------------- #
-def load_existing() -> dict:
-    if OUT_PATH.exists():
-        return json.loads(OUT_PATH.read_text())
-    return {}
-
-
-def git_commit(short: str) -> str:
+def git_commit() -> str:
     try:
         return subprocess.run(
             ["git", "-C", str(LLAMA_CPP_DIR), "rev-parse", "--short", "HEAD"],
@@ -522,20 +509,24 @@ def git_commit(short: str) -> str:
         return "unknown"
 
 
+def load_existing() -> dict:
+    return json.loads(OUT_PATH.read_text()) if OUT_PATH.exists() else {}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--only", action="append", default=[],
-                    help="model key(s) to run; repeatable")
+    ap.add_argument("--only", action="append", default=[])
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--fresh", action="store_true",
-                    help="ignore and overwrite existing results")
+    ap.add_argument("--fresh", action="store_true")
+    ap.add_argument("--no-fa-off", action="store_true",
+                    help="skip the fa=off comparison run")
     args = ap.parse_args()
 
     if not LLAMA_SERVER.exists():
         print(f"llama-server not found at {LLAMA_SERVER}")
         return 1
 
-    specs = discover_models()
+    specs = inventory()
     if args.only:
         specs = [s for s in specs if s.key in args.only]
         if not specs:
@@ -544,81 +535,79 @@ def main() -> int:
 
     if args.dry_run:
         for s in specs:
-            meta = gguf_summarize(s.path)
-            print(f"{s.key:28} {s.kind:5} moe={meta['is_moe']!s:5} "
-                  f"layers={meta['n_layer']} :: {s.display}")
-            for c in plan_configs(s, meta):
-                print(f"    fa={c.fa} ngl={c.n_gpu_layers} "
-                      f"n_cpu_moe={c.n_cpu_moe} kv={c.cache_type_k} ctx={c.ctx}")
+            print(f"\n{s.key}  ({s.kind}, serve_ctx={s.serve_ctx})")
+            print("  " + " ".join(shlex.quote(c) for c in
+                                  s.base_cmd("on", s.serve_ctx, s.n_cpu_moe)
+                                  + ["--port", "PORT"]))
         return 0
 
     results = {} if args.fresh else load_existing()
     if "models" not in results:
         base = nvidia_sample()
+        mbase = mem_sample()
         results = {
-            "schema": 1,
+            "schema": 2,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "host": socket.gethostname(),
-            "llama_cpp_commit": git_commit("HEAD"),
+            "llama_cpp_commit": git_commit(),
             "force_mmq": True,
-            "gpu": {
-                "name": "NVIDIA GeForce GTX 1080 Ti",
-                "vram_total_mib": base["mem_total_mib"],
-                "vram_baseline_mib": base["mem_used_mib"],
-                "note": "baseline = desktop (Xorg + compositor) before any model load",
-            },
-            "bench_params": {
-                "chat_ctx": CHAT_CTX, "heavy_ctx": HEAVY_CTX,
-                "gen_tokens": GEN_TOKENS, "reps": BENCH_REPS, "threads": THREADS,
-            },
-            "system_power_note": (
-                "GPU watts are nvidia-smi power.draw. Whole-system idle/load "
-                "watts are NOT measured here -- set IDLE_WATTS / LOAD_WATTS in "
-                ".env from a wall meter if available."
-            ),
+            "gpu": {"name": "NVIDIA GeForce GTX 1080 Ti",
+                    "vram_total_mib": base["mem_total_mib"],
+                    "vram_baseline_mib": base["mem_used_mib"],
+                    "note": "baseline = desktop before any model load"},
+            "system": {"ram_avail_baseline_mib": mbase["mem_avail_mib"],
+                       "note": "measured with the owner's normal desktop apps running"},
+            "bench_params": {"gen_tokens": GEN_TOKENS, "reps": BENCH_REPS,
+                             "threads": THREADS, "np": 1},
+            "power_note": ("GPU watts are nvidia-smi power.draw only. Whole-system "
+                           "idle/load watts must be set in .env from a wall meter."),
             "models": {},
         }
 
-    baseline_mib = results["gpu"]["vram_baseline_mib"]
+    vram_base = results["gpu"]["vram_baseline_mib"]
+    ram_base = results["system"]["ram_avail_baseline_mib"]
     idle = nvidia_sample()
-    print(f"GPU baseline: {baseline_mib} MiB used, {idle['power_w']} W idle")
+    print(f"baseline: VRAM {vram_base} MiB used, {idle['power_w']} W idle; "
+          f"RAM {ram_base} MiB available")
 
     for spec in specs:
-        if not args.fresh and spec.key in results["models"] \
-                and results["models"][spec.key].get("runs"):
-            print(f"skip {spec.key} (already done; use --fresh to redo)")
+        done = results["models"].get(spec.key, {})
+        if not args.fresh and done.get("runs"):
+            print(f"skip {spec.key} (done; --fresh to redo)")
             continue
         try:
-            results["models"][spec.key] = bench_model(spec, baseline_mib,
-                                                      idle["power_w"])
+            results["models"][spec.key] = bench_model(
+                spec, vram_base, ram_base, idle["power_w"], not args.no_fa_off)
         except KeyboardInterrupt:
             print("\ninterrupted; writing partial results")
+            OUT_PATH.write_text(json.dumps(results, indent=2, default=str))
             break
         except Exception as e:  # noqa: BLE001
-            print(f"  model {spec.key} errored: {e}")
+            print(f"  {spec.key} errored: {e}")
             results["models"][spec.key] = {"key": spec.key, "error": str(e)}
         OUT_PATH.write_text(json.dumps(results, indent=2, default=str))
-        print(f"  wrote {OUT_PATH}")
+        print(f"  -> wrote {OUT_PATH}")
 
     OUT_PATH.write_text(json.dumps(results, indent=2, default=str))
-    print(f"\nDONE -> {OUT_PATH}")
-    _print_summary(results)
+    _summary(results)
     return 0
 
 
-def _print_summary(results: dict) -> None:
-    print("\n" + "=" * 72)
-    print(f"{'model':30} {'usable':6} {'load s':7} {'pp t/s':7} {'tg t/s':7} "
-          f"{'vram MiB':9} {'fa':3}")
-    print("-" * 72)
-    for key, m in results.get("models", {}).items():
+def _summary(results: dict) -> None:
+    print("\n" + "=" * 78)
+    print(f"{'model':24}{'ok':4}{'load s':8}{'pp t/s':9}{'tg t/s':8}"
+          f"{'vram MiB':10}{'ram+ MiB':10}{'fa':4}")
+    print("-" * 78)
+    for k, m in results.get("models", {}).items():
         rec = m.get("recommended")
         if not rec:
-            print(f"{key:30} {'NO':6} {m.get('error', 'no working config')}")
+            print(f"{k:24}NO   {m.get('error', 'no config fit')}")
             continue
-        print(f"{key:30} {'yes':6} {rec['cold_load_s']!s:7} "
-              f"{rec['pp_tok_s']!s:7} {rec['tg_tok_s']!s:7} "
-              f"{rec['vram_used_mib']!s:9} {rec['fa']:3}")
+        print(f"{k:24}{'y':4}{str(rec['cold_load_s']):8}"
+              f"{str(rec['pp_tok_s']):9}{str(rec['tg_tok_s']):8}"
+              f"{str(rec['vram_used_mib']):10}{str(rec['ram_used_delta_mib']):10}"
+              f"{rec['fa']:4}")
+    print("\nnext: review these numbers + the proposed credit limits before Phase 1")
 
 
 if __name__ == "__main__":
