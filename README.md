@@ -15,8 +15,8 @@ See [docs/SPEC.md](docs/SPEC.md) for the full design brief.
 | 2 | Backend — FastAPI, FIFO queue worker, SSE proxy, cancellation, SQLite | **done** (`llamacracy/`) |
 | 3 | Metering — credits, session/weekly limits, cost model, tests | **done** (`metering.py`, 28 tests) |
 | 4 | Frontend — chat UI, model picker, live queue, usage page | **done** (`static/`) |
-| 5 | Admin dashboard | next |
-| 6 | Deployment — systemd units, oauth2-proxy, NetBird binding | not started |
+| 5 | Admin dashboard | **done** (`admin.py`) |
+| 6 | Deployment — systemd units, oauth2-proxy, NetBird binding | next |
 
 ## Hardware
 

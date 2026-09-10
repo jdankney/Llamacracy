@@ -369,12 +369,13 @@ class QueueManager:
     async def _persist_job(self, job: Job) -> None:
         await self.db.execute(
             "INSERT INTO jobs (id, user_id, conversation_id, session_id, model_id, state, lane, "
-            "  queued_at, load_started_at, gen_started_at, finished_at, load_seconds, "
+            "  queued_at, picked_at, load_started_at, gen_started_at, finished_at, load_seconds, "
             "  gen_seconds, occupancy_seconds, credits, cost_usd, rate_used, gpu_watts_mean, "
             "  prompt_tokens, completion_tokens, usage_estimated, cold_start, error) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET "
-            "  state=excluded.state, load_started_at=excluded.load_started_at, "
+            "  state=excluded.state, picked_at=excluded.picked_at, "
+            "  load_started_at=excluded.load_started_at, "
             "  gen_started_at=excluded.gen_started_at, finished_at=excluded.finished_at, "
             "  load_seconds=excluded.load_seconds, gen_seconds=excluded.gen_seconds, "
             "  occupancy_seconds=excluded.occupancy_seconds, credits=excluded.credits, "
@@ -385,7 +386,7 @@ class QueueManager:
             "  error=excluded.error",
             (job.id, job.user_id, job.conversation_id, job.session_id, job.model_id,
              job.state.value,
-             job.lane, job.queued_at, job.load_started_at, job.gen_started_at,
+             job.lane, job.queued_at, job.picked_at, job.load_started_at, job.gen_started_at,
              job.finished_at, job.load_seconds, job.gen_seconds, job.occupancy_seconds,
              job.credits, job.cost_usd, job.rate_used, job.gpu_watts_mean, job.prompt_tokens,
              job.completion_tokens, int(job.usage_estimated), int(job.cold_start),

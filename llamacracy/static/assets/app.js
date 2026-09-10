@@ -83,9 +83,9 @@ function connectQueue() {
 
 /* --------------------------------------------------------------- rendering */
 function render() {
+  const main = S.view === 'usage' ? usageView() : S.view === 'admin' ? adminView() : chatView();
   $app.replaceChildren(topbar(), h('div', { class: 'flex-1 flex min-h-0' },
-    sidebar(),
-    S.view === 'usage' ? usageView() : chatView(),
+    S.view === 'admin' ? null : sidebar(), main,
   ), queuePanel());
   if (S.view === 'chat') { const ta = $app.querySelector('#composer'); if (ta) ta.focus(); scrollThread(); }
 }
@@ -102,6 +102,10 @@ function topbar() {
       class: 'text-sm px-2 py-1 rounded ' + (S.view === 'usage' ? 'bg-panel2 text-accent' : 'text-zinc-400 hover:text-zinc-200'),
       onclick: () => { S.view = S.view === 'usage' ? 'chat' : 'usage'; if (S.view === 'usage') loadUsage(); render(); },
     }, 'Usage'),
+    S.me?.is_admin ? h('button', {
+      class: 'text-sm px-2 py-1 rounded ' + (S.view === 'admin' ? 'bg-panel2 text-accent' : 'text-zinc-400 hover:text-zinc-200'),
+      onclick: () => { S.view = S.view === 'admin' ? 'chat' : 'admin'; if (S.view === 'admin') loadAdmin(); render(); },
+    }, 'Admin') : null,
     h('span', { class: 'text-sm text-zinc-500 hidden sm:block' }, S.me?.display_name || ''),
   );
 }
@@ -362,6 +366,164 @@ async function cancelActive() {
   if (S.active?.jobId) { try { await api.post(`/api/jobs/${S.active.jobId}/cancel`); } catch {} }
   if (aborter) aborter.abort();
   S.active = null; render();
+}
+
+/* ------------------------------------------------------------------ admin */
+S.admin = { tab: 'live', live: null, users: null, usage: null, impact: null, billing: null };
+async function loadAdmin() {
+  const t = S.admin.tab;
+  try {
+    if (t === 'live') S.admin.live = await api.get('/api/admin/live');
+    if (t === 'users' || t === 'controls') S.admin.users = (await api.get('/api/admin/users')).users;
+    if (t === 'usage') S.admin.usage = await api.get('/api/admin/usage');
+    if (t === 'impact') S.admin.impact = (await api.get('/api/admin/queue-impact')).impact;
+    if (t === 'billing') S.admin.billing = await api.get('/api/admin/billing');
+  } catch (e) { flashError(e.message); }
+  render();
+}
+function adminView() {
+  const tabs = [['live', 'Live'], ['users', 'Users'], ['usage', 'Usage'], ['impact', 'Queue impact'], ['billing', 'Billing'], ['controls', 'Controls']];
+  return h('main', { class: 'flex-1 overflow-y-auto' },
+    h('div', { class: 'flex gap-1 border-b border-line px-4 sticky top-0 bg-ink z-10' },
+      tabs.map(([k, l]) => h('button', {
+        class: 'px-3 py-2 text-sm border-b-2 ' + (S.admin.tab === k ? 'border-accent text-accent' : 'border-transparent text-zinc-400'),
+        onclick: () => { S.admin.tab = k; loadAdmin(); },
+      }, l))),
+    h('div', { class: 'p-4' }, adminBody()));
+}
+function adminBody() {
+  const a = S.admin;
+  if (a.tab === 'live') return adminLive(a.live);
+  if (a.tab === 'users') return adminUsers(a.users, false);
+  if (a.tab === 'controls') return adminUsers(a.users, true);
+  if (a.tab === 'usage') return adminUsage(a.usage);
+  if (a.tab === 'impact') return adminImpact(a.impact);
+  if (a.tab === 'billing') return adminBilling(a.billing);
+}
+function card(title, ...kids) {
+  return h('div', { class: 'bg-panel border border-line rounded-lg p-4' },
+    h('div', { class: 'text-xs text-zinc-500 mb-2' }, title), ...kids);
+}
+function table(cols, rows) {
+  return h('div', { class: 'bg-panel border border-line rounded-lg overflow-x-auto' },
+    h('table', { class: 'w-full text-sm' },
+      h('thead', { class: 'text-zinc-500 text-xs' }, h('tr', {},
+        cols.map(c => h('th', { class: 'text-left font-normal px-3 py-2' }, c.label)))),
+      h('tbody', {}, rows.map(r => h('tr', { class: 'border-t border-line ' + (r._hl ? 'bg-danger/10' : '') },
+        cols.map(c => h('td', { class: 'px-3 py-2 ' + (c.mono ? 'font-mono' : '') }, c.get(r))))))));
+}
+
+function adminLive(d) {
+  if (!d) return 'loading…';
+  const g = d.gpu;
+  return h('div', { class: 'space-y-4' },
+    h('div', { class: 'grid sm:grid-cols-4 gap-3' },
+      card('Loaded model', h('div', { class: 'text-lg' }, d.loaded_model || 'idle')),
+      card('VRAM', g.available ? h('div', { class: 'text-lg font-mono' }, `${(g.vram_used_mib / 1024).toFixed(1)} / ${(g.vram_total_mib / 1024).toFixed(1)} GB`) : 'n/a'),
+      card('GPU temp / power', g.available ? h('div', { class: 'text-lg font-mono' }, `${g.temp_c}°C · ${g.power_w}W`) : 'n/a'),
+      card('GPU util', g.available ? h('div', { class: 'text-lg font-mono' }, `${g.util_pct}%`) : 'n/a')),
+    card('Queue (' + d.queue.depth + ')', d.queue.jobs.length ? table(
+      [{ label: '#', get: r => r.position, mono: 1 }, { label: 'Owner', get: r => r.owner },
+       { label: 'Model', get: r => modelName(r.model) }, { label: 'State', get: r => r.state },
+       { label: '', get: r => h('button', { class: 'text-danger text-xs', onclick: () => adminPost(`/api/admin/jobs/${r.id}/kill`) }, 'kill') }],
+      d.queue.jobs) : h('div', { class: 'text-zinc-600 text-sm' }, 'empty')),
+    card('Active sessions', table(
+      [{ label: 'User', get: r => r.email }, { label: 'Credits', get: r => credits(r.credits_used), mono: 1 },
+       { label: 'Started', get: r => new Date(r.started_at * 1000).toLocaleTimeString() },
+       { label: 'Expires', get: r => untilStr(r.expires_at) }],
+      d.active_sessions)),
+    h('button', { class: 'text-sm bg-panel2 border border-line rounded px-3 py-1.5 text-warn', onclick: () => adminPost('/api/admin/unload') }, 'Force-unload current model'));
+}
+
+function adminUsers(rows, controls) {
+  if (!rows) return 'loading…';
+  const cols = [
+    { label: 'User', get: r => r.email + (r.is_admin ? ' ★' : '') },
+    { label: 'Session %', mono: 1, get: r => r.session.pct + '%' },
+    { label: 'Week %', mono: 1, get: r => r.weekly.pct + '%' },
+    { label: 'All-time tok', mono: 1, get: r => r.all_time.tokens.toLocaleString() },
+    { label: 'All-time $', mono: 1, get: r => money(r.all_time.cost_usd) },
+    { label: 'Last active', get: r => r.last_active_at ? untilStr(r.last_active_at) + ' ago' : '—' },
+  ];
+  if (controls) cols.push(
+    { label: 'Overrides', get: r => h('span', {},
+      h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-xs', placeholder: 'sess', value: r.session_override ?? '', id: `so-${r.id}` }),
+      h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-xs ml-1', placeholder: 'week', value: r.weekly_override ?? '', id: `wo-${r.id}` }),
+      h('button', { class: 'text-accent text-xs ml-1', onclick: () => saveLimits(r.id) }, 'set')) },
+    { label: '', get: r => h('button', {
+      class: 'text-xs ' + (r.disabled ? 'text-good' : 'text-danger'),
+      onclick: () => adminPost(`/api/admin/users/${r.id}/disabled`, { disabled: !r.disabled }),
+    }, r.disabled ? 'enable' : 'disable') });
+  rows.forEach(r => r._hl = r.session.pct >= 90 || r.weekly.pct >= 90);
+  return table(cols, rows);
+}
+async function saveLimits(id) {
+  await adminPost(`/api/admin/users/${id}/limits`, {
+    session_override: document.getElementById(`so-${id}`).value || null,
+    weekly_override: document.getElementById(`wo-${id}`).value || null,
+  });
+}
+
+function adminUsage(d) {
+  if (!d) return 'loading…';
+  return h('div', { class: 'space-y-4' },
+    card('Per-model (30 days)', table(
+      [{ label: 'Model', get: r => modelName(r.model_id) },
+       { label: 'Requests', mono: 1, get: r => r.requests },
+       { label: 'Occupancy', mono: 1, get: r => fmtDur(r.occupancy_seconds) },
+       { label: 'Mean tok/req', mono: 1, get: r => r.mean_tokens },
+       { label: 'Mean tok/s', mono: 1, get: r => r.mean_tok_s ?? '—' },
+       { label: 'Cold rate', mono: 1, get: r => Math.round(r.cold_rate * 100) + '%' },
+       { label: 'Credits', mono: 1, get: r => credits(r.credits) },
+       { label: 'Cost', mono: 1, get: r => money(r.cost_usd) }],
+      d.by_model)),
+    card('Credits by user × day', h('div', { class: 'text-xs text-zinc-500' },
+      d.by_day_user.length + ' data points · ' +
+      Object.entries(d.by_day_user.reduce((m, r) => (m[r.email] = (m[r.email] || 0) + r.credits, m), {}))
+        .map(([e, c]) => `${e}: ${credits(c)}`).join('  ·  '))));
+}
+
+function adminImpact(rows) {
+  if (!rows) return 'loading…';
+  return h('div', {},
+    h('p', { class: 'text-xs text-zinc-500 mb-3' }, 'Seconds of wait each person inflicted on others while their jobs held the box (strict-FIFO fairness).'),
+    table([{ label: 'User', get: r => r.email },
+           { label: 'Wait inflicted', mono: 1, get: r => fmtDur(r.wait_inflicted_s) },
+           { label: 'Jobs delayed', mono: 1, get: r => r.jobs_delayed }], rows));
+}
+
+function adminBilling(d) {
+  if (!d) return 'loading…';
+  return h('div', { class: 'space-y-4' },
+    h('div', { class: 'flex items-center gap-2' },
+      h('a', { href: '/api/admin/billing/export.csv', class: 'text-sm bg-panel2 border border-line rounded px-3 py-1.5' }, 'Export CSV'),
+      h('span', { class: 'text-xs text-zinc-500' }, `period: last 30 days`)),
+    card('Cost per user (this period)', table(
+      [{ label: 'User', get: r => r.email },
+       { label: 'Jobs', mono: 1, get: r => r.jobs },
+       { label: 'Credits', mono: 1, get: r => credits(r.credits) },
+       { label: 'Cost', mono: 1, get: r => money(r.cost) },
+       { label: '', get: r => h('button', { class: 'text-accent text-xs', onclick: () => makeInvoice(r.user_id, d.period) }, 'draft invoice') }],
+      d.per_user)),
+    card('Invoices', d.invoices.length ? table(
+      [{ label: 'User', get: r => r.email },
+       { label: 'Period', get: r => new Date(r.period_start * 1000).toLocaleDateString() + '–' + new Date(r.period_end * 1000).toLocaleDateString() },
+       { label: 'Credits', mono: 1, get: r => credits(r.total_credits) },
+       { label: 'Cost', mono: 1, get: r => money(r.total_cost_usd) },
+       { label: 'Status', get: r => r.status },
+       { label: '', get: r => h('span', {},
+         ['sent', 'paid'].map(s => h('button', { class: 'text-xs text-accent mr-2', onclick: () => setInvoice(r.id, s) }, 'mark ' + s))) }],
+      d.invoices) : h('div', { class: 'text-zinc-600 text-sm' }, 'none yet')));
+}
+async function makeInvoice(user_id, period) {
+  await adminPost('/api/admin/billing/invoice', { user_id, period_start: period.start, period_end: period.end });
+  loadAdmin();
+}
+async function setInvoice(id, status) { await adminPost(`/api/admin/billing/invoice/${id}/status`, { status }); loadAdmin(); }
+
+async function adminPost(path, body) {
+  try { await api.post(path, body || {}); loadAdmin(); }
+  catch (e) { flashError(e.message); }
 }
 
 function flashError(msg) {

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     state             TEXT NOT NULL,          -- queued|loading_model|generating|done|error|cancelled|limit_exceeded
     lane              TEXT NOT NULL DEFAULT 'exclusive',  -- exclusive|fast (fast lane not full price)
     queued_at         REAL NOT NULL,
+    picked_at         REAL,               -- worker took the job = exclusive occupancy starts
     load_started_at   REAL,
     gen_started_at    REAL,
     finished_at       REAL,

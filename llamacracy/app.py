@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .admin import router as admin_router
 from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .identity import Principal, get_principal
@@ -56,6 +57,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Llamacracy", lifespan=lifespan)
+app.include_router(admin_router)
 
 
 # --------------------------------------------------------------------------- #
