@@ -62,6 +62,15 @@ Newest first.
 - `output: 'html'` (no MathML) and `throwOnError: false`. Math + highlighting
   both run only on the settled message, not per streamed token.
 
+### Branding (2026-09-10)
+
+- "Your Honor the Llama" — barrister-wigged llama. Assets in
+  `static/assets/`: `llamacracy-logo.svg` (full figure: wig, robe, gavel, navy
+  badge — used on the empty-chat state), `llamacracy-favicon.svg` (head
+  close-up, bolder lines — the tab icon, since the full figure is mud at
+  16px), plus `favicon-32.png` and `apple-touch-icon.png` (180²) fallbacks for
+  Safari / iOS home screen. SVGs carry C2PA "AI-generated" metadata; left in.
+
 ## Phase 6 — deployment (2026-09-09)
 
 - Three **systemd user units** (`deploy/systemd/`): `llama-swap` (`127.0.0.1:8091`,

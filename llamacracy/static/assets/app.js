@@ -142,6 +142,7 @@ function render() {
 function topbar() {
   return h('header', { id: 'topbar', class: 'shrink-0 h-12 border-b border-line flex items-center gap-3 px-3 bg-panel' },
     h('button', { class: 'md:hidden text-zinc-400', onclick: () => { S.sidebarOpen = !S.sidebarOpen; render(); } }, '☰'),
+    h('img', { src: '/assets/llamacracy-favicon.svg', alt: '', width: 24, height: 24, class: 'shrink-0' }),
     h('span', { class: 'font-semibold tracking-tight' }, 'Llamacracy'),
     h('span', { id: 'loaded-badge' }, loadedBadge()),
     h('div', { class: 'flex-1' }),
@@ -206,7 +207,9 @@ function chatView() {
   return h('main', { class: 'flex-1 flex flex-col min-w-0' },
     h('div', { id: 'thread', class: 'flex-1 overflow-y-auto px-4 py-4 space-y-4' },
       S.messages.length ? S.messages.map(msgBubble)
-        : h('div', { class: 'text-center text-zinc-600 mt-20 text-sm' }, 'Pick a model and say something.'),
+        : h('div', { class: 'text-center text-zinc-600 mt-16 text-sm flex flex-col items-center gap-3' },
+            h('img', { src: '/assets/llamacracy-logo.svg', alt: 'Llamacracy', width: 128, height: 128, class: 'opacity-90' }),
+            h('div', {}, 'Pick a model and say something.')),
       S.active ? activeBubble() : null),
     composer(),
   );
