@@ -3,6 +3,54 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Phase 3 — metering (2026-09-09)
+
+- **`credits = occupancy_seconds - load_seconds * (1 - LOAD_TIME_MULTIPLIER)`**
+  — full exclusive box-time held, with the cold-start portion discounted to
+  half rate. Always from our own wall-clock timers, never token-derived.
+  `state in (error, limit_exceeded)` → 0. Cancelled → the seconds actually
+  consumed. Fast lane → 0 (not implemented; everything is `exclusive`).
+- **`cost_usd = credits * watts * rate * MARKUP`** (spec's formula), watts =
+  measured mean GPU draw (nvidia-smi sampler in the queue worker) +
+  `NON_GPU_LOAD_WATTS`; falls back to the bench's per-model GPU mean, then
+  180 W, if nvidia-smi is unavailable. `rate` from the TOU table by the local
+  hour the job ran. `rate_used` + `cost_usd` frozen on the row at finalisation
+  — historical cost is never recomputed.
+- **Sessions** open on the user's first request (enqueue), fixed 5 h, never
+  extended by activity; the next request after expiry opens a fresh one.
+- **Limits checked at enqueue**, reject only if *already* at/over a cap
+  (overshoot allowed; bounded by `MAX_TOKENS_PER_REQUEST`). 429 carries
+  `{limit, used, cap, reset_at}`. Weekly `reset_at` = the Nth-oldest in-window
+  job's `finished_at + 7d` (the moment the rolling sum drops back under cap).
+  Per-user overrides on both caps.
+- **`/api/usage`** returns session/weekly used+cap+pct+reset, 30-day daily
+  series, per-model breakdown, and `estimated_fraction` (share of credits on
+  rows where the token count was estimated — should stay near 0).
+- **28 tests** (`tests/test_metering.py` + `test_queue.py`): credit formula
+  incl. load-clamp and lane, cost + TOU-by-hour, session window boundaries
+  and no-extension, expired→fresh, admit-under-cap / deny-at-cap, overshoot
+  recorded not truncated, rolling-weekly window edge (7d ± 60s), weekly
+  reset timestamp, per-user overrides, 75% warn flag.
+
+---
+
+## Phase 2 — backend (2026-09-09)
+
+- `llamacracy/` package on FastAPI + a single SQLite connection (WAL, one
+  asyncio lock — writes are tiny and the queue is serial anyway).
+- **queue.py**: one `_worker` task drains a `list[Job]`; `_run` streams from
+  llama-swap, detects cold start via `/running`, measures load vs generation
+  (load = wall-to-first-token minus llama.cpp's `prompt_ms`), samples GPU
+  watts during generation, emits SSE token/reasoning/done events, and on
+  cancel `break`s the stream (the httpx context manager closes the upstream
+  connection — verified the box doesn't wedge).
+- Identity: trusts `X-Forwarded-*`, keys on `sub`, 503 + loud log if headers
+  absent and `DEV_MODE` unset.
+- Timestamps are epoch REAL throughout, so the rolling-weekly query is a plain
+  indexed `SUM ... WHERE finished_at >= ?`.
+
+---
+
 ## Phase 1 — inference layer (2026-09-09)
 
 - **llama-swap v255** installed at `~/.local/bin/llama-swap`. Chosen over

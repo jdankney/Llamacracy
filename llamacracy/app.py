@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .identity import Principal, get_principal
+from .metering import Meter
 from .queue import Job, JobState, QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
 from .upstream import Upstream, UpstreamError, get_upstream
@@ -39,7 +40,11 @@ async def lifespan(app: FastAPI):
     up = get_upstream()
     if not await up.health():
         log.warning("llama-swap not reachable at %s -- will keep retrying", up.base_url)
-    await start_queue()
+    qm = await start_queue()
+    meter = Meter(get_db(), settings, get_registry())
+    qm.check_limits = meter.check_limits
+    qm.finalize_billing = meter.finalize_billing
+    app.state.meter = meter
     log.info("llamacracy up on %s:%s (dev_mode=%s)",
              settings.app_bind_host, settings.app_bind_port, settings.is_dev)
     try:
@@ -74,6 +79,48 @@ async def me(principal: Principal = Depends(get_principal),
             "session_window_hours": settings.session_window_hours,
             "max_tokens_per_request": settings.max_tokens_per_request,
         },
+    }
+
+
+def get_meter(request: Request) -> Meter:
+    return request.app.state.meter
+
+
+@app.get("/api/usage")
+async def usage(principal: Principal = Depends(get_principal),
+                meter: Meter = Depends(get_meter),
+                db: Database = Depends(get_db)):
+    view = await meter.usage_view(principal.user_id)
+    per_model = await db.fetch_all(
+        "SELECT model_id, COUNT(*) AS requests, "
+        "  COALESCE(SUM(credits), 0) AS credits, "
+        "  COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+        "  COALESCE(SUM(completion_tokens), 0) AS completion_tokens, "
+        "  COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens "
+        "FROM jobs WHERE user_id = ? AND finished_at IS NOT NULL "
+        "GROUP BY model_id ORDER BY credits DESC",
+        (principal.user_id,),
+    )
+    daily = await db.fetch_all(
+        "SELECT CAST(finished_at / 86400 AS INT) * 86400 AS day, "
+        "  COALESCE(SUM(credits), 0) AS credits, COALESCE(SUM(cost_usd), 0) AS cost_usd "
+        "FROM jobs WHERE user_id = ? AND finished_at IS NOT NULL "
+        "AND finished_at >= ? GROUP BY day ORDER BY day",
+        (principal.user_id, now() - 30 * 86400),
+    )
+    est = await db.fetch_one(
+        "SELECT COALESCE(SUM(credits),0) AS total, "
+        "  COALESCE(SUM(CASE WHEN usage_estimated THEN credits ELSE 0 END),0) AS estimated "
+        "FROM jobs WHERE user_id = ? AND finished_at IS NOT NULL "
+        "AND finished_at >= ?",
+        (principal.user_id, now() - 30 * 86400),
+    )
+    frac = (est["estimated"] / est["total"]) if est and est["total"] else 0.0
+    return {
+        **view.as_dict(),
+        "per_model": [dict(r) for r in per_model],
+        "daily": [dict(r) for r in daily],
+        "estimated_fraction": round(frac, 4),
     }
 
 
@@ -227,11 +274,13 @@ async def chat(req: ChatRequest,
         conversation_id=conv_id,
     )
 
-    # Phase 3 hooks in here: qm.check_limits(...) before submit; on rejection
-    # persist a limit_exceeded job and return the reset timestamp.
+    # Limits are checked at enqueue (rejecting after a queue wait is hostile).
+    # Opens the user's session if they have none. Overshoot is allowed: an
+    # admitted job runs to completion even if it finishes over the cap.
     if qm.check_limits is not None:
         decision = await qm.check_limits(principal.user_id, req.model)
-        if decision is not None and not decision.allowed:
+        job.session_id = decision.session_id
+        if not decision.allowed:
             job.state = JobState.LIMIT_EXCEEDED
             job.finished_at = now()
             await qm._persist_job(job)

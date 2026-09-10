@@ -29,6 +29,7 @@ class ModelInfo:
     seed_tg_tok_s: float = 20.0
     seed_pp_tok_s: float = 300.0
     vram_used_mib: int = 0
+    gpu_gen_watts: float | None = None
     max_tokens_default: int = 2048
 
 
@@ -76,6 +77,7 @@ def get_registry() -> Registry:
             seed_tg_tok_s=m.get("seed_tg_tok_s", 20.0),
             seed_pp_tok_s=m.get("seed_pp_tok_s", 300.0),
             vram_used_mib=m.get("vram_used_mib", 0),
+            gpu_gen_watts=m.get("gpu_gen_watts"),
             max_tokens_default=m.get("max_tokens_default", 2048),
         )
     return Registry(models, data.get("generated_at", ""))

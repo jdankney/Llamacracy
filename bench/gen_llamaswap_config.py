@@ -194,6 +194,7 @@ def main() -> None:
             "seed_tg_tok_s": rec["tg_tok_s"],
             "seed_pp_tok_s": rec["pp_tok_s"],
             "vram_used_mib": rec["vram_used_mib"],
+            "gpu_gen_watts": rec.get("gpu_gen_w_mean"),   # bench mean; cost-model fallback
             "max_tokens_default": 2048,
         }
 

@@ -13,8 +13,8 @@ See [docs/SPEC.md](docs/SPEC.md) for the full design brief.
 | 0 | Measure reality — benchmark every GGUF | **done** (`bench-results.json`) |
 | 1 | Inference layer — llama-swap config from bench data | **done** (`config/`) |
 | 2 | Backend — FastAPI, FIFO queue worker, SSE proxy, cancellation, SQLite | **done** (`llamacracy/`) |
-| 3 | Metering — credits, session/weekly limits, cost model, tests | next |
-| 4 | Frontend — chat UI, model picker, live queue, usage page | not started |
+| 3 | Metering — credits, session/weekly limits, cost model, tests | **done** (`metering.py`, 28 tests) |
+| 4 | Frontend — chat UI, model picker, live queue, usage page | next |
 | 5 | Admin dashboard | not started |
 | 6 | Deployment — systemd units, oauth2-proxy, NetBird binding | not started |
 

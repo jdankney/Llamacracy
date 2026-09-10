@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 
 from .config import Settings, get_settings
 from .db import Database, get_db, now
+from .power import GpuPowerSampler
 from .registry import Registry, get_registry
 from .upstream import Upstream, UpstreamError, get_upstream
 
@@ -52,6 +53,7 @@ class Job:
     model_id: str
     payload: dict                      # OpenAI chat payload (messages + sampling)
     conversation_id: str | None = None
+    session_id: int | None = None       # session active at enqueue (set by metering)
     lane: str = "exclusive"
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     state: JobState = JobState.QUEUED
@@ -283,6 +285,7 @@ class QueueManager:
             await self._broadcast()
 
         first = False
+        sampler = GpuPowerSampler()
         async for chunk in self.up.stream_chat({**job.payload, "model": job.model_id}):
             if job._cancel.is_set():
                 break
@@ -296,6 +299,7 @@ class QueueManager:
                     # measured prompt-eval; refined again from final timings below
                     job.load_seconds = max(0.0, t_first - t_start)
                 job.state = JobState.GENERATING
+                sampler.start()
                 await self._broadcast()
             if chunk.content_delta:
                 job.content_parts.append(chunk.content_delta)
@@ -307,6 +311,9 @@ class QueueManager:
                 job.completion_tokens = chunk.usage.get("completion_tokens")
             if chunk.timings:
                 job.last_timings = chunk.timings
+
+        await sampler.stop()
+        job.gpu_watts_mean = sampler.mean
 
         t_end = now()
         job.finished_at = t_end
@@ -361,11 +368,11 @@ class QueueManager:
 
     async def _persist_job(self, job: Job) -> None:
         await self.db.execute(
-            "INSERT INTO jobs (id, user_id, conversation_id, model_id, state, lane, "
+            "INSERT INTO jobs (id, user_id, conversation_id, session_id, model_id, state, lane, "
             "  queued_at, load_started_at, gen_started_at, finished_at, load_seconds, "
             "  gen_seconds, occupancy_seconds, credits, cost_usd, rate_used, gpu_watts_mean, "
             "  prompt_tokens, completion_tokens, usage_estimated, cold_start, error) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET "
             "  state=excluded.state, load_started_at=excluded.load_started_at, "
             "  gen_started_at=excluded.gen_started_at, finished_at=excluded.finished_at, "
@@ -376,7 +383,8 @@ class QueueManager:
             "  completion_tokens=excluded.completion_tokens, "
             "  usage_estimated=excluded.usage_estimated, cold_start=excluded.cold_start, "
             "  error=excluded.error",
-            (job.id, job.user_id, job.conversation_id, job.model_id, job.state.value,
+            (job.id, job.user_id, job.conversation_id, job.session_id, job.model_id,
+             job.state.value,
              job.lane, job.queued_at, job.load_started_at, job.gen_started_at,
              job.finished_at, job.load_seconds, job.gen_seconds, job.occupancy_seconds,
              job.credits, job.cost_usd, job.rate_used, job.gpu_watts_mean, job.prompt_tokens,

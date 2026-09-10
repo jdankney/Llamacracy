@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id                TEXT PRIMARY KEY,       -- uuid hex
     user_id           INTEGER NOT NULL REFERENCES users(id),
     conversation_id   TEXT REFERENCES conversations(id),
+    session_id        INTEGER REFERENCES sessions(id),   -- session active at enqueue
     model_id          TEXT NOT NULL,
     state             TEXT NOT NULL,          -- queued|loading_model|generating|done|error|cancelled|limit_exceeded
     lane              TEXT NOT NULL DEFAULT 'exclusive',  -- exclusive|fast (fast lane not full price)
