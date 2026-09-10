@@ -7,9 +7,12 @@ Newest first.
 
 - **Users:** owner + 3–4 friends (4–5 total). Small, casual. Owner still uses
   the box himself sometimes.
-- **Session limit:** owner asked to lower it "a bit" → **SESSION_CREDIT_LIMIT =
-  4500** (75 min of continuous 35B generation). WEEKLY stays **12000** (≈2.7×
-  session; a casual user won't reach it).
+- **Session limit:** **SESSION_CREDIT_LIMIT = 3600** (60 min of continuous 35B
+  generation) — owner picked the tighter option so a heavy friend frees the box
+  sooner. **WEEKLY_CREDIT_LIMIT = 12000** (≈3.3× session; a casual user won't
+  reach it).
+- **Billing rate:** **standard** the utility the TOU plan + the CCA rates (any household discount is not passed through). Summer marginal: On-Peak ~$0.665,
+  Off-Peak ~$0.456, Super-Off-Peak ~$0.374 per kWh.
 - **Reasoning:** owner chose the "token / energy saver" default → **reasoning
   disabled by default on every model** (`--reasoning-budget 0` for FamilyA /
   FamilyA; equivalent for FamilyC where supported). Keeps per-answer cost
@@ -59,9 +62,8 @@ PCIA 2022 + surcharges:
   on/off/super summer). PCIA 2022 $0.03005/kWh flat.
 - Bill cross-check: $299.46 for 1,059 kWh (ex. one-time climate credit) =
   **$0.283/kWh** all-in discounted blended.
-- **Open:** bill friends at discounted (owner's true cost) or standard standard
-  rates (a discount is household-specific; standard is the defensible
-  "cost to run it" and survives a discount-status change). Recommend **standard**.
+- **Decided:** bill at **standard** rates (above). The discounted column is kept
+  for reference only.
 - **Open:** winter (Nov 1 – May 31) generation rates not in this statement;
   seed with summer (slightly conservative) and update from the next bill.
 

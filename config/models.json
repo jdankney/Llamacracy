@@ -1,0 +1,136 @@
+{
+  "generated_at": "2026-09-09T18:25:53-0700",
+  "llama_cpp_commit": "2d8d612e4",
+  "models": {
+    "coder-1.5b-fim": {
+      "display": "Coder Coder 1.5B (FIM / infill only)",
+      "kind": "fim",
+      "path": "/home/you/models/coder-1.5b-fim.gguf",
+      "tier": "fim",
+      "in_picker": false,
+      "blurb": "Inline code completion (FIM). Not a chat model.",
+      "reasoning": null,
+      "sampling": {},
+      "ctx": 8192,
+      "seed_cold_load_s": 1.51,
+      "seed_tg_tok_s": 109.9,
+      "seed_pp_tok_s": 3784.4,
+      "vram_used_mib": 1999,
+      "max_tokens_default": 2048
+    },
+    "fast-4b": {
+      "display": "FamilyA 4B (Q8_0)",
+      "kind": "chat",
+      "path": "/home/you/models/fast-4b.gguf",
+      "tier": "fast",
+      "in_picker": true,
+      "blurb": "Fastest chat model. Summaries, reformatting, quick questions.",
+      "reasoning": "off",
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0
+      },
+      "ctx": 32768,
+      "seed_cold_load_s": 2.8,
+      "seed_tg_tok_s": 44.3,
+      "seed_pp_tok_s": 1268.7,
+      "vram_used_mib": 5155,
+      "max_tokens_default": 2048
+    },
+    "daily-9b": {
+      "display": "FamilyA 9B (Q6_K)",
+      "kind": "chat",
+      "path": "/home/you/models/daily-9b.gguf",
+      "tier": "daily",
+      "in_picker": true,
+      "blurb": "Daily driver. Fully on GPU, ~30 tok/s.",
+      "reasoning": "off",
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0
+      },
+      "ctx": 32768,
+      "seed_cold_load_s": 3.9,
+      "seed_tg_tok_s": 30.4,
+      "seed_pp_tok_s": 705.0,
+      "vram_used_mib": 7125,
+      "max_tokens_default": 2048
+    },
+    "alt-4b": {
+      "display": "FamilyB 4B (alt finetune, Q8_0)",
+      "kind": "chat",
+      "path": "/home/you/models/alt-4b.gguf",
+      "tier": "fast",
+      "in_picker": true,
+      "blurb": "FamilyB 4B \u2014 alt community finetune, not stock Gemma.",
+      "reasoning": "none",
+      "sampling": {},
+      "ctx": 32768,
+      "seed_cold_load_s": 4.51,
+      "seed_tg_tok_s": 39.8,
+      "seed_pp_tok_s": 1140.4,
+      "vram_used_mib": 5641,
+      "max_tokens_default": 2048
+    },
+    "moe-26b": {
+      "display": "FamilyB 26B QAT (Q4_0, MoE)",
+      "kind": "chat",
+      "path": "/home/you/models/moe-26b.gguf",
+      "tier": "heavy",
+      "in_picker": true,
+      "blurb": "MoE, experts on CPU. Strong quality, ~34 tok/s, ~12 s cold start.",
+      "reasoning": "none",
+      "sampling": {},
+      "ctx": 16384,
+      "seed_cold_load_s": 12.19,
+      "seed_tg_tok_s": 33.8,
+      "seed_pp_tok_s": 416.9,
+      "vram_used_mib": 7556,
+      "max_tokens_default": 2048
+    },
+    "moe-30b": {
+      "display": "FamilyC Flash (Q4_K_M, MoE)",
+      "kind": "chat",
+      "path": "/home/you/models/moe-30b.gguf",
+      "tier": "heavy",
+      "in_picker": true,
+      "blurb": "MoE, accuracy-first general Q&A. ~29 tok/s, ~14 s cold start.",
+      "reasoning": "off",
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "ctx": 16384,
+      "seed_cold_load_s": 13.56,
+      "seed_tg_tok_s": 29.1,
+      "seed_pp_tok_s": 288.3,
+      "vram_used_mib": 9138,
+      "max_tokens_default": 2048
+    },
+    "moe-35b": {
+      "display": "FamilyA 35B (Q4_K_M, MoE)",
+      "kind": "chat",
+      "path": "/home/you/models/moe-35b.gguf",
+      "tier": "heavy",
+      "in_picker": true,
+      "blurb": "Biggest model, long documents. ~32 tok/s, ~25 s cold start.",
+      "reasoning": "off",
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0
+      },
+      "ctx": 16384,
+      "seed_cold_load_s": 25.36,
+      "seed_tg_tok_s": 31.8,
+      "seed_pp_tok_s": 299.5,
+      "vram_used_mib": 8474,
+      "max_tokens_default": 2048
+    }
+  }
+}
