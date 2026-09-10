@@ -1,1 +1,30 @@
-<!doctype html><meta charset=utf-8><title>Llamacracy</title><h1>Llamacracy</h1><p>API up. UI is Phase 4.</p>
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Llamacracy</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: { colors: {
+    ink: '#0c0d10', panel: '#15171c', panel2: '#1c1f26', line: '#2a2e37',
+    accent: '#7c9cff', warn: '#f2c14e', danger: '#ef6f6f', good: '#66c98a',
+  }, fontFamily: { mono: ['ui-monospace','SFMono-Regular','Menlo','monospace'] } } }
+}
+</script>
+<style>
+  html,body{background:#0c0d10;color:#d7dae0}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#2a2e37;border-radius:5px}
+  .prose-chat p{margin:.4rem 0}
+  .prose-chat pre{background:#0c0d10;border:1px solid #2a2e37;border-radius:.4rem;padding:.6rem;overflow-x:auto;font-size:.85em}
+  .prose-chat code{background:#0c0d10;padding:.1rem .3rem;border-radius:.25rem;font-size:.9em}
+  .prose-chat pre code{background:none;padding:0}
+</style>
+</head>
+<body class="h-full">
+<div id="app" class="h-full flex flex-col"></div>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>
