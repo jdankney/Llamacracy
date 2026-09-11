@@ -112,7 +112,7 @@ const money = n => n >= 0.01 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) :
 const S = {
   me: null, models: [], loadedModel: null, conversations: [],
   conv: null, messages: [], active: null, queue: { jobs: [], depth: 0 },
-  usage: null, view: 'chat', pickerModel: null, sidebarOpen: false,
+  usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
 };
 
 /* ------------------------------------------------------------- SSE: queue */
@@ -240,6 +240,104 @@ function activeBubble() {
 }
 const modelName = id => S.models.find(m => m.id === id)?.display || id;
 
+/* ------------------------------------------------------ context accounting */
+// rough token estimate for text we have no exact usage for (~3.6 chars/token,
+// a middle ground for English + code). Exact counts come from job usage.
+const estTok = s => Math.ceil((s || '').length / 3.6);
+const fmtTok = n => n >= 10000 ? Math.round(n / 1000) + 'K'
+  : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(Math.round(n));
+const fmtCtx = n => Math.round(n / 1024) + 'K';   // model windows are 1024-multiples
+
+// what the NEXT send will cost against the picked model's context window
+function contextInfo() {
+  const m = S.models.find(x => x.id === S.pickerModel);
+  if (!m) return null;
+  const limit = m.ctx, reply = m.max_tokens_default || 2048;
+
+  // last message with real usage = exact cost of everything up to and incl. it;
+  // anything after it (a dangling user turn, a model that skipped usage) is estimated
+  let base = 0, exact = false, from = 0;
+  for (let i = S.messages.length - 1; i >= 0; i--) {
+    const msg = S.messages[i];
+    if (msg.role === 'assistant' && msg.prompt_tokens != null && msg.completion_tokens != null) {
+      base = msg.prompt_tokens + msg.completion_tokens;
+      exact = !msg.usage_estimated;
+      from = i + 1;
+      break;
+    }
+  }
+  let tail = 0;
+  for (let i = from; i < S.messages.length; i++) tail += estTok(S.messages[i].content) + 4;
+  const estimated = (from === 0 && S.messages.length > 0) || (!exact && S.messages.length > 0) || tail > 0;
+
+  const el = document.getElementById('composer');
+  const draftTok = el && el.value ? estTok(el.value) + 4 : 0;
+
+  const used = base + tail;
+  const projected = used + draftTok;          // the prompt the next send will build
+  return {
+    m, limit, reply, used, draftTok, projected,
+    afterReply: projected + reply, exact, estimated,
+    pct: projected / limit,
+    over: projected >= limit,                  // prompt itself won't fit
+    tight: projected < limit && projected + reply > limit,  // reply may get truncated
+  };
+}
+
+function contextRing(ci) {
+  if (!ci) return h('span');
+  const pctNum = Math.round(100 * ci.projected / ci.limit);
+  const u = Math.min(100, 100 * ci.used / ci.limit);
+  const d = Math.min(100 - u, 100 * ci.draftTok / ci.limit);
+  const r = Math.min(Math.max(0, 100 - u - d), 100 * ci.reply / ci.limit);
+  const main = ci.over ? '#ef6f6f' : ci.tight ? '#f2c14e' : '#7c9cff';
+  const bg = `conic-gradient(${main} 0 ${u}%, #f2c14e ${u}% ${u + d}%, ` +
+            `#3a3f4b ${u + d}% ${u + d + r}%, #23262e ${u + d + r}% 100%)`;
+  return h('button', {
+    id: 'ctx-ring', type: 'button', class: 'ctx-ring',
+    style: `background:${bg}`,
+    title: `${modelName(ci.m.id)} context: ~${fmtTok(ci.projected)} / ${fmtCtx(ci.limit)}` +
+           (ci.estimated ? ' (partly estimated)' : ''),
+    onclick: () => { S.ctxOpen = !S.ctxOpen; refreshCtx(); },
+  }, h('span', {}, (pctNum > 999 ? '999' : pctNum) + '%'));
+}
+
+function contextBreakdown(ci) {
+  if (!ci || !S.ctxOpen) return null;
+  const row = (dot, label, tok) => h('div', { class: 'flex items-center gap-2 py-0.5' },
+    h('span', { class: 'inline-block w-2 h-2 rounded-sm', style: `background:${dot}` }),
+    h('span', { class: 'flex-1' }, label),
+    h('span', { class: 'font-mono text-zinc-400' }, fmtTok(tok)),
+    h('span', { class: 'font-mono text-zinc-600 w-9 text-right' }, Math.round(100 * tok / ci.limit) + '%'));
+  const free = Math.max(0, ci.limit - ci.projected - ci.reply);
+  return h('div', { class: 'mb-2 rounded border border-line bg-panel2 p-2 text-[11px] text-zinc-400' },
+    h('div', { class: 'flex justify-between mb-1 text-zinc-500' },
+      h('span', {}, `${modelName(ci.m.id)} · ${fmtTok(ci.limit)} context` +
+        (ci.estimated ? ' · ~estimate' : '')),
+      h('span', { class: 'font-mono' }, `${fmtTok(ci.projected)} used`)),
+    row('#7c9cff', 'Conversation', ci.used),
+    ci.draftTok ? row('#f2c14e', 'Your draft', ci.draftTok) : null,
+    row('#3a3f4b', 'Reserved for reply', ci.reply),
+    row('#23262e', 'Free', free),
+    ci.over ? h('div', { class: 'mt-1 text-danger' },
+      'Over the window — trim the chat, start a new one, or pick a bigger-context model.')
+      : ci.tight ? h('div', { class: 'mt-1 text-warn' },
+        'Close to full — the reply may be cut short. A bigger-context model has more room.')
+      : null);
+}
+
+let _ctxTimer = null;
+function refreshCtx() {
+  clearTimeout(_ctxTimer);
+  _ctxTimer = setTimeout(() => {
+    const ci = contextInfo();
+    const slot = document.getElementById('ctx-slot');
+    if (slot) slot.replaceChildren(contextRing(ci));
+    const bd = document.getElementById('ctx-breakdown');
+    if (bd) bd.replaceChildren(contextBreakdown(ci) || '');
+  }, 120);
+}
+
 function composer() {
   const m = S.pickerModel && S.models.find(x => x.id === S.pickerModel);
   return h('div', { class: 'shrink-0 border-t border-line bg-panel p-3' },
@@ -252,13 +350,16 @@ function composer() {
           `${md.display}${md.tier ? `  [${md.tier}]` : ''}`))),
         m ? h('span', { class: 'text-xs text-zinc-500' },
           m.resident ? '● loaded' : `cold start ~${fmtDur(m.cold_load_s)}`,
-          ` · ~${Math.round(m.tok_s)} tok/s`) : null),
+          ` · ~${Math.round(m.tok_s)} tok/s`) : null,
+        h('div', { class: 'flex-1' }),
+        h('span', { id: 'ctx-slot' }, contextRing(contextInfo()))),
       m?.blurb ? h('div', { class: 'text-[11px] text-zinc-600 mb-2' }, m.blurb) : null,
+      h('div', { id: 'ctx-breakdown' }, contextBreakdown(contextInfo())),
       h('form', { class: 'flex gap-2 items-end', onsubmit: sendMessage },
         h('textarea', {
           id: 'composer', rows: 1, placeholder: 'Message…',
           class: 'flex-1 bg-panel2 border border-line rounded px-3 py-2 text-sm resize-none max-h-40',
-          oninput: e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; },
+          oninput: e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; refreshCtx(); },
           onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(e); } },
         }),
         h('button', {

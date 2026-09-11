@@ -6,8 +6,24 @@ Newest first.
 ## Phase 8 — more useful features (2026-09-10, in progress)
 
 Post-launch additions the owner wants, tackled one at a time. Agreed order:
-**(5) max context ✓ → (3) context wheel → (1) SearXNG → (4) multimodal →
+**(5) max context ✓ → (3) context wheel ✓ → (1) SearXNG → (4) multimodal →
 (2) Continue.dev**, then "compact context" later.
+
+### 3 · Context wheel + breakdown (done 2026-09-10)
+
+- Pure frontend — the data was already there: `/api/models` returns `ctx` and
+  `max_tokens_default`, and each persisted message carries exact
+  `prompt_tokens`/`completion_tokens` from job usage.
+- `contextInfo()` in `app.js`: walk messages back to the last one with real
+  usage → that's the exact cost of the whole history-so-far; anything after it
+  (a dangling user turn, a model that skipped usage) plus the composer draft is
+  estimated at ~3.6 chars/token. `projected` = what the next send's prompt will
+  be; `over` = prompt won't fit; `tight` = fits but the reply may truncate.
+- A conic-gradient donut (no SVG — `h()` can't namespace) above the composer:
+  blue conversation / amber draft / dim reply-reservation / empty free, centre
+  shows %, turns amber then red. Click → a breakdown panel with the numbers.
+- Updates on every render (turn, model switch, conv open) and debounced on
+  composer input. Matters now that models span 8K–128K.
 
 - **1 · SearXNG**: composer "Search" toggle, *we* run one query and inject the
   top ~4 results with citations before a single inference — not model-driven

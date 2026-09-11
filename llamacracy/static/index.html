@@ -56,6 +56,10 @@ tailwind.config = {
   .prose-chat pre code.hljs{background:none;color:inherit}
   .prose-chat .katex{font-size:1.05em}
   .prose-chat .katex-display{margin:.6rem 0;padding:.2rem 0;overflow-x:auto;overflow-y:hidden}
+  .ctx-ring{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;position:relative;flex:none;border:0;padding:0;cursor:pointer}
+  .ctx-ring::after{content:'';position:absolute;inset:5px;border-radius:50%;background:#15171c}
+  .ctx-ring>span{position:relative;z-index:1;font-size:9px;font-family:ui-monospace,monospace;color:#d7dae0;letter-spacing:-.02em}
+  .ctx-ring:hover::after{background:#1c1f26}
 </style>
 </head>
 <body class="h-full">
