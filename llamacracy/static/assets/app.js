@@ -234,7 +234,7 @@ function searchChip(sr) {
     `🔍 no results for "${sr.query}"`);
   return h('details', { class: 'mt-1 text-[11px] text-zinc-500' },
     h('summary', { class: 'cursor-pointer hover:text-zinc-300 select-none' },
-      `🔍 ${sr.results.length} source${sr.results.length > 1 ? 's' : ''}`),
+      `🔍 ${sr.results.length} source${sr.results.length > 1 ? 's' : ''} for "${sr.query}"`),
     h('ul', { class: 'mt-1 space-y-0.5 pl-4 list-disc marker:text-zinc-700' },
       sr.results.map(r => h('li', {},
         h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer',
