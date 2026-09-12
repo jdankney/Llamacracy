@@ -1,13 +1,19 @@
-# Llamacracy's identity provider. Run on myhost:
+# Llamacracy's identity provider. Managed by systemd, not run by hand:
 #
-#   cd deploy/dex
-#   cp config.yaml.example config.yaml      # then fill in the secret + hashes
-#   docker compose up -d
+#   systemctl --user enable --now llamacracy-dex.service
 #
-# The port is bound to the NetBird address only. If wt0's address ever changes
-# (peer re-enrol), update the binding below to match `ip -4 -o addr show wt0`
-# and `docker compose up -d` again. On a cold boot Docker may start before
-# NetBird is up; `restart: unless-stopped` retries until the bind succeeds.
+# (deploy/systemd/llamacracy-dex.service). That unit discovers wt0's current
+# address on every start and exports it as DEX_BIND_ADDR before calling
+# `docker compose up -d`, so a NetBird peer re-enrol (a new wt0 address) is
+# fixed by `systemctl --user restart llamacracy-dex` -- or just a reboot --
+# instead of hand-editing this file. Manual `docker compose up -d` from this
+# directory still works, but needs DEX_BIND_ADDR exported first:
+#
+#   DEX_BIND_ADDR=$(ip -4 -o addr show wt0 | awk '{print $4}' | cut -d/ -f1) \
+#     docker compose up -d
+#
+# First-time setup is unchanged: cp config.yaml.example config.yaml, fill in
+# the secret + password hashes (see README.md), then start the unit above.
 
 services:
   dex:
@@ -19,7 +25,7 @@ services:
       - ./config.yaml:/etc/dex/config.yaml:ro
       - dex-data:/var/dex
     ports:
-      - "100.x.y.z:5556:5556"
+      - "${DEX_BIND_ADDR:?set DEX_BIND_ADDR to the current wt0 address -- see the comment above}:5556:5556"
 
 volumes:
   dex-data:

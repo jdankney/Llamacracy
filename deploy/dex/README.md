@@ -24,9 +24,15 @@ openssl rand -hex 32                       # paste into config.yaml `secret:`
 # 2. one staticPasswords entry per person
 ./gen-hash.sh 'alice-password'             # paste into a staticPasswords `hash:`
 
-docker compose up -d
+systemctl --user enable --now llamacracy-dex.service
 curl -sf http://myhost.netbird.selfhosted:5556/.well-known/openid-configuration | head -c 80
 ```
+
+`llamacracy-dex.service` (installed by `../install.sh`, or copy it into
+`~/.config/systemd/user/` yourself) discovers wt0's current address on every
+start and passes it to `docker compose up -d` as `DEX_BIND_ADDR` — see the
+comment at the top of `docker-compose.yml`. Running `docker compose` directly
+still works, but needs that variable exported first.
 
 Then set `OAUTH2_PROXY_CLIENT_SECRET` in `../oauth2-proxy.env` to the same
 `openssl rand -hex 32` value and run `../install.sh` (or, if already installed,
@@ -45,9 +51,15 @@ the Dex `sub` (derived from `userID`, so keep those stable).
 
 ## If wt0's address changes (peer re-enrol)
 
-`myhost.netbird.selfhosted` keeps working, but the compose **port binding**
-is a literal IP. Update it in `docker-compose.yml` to the new
-`ip -4 -o addr show wt0` address and `docker compose up -d`.
+`myhost.netbird.selfhosted` keeps working, and so does Dex — just restart
+the unit and it re-discovers wt0's current address:
+
+```bash
+systemctl --user restart llamacracy-dex
+```
+
+(or nothing at all: it re-discovers on every boot too). This used to require
+hand-editing a literal IP into `docker-compose.yml`; it doesn't anymore.
 
 ## Notes
 

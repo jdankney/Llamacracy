@@ -7,8 +7,8 @@
 # address is host-specific.
 [Unit]
 Description=Llamacracy auth edge (oauth2-proxy on wt0)
-After=llamacracy.service
-Wants=llamacracy.service
+After=llamacracy.service llamacracy-dex.service
+Wants=llamacracy.service llamacracy-dex.service
 # don't even try if NetBird isn't up
 ConditionPathExists=/sys/class/net/wt0
 

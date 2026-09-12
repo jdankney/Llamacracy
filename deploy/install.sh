@@ -69,19 +69,22 @@ if ip -4 -o addr show wt0 >/dev/null 2>&1; then
   fqdn="${fqdn:-myhost.netbird.selfhosted}"
   say "NetBird: wt0 = $addr   FQDN = $fqdn"
 
-  # keep the compose port binding pointed at the current wt0 address
-  if [ -f "$REPO/deploy/dex/docker-compose.yml" ]; then
-    sed -i "s#\"[0-9.]*:5556:5556\"#\"$addr:5556:5556\"#" "$REPO/deploy/dex/docker-compose.yml"
-  fi
-
   dex_ok=false
-  if curl -sf -o /dev/null "http://$fqdn:5556/.well-known/openid-configuration"; then
-    dex_ok=true
+  if [ -f "$REPO/deploy/dex/config.yaml" ]; then
+    # llamacracy-dex.service discovers wt0's address itself on every start,
+    # so no port-binding patch is needed here -- just (re)start the unit.
+    systemctl --user enable --now llamacracy-dex.service
+    if curl -sf -o /dev/null "http://$fqdn:5556/.well-known/openid-configuration"; then
+      dex_ok=true
+    else
+      warn "Dex is running but not reachable yet at http://$fqdn:5556 -- give it a second and recheck:"
+      warn "  systemctl --user status llamacracy-dex"
+    fi
   else
-    warn "Dex not reachable at http://$fqdn:5556 -- bring it up:"
+    warn "Dex not configured yet:"
     warn "  cd $REPO/deploy/dex && cp -n config.yaml.example config.yaml && \$EDITOR config.yaml"
     warn "  (set staticPasswords hashes; the client secret is already generated) then:"
-    warn "  docker compose up -d"
+    warn "  systemctl --user enable --now llamacracy-dex.service"
   fi
 
   secret_set=false

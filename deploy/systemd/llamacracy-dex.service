@@ -1,0 +1,32 @@
+# ~/.config/systemd/user/llamacracy-dex.service
+# Dex (deploy/dex/): Llamacracy's own OIDC identity provider, run in Docker,
+# published on the NetBird interface (wt0, a 100.x address) only. Mirrors
+# llamacracy-auth.service's pattern -- discover wt0's current address on every
+# start and export it so the compose file's port binding always matches,
+# instead of that address being hand-edited into docker-compose.yml. A
+# NetBird peer re-enrol (new wt0 address) is fixed by
+# `systemctl --user restart llamacracy-dex`, or just picked up on next boot.
+[Unit]
+Description=Llamacracy Dex (OIDC identity provider, Docker, on wt0)
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+Before=llamacracy-auth.service
+# don't even try if NetBird isn't up
+ConditionPathExists=/sys/class/net/wt0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/Documents/Coding/Llamacracy/deploy/dex
+# discover the wt0 address and write it where `docker compose` will read it
+ExecStartPre=/bin/sh -c 'a=$(ip -4 -o addr show wt0 | awk "{print \\$4}" | cut -d/ -f1); \
+  echo "DEX_BIND_ADDR=$a" > %t/llamacracy-dex.env'
+# written by ExecStartPre above; `-` so a missing file isn't fatal before it runs
+EnvironmentFile=-%t/llamacracy-dex.env
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+# the container itself is kept alive by `restart: unless-stopped` in the
+# compose file; this unit just needs to (re)issue `up` with the right address
+
+[Install]
+WantedBy=default.target
