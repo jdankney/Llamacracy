@@ -113,6 +113,7 @@ const S = {
   me: null, models: [], loadedModel: null, conversations: [],
   conv: null, messages: [], active: null, queue: { jobs: [], depth: 0 },
   usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
+  searchOn: false,
 };
 
 /* ------------------------------------------------------------- SSE: queue */
@@ -220,9 +221,24 @@ function msgBubble(m) {
     h('div', { class: 'max-w-[46rem] rounded-lg px-3 py-2 text-sm ' +
         (mine ? 'bg-accent/15 border border-accent/30' : 'bg-panel border border-line') },
       mdBlock(m.content),
+      mine ? searchChip(m.search) : null,
       m.completion_tokens != null ? h('div', { class: 'mt-1 text-[11px] text-zinc-600' },
         `${m.model_id || ''} · ${m.prompt_tokens || 0}+${m.completion_tokens} tok` +
         (m.usage_estimated ? ' (est)' : '')) : null));
+}
+function searchChip(sr) {
+  if (!sr) return null;
+  if (!sr.ok) return h('div', { class: 'mt-1 text-[11px] text-zinc-600' },
+    `🔍 search unavailable — answered without it`);
+  if (!sr.results.length) return h('div', { class: 'mt-1 text-[11px] text-zinc-600' },
+    `🔍 no results for "${sr.query}"`);
+  return h('details', { class: 'mt-1 text-[11px] text-zinc-500' },
+    h('summary', { class: 'cursor-pointer hover:text-zinc-300 select-none' },
+      `🔍 ${sr.results.length} source${sr.results.length > 1 ? 's' : ''}`),
+    h('ul', { class: 'mt-1 space-y-0.5 pl-4 list-disc marker:text-zinc-700' },
+      sr.results.map(r => h('li', {},
+        h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer',
+                class: 'text-accent hover:underline' }, r.title || r.url)))));
 }
 function activeBubble() {
   const a = S.active;
@@ -351,6 +367,13 @@ function composer() {
         m ? h('span', { class: 'text-xs text-zinc-500' },
           m.resident ? '● loaded' : `cold start ~${fmtDur(m.cold_load_s)}`,
           ` · ~${Math.round(m.tok_s)} tok/s`) : null,
+        h('button', {
+          type: 'button', title: 'Search the web before answering (one query, injected as context)',
+          class: 'text-xs px-2 py-1 rounded border ' + (S.searchOn
+            ? 'bg-accent/20 border-accent/40 text-accent'
+            : 'border-line text-zinc-500 hover:text-zinc-300'),
+          onclick: () => { S.searchOn = !S.searchOn; render(); },
+        }, '🔍 Search' + (S.searchOn ? ': on' : '')),
         h('div', { class: 'flex-1' }),
         h('span', { id: 'ctx-slot' }, contextRing(contextInfo()))),
       m?.blurb ? h('div', { class: 'text-[11px] text-zinc-600 mb-2' }, m.blurb) : null,
@@ -460,6 +483,7 @@ async function loadUsage() {
 function newChat() { S.conv = null; S.messages = []; S.view = 'chat'; S.sidebarOpen = false; render(); }
 async function openConv(id) {
   const d = await api.get('/api/conversations/' + id);
+  d.messages.forEach(m => { if (m.search_json) { try { m.search = JSON.parse(m.search_json); } catch { /* ignore */ } } });
   S.conv = d.conversation; S.messages = d.messages; S.view = 'chat'; S.sidebarOpen = false;
   if (d.conversation.model_id && S.models.some(m => m.id === d.conversation.model_id))
     S.pickerModel = d.conversation.model_id;
@@ -483,13 +507,17 @@ async function sendMessage(e) {
   render();
 
   aborter = new AbortController();
-  const body = { model: S.pickerModel, message: text };
+  const body = { model: S.pickerModel, message: text, search: S.searchOn };
   if (S.conv) body.conversation_id = S.conv.id;
   try {
     for await (const ev of api.chatStream(body, aborter.signal)) {
       if (ev.type === 'accepted') {
         S.active.jobId = ev.job_id; S.active.position = ev.position;
         if (!S.conv) { S.conv = { id: ev.conversation_id, model_id: S.pickerModel, title: text.slice(0, 50) }; S.conversations.unshift(S.conv); }
+        render();
+      } else if (ev.type === 'search') {
+        const u = S.messages[S.messages.length - 1];
+        if (u && u.role === 'user') u.search = ev;
         render();
       } else if (ev.type === 'loading') { S.active.state = 'loading_model'; S.active.eta = ev.eta_s; render(); }
       else if (ev.type === 'token') {

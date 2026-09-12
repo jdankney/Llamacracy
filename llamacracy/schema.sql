@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS messages (
     prompt_tokens     INTEGER,
     completion_tokens INTEGER,
     usage_estimated   INTEGER NOT NULL DEFAULT 0,
+    search_json       TEXT,                  -- SearXNG outcome for this (user) turn, if requested
     created_at        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation ON messages(conversation_id, id);

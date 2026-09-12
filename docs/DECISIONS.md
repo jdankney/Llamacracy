@@ -6,8 +6,31 @@ Newest first.
 ## Phase 8 — more useful features (2026-09-10, in progress)
 
 Post-launch additions the owner wants, tackled one at a time. Agreed order:
-**(5) max context ✓ → (3) context wheel ✓ → (1) SearXNG → (4) multimodal →
+**(5) max context ✓ → (3) context wheel ✓ → (1) SearXNG ✓ → (4) multimodal →
 (2) Continue.dev**, then "compact context" later.
+
+### 1 · SearXNG search (done 2026-09-10)
+
+- Composer **toggle**, not model-driven tool calling (per the earlier
+  decision): on, the app runs one SearXNG query and prepends the top
+  `SEARCH_MAX_RESULTS` (4) snippets to *that turn's* prompt before a single
+  normal inference. The model never decides to search, never loops.
+- Runs in the `/api/chat` route itself, **before** the job is even built —
+  it's a fast local HTTP call (`llamacracy/search.py`, `SearxngClient`), not
+  GPU time, so it doesn't touch the FIFO queue and isn't separately metered.
+  A bigger prompt just takes a little longer, already priced by the second.
+- The user's **persisted** message stays exactly what they typed — the search
+  block is only spliced into the payload sent to the model. Citations are
+  kept separately as `messages.search_json` (new column, additive migration)
+  and rendered as a collapsible "🔍 N sources" chip under the user's bubble
+  (live via a new `search` SSE event, and on reload via
+  `/api/conversations/{id}`).
+- Failure modes degrade to "answered without it": SearXNG down/timeout ->
+  `ok:false`, empty results -> proceed on the plain message. Never blocks the
+  chat.
+- Verified live end-to-end against the real SearXNG instance (127.0.0.1:8085):
+  correct citations, injected prompt lifted `prompt_tokens` as expected (440
+  vs. a normal ~20-40), model answered from the results.
 
 ### 3 · Context wheel + breakdown (done 2026-09-10)
 

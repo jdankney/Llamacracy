@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     database_path: str = str(REPO_ROOT / "data" / "llamacracy.db")
     models_registry_path: str = str(REPO_ROOT / "config" / "models.json")
 
+    # --- search (Phase 8) -- SearXNG, injected on request, never model-driven -
+    searxng_url: str = "http://127.0.0.1:8085"
+    search_max_results: int = 4
+
     # --- queue -----------------------------------------------------------
     idle_ttl_minutes: int = 15
     idle_ttl_seconds: float | None = None    # if set, wins over idle_ttl_minutes

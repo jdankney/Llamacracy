@@ -23,6 +23,7 @@ from .identity import Principal, get_principal
 from .metering import Meter
 from .queue import Job, JobState, QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
+from .search import get_search
 from .upstream import Upstream, UpstreamError, get_upstream
 
 logging.basicConfig(level=logging.INFO,
@@ -53,6 +54,7 @@ async def lifespan(app: FastAPI):
     finally:
         await stop_queue()
         await up.aclose()
+        await get_search().aclose()
         get_db().close()
 
 
@@ -180,7 +182,8 @@ async def conversation_detail(conv_id: str,
         raise HTTPException(404, "no such conversation")
     msgs = await db.fetch_all(
         "SELECT role, content, model_id, prompt_tokens, completion_tokens, "
-        "usage_estimated, created_at FROM messages WHERE conversation_id = ? ORDER BY id",
+        "usage_estimated, search_json, created_at FROM messages "
+        "WHERE conversation_id = ? ORDER BY id",
         (conv_id,),
     )
     return {"conversation": dict(conv), "messages": [dict(m) for m in msgs]}
@@ -212,6 +215,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
     max_tokens: int | None = None
+    search: bool = False
 
 
 async def _load_history(db: Database, conv_id: str) -> list[dict]:
@@ -253,12 +257,25 @@ async def chat(req: ChatRequest,
         )
 
     history = await _load_history(db, conv_id)
+
+    # Search runs here, outside the FIFO queue -- it's a local HTTP call, not
+    # GPU time. One query, injected into this turn's prompt only; the user's
+    # own message is persisted clean (search_json carries the citations).
+    search_outcome = None
+    if req.search:
+        search_outcome = await get_search().search(req.message, settings.search_max_results)
+
     await db.execute(
-        "INSERT INTO messages (conversation_id, role, content, created_at) "
-        "VALUES (?, 'user', ?, ?)",
-        (conv_id, req.message, ts),
+        "INSERT INTO messages (conversation_id, role, content, search_json, created_at) "
+        "VALUES (?, 'user', ?, ?, ?)",
+        (conv_id, req.message,
+         json.dumps(search_outcome.as_dict()) if search_outcome else None, ts),
     )
-    messages = history + [{"role": "user", "content": req.message}]
+
+    prompt_content = req.message
+    if search_outcome and search_outcome.ok and search_outcome.results:
+        prompt_content = search_outcome.to_prompt_block() + req.message
+    messages = history + [{"role": "user", "content": prompt_content}]
 
     cap = min(
         req.max_tokens or model.max_tokens_default,
@@ -294,6 +311,8 @@ async def chat(req: ChatRequest,
         yield _sse({"type": "accepted", "job_id": job.id,
                     "conversation_id": conv_id,
                     "position": qm.position_of(job.id)})
+        if search_outcome is not None:
+            yield _sse(search_outcome.as_dict())
         try:
             while True:
                 chunk = await job._chunks.get()
