@@ -88,6 +88,7 @@ async def me(principal: Principal = Depends(get_principal),
             "session_window_hours": settings.session_window_hours,
             "max_tokens_per_request": settings.max_tokens_per_request,
             "upload_max_mb": settings.upload_max_mb,
+            "compact_keep_recent": settings.compact_keep_recent,
         },
     }
 
@@ -239,7 +240,7 @@ async def conversation_detail(conv_id: str,
     if conv is None:
         raise HTTPException(404, "no such conversation")
     msgs = await db.fetch_all(
-        "SELECT role, content, model_id, prompt_tokens, completion_tokens, "
+        "SELECT id, role, content, model_id, prompt_tokens, completion_tokens, "
         "usage_estimated, search_json, image_upload_id, created_at FROM messages "
         "WHERE conversation_id = ? ORDER BY id",
         (conv_id,),
@@ -276,6 +277,115 @@ async def delete_conversation(conv_id: str,
         except OSError:
             log.warning("failed to remove upload file %s", u["path"])
     return {"deleted": conv_id}
+
+
+# --------------------------------------------------------------------------- #
+# compact context -- on demand, never automatic. Summarizes everything except
+# the last COMPACT_KEEP_RECENT messages using the conversation's own model, so
+# future turns send far less history. This is a real inference: it goes
+# through the same FIFO queue and is billed the same as any other job -- not
+# free like search. Nothing is deleted; _load_history (above) is what
+# actually skips the folded-in messages when building a prompt.
+# --------------------------------------------------------------------------- #
+_COMPACT_SYSTEM_PROMPT = (
+    "You summarize conversations concisely and factually. Preserve names, "
+    "decisions, numbers, and code/config specifics needed to continue "
+    "naturally. Write neutral third-person notes -- no markdown headers, no "
+    "commentary about summarizing, no meta remarks. Plain prose or short "
+    "bullet points only."
+)
+
+
+def _render_turns(msgs: list[dict]) -> str:
+    who = {"user": "User", "assistant": "Assistant", "system": "Note"}
+    return "\n".join(f"{who.get(m['role'], m['role'])}: {m['content']}" for m in msgs)
+
+
+@app.post("/api/conversations/{conv_id}/compact")
+async def compact_conversation(conv_id: str,
+                               principal: Principal = Depends(get_principal),
+                               settings: Settings = Depends(get_settings),
+                               db: Database = Depends(get_db),
+                               reg: Registry = Depends(get_registry),
+                               qm: QueueManager = Depends(get_queue)):
+    conv = await db.fetch_one(
+        "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
+        (conv_id, principal.user_id),
+    )
+    if conv is None:
+        raise HTTPException(404, "no such conversation")
+
+    boundary = conv["compact_boundary_id"] or 0
+    rows = await db.fetch_all(
+        "SELECT id, role, content FROM messages "
+        "WHERE conversation_id = ? AND id > ? ORDER BY id",
+        (conv_id, boundary),
+    )
+    keep = settings.compact_keep_recent
+    to_compact = rows[:-keep] if keep else list(rows)
+    if len(to_compact) < 2:
+        raise HTTPException(
+            400, "not enough new conversation since last time to be worth compacting "
+                f"(keeps the last {keep} messages either way)")
+
+    model = reg.get(conv["model_id"])
+    if model is None or model.kind != "chat":
+        raise HTTPException(400, f"unknown model for this conversation: {conv['model_id']}")
+
+    prior = conv["context_summary"]
+    prompt = _render_turns([dict(r) for r in to_compact])
+    if prior:
+        prompt = f"Earlier summary:\n{prior}\n\nAdditional conversation since then:\n{prompt}"
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": _COMPACT_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": settings.compact_summary_max_tokens,
+        **model.sampling,
+    }
+    job = Job(
+        user_id=principal.user_id,
+        owner_name=principal.display_name,
+        owner_email=principal.email,
+        model_id=conv["model_id"],
+        payload=payload,
+        conversation_id=None,   # the summary lives on conversations.context_summary, not as a message
+    )
+
+    # Same enqueue-time limit check as every other job -- compacting is real
+    # GPU time and gets billed like anything else.
+    if qm.check_limits is not None:
+        decision = await qm.check_limits(principal.user_id, conv["model_id"])
+        job.session_id = decision.session_id
+        if not decision.allowed:
+            job.state = JobState.LIMIT_EXCEEDED
+            job.finished_at = now()
+            await qm._persist_job(job)
+            raise HTTPException(429, detail=decision.as_dict())
+
+    await qm.submit(job)
+    await job._done.wait()
+    if job.state != JobState.DONE or not job.content.strip():
+        raise HTTPException(502, job.error or "compaction produced no summary")
+
+    summary = job.content.strip()
+    new_boundary = to_compact[-1]["id"]
+    await db.execute(
+        "UPDATE conversations SET compact_boundary_id = ?, context_summary = ?, updated_at = ? "
+        "WHERE id = ?",
+        (new_boundary, summary, now(), conv_id),
+    )
+    return {
+        "compact_boundary_id": new_boundary,
+        "context_summary": summary,
+        "compacted_count": len(to_compact),
+        "model": conv["model_id"],
+        "credits": job.credits,
+        "prompt_tokens": job.prompt_tokens,
+        "completion_tokens": job.completion_tokens,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -326,11 +436,28 @@ class ChatRequest(BaseModel):
 
 
 async def _load_history(db: Database, conv_id: str) -> list[dict]:
-    rows = await db.fetch_all(
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id",
+    conv = await db.fetch_one(
+        "SELECT compact_boundary_id, context_summary FROM conversations WHERE id = ?",
         (conv_id,),
     )
-    return [{"role": r["role"], "content": r["content"]} for r in rows]
+    # Compacted messages (id <= boundary) are never resent verbatim -- the
+    # running summary stands in for them instead. Nothing is deleted; they're
+    # still visible in the UI, just excluded from what actually gets sent.
+    boundary = (conv["compact_boundary_id"] if conv else None) or 0
+    rows = await db.fetch_all(
+        "SELECT role, content FROM messages "
+        "WHERE conversation_id = ? AND id > ? ORDER BY id",
+        (conv_id, boundary),
+    )
+    history = [{"role": r["role"], "content": r["content"]} for r in rows]
+    if conv and conv["context_summary"]:
+        history.insert(0, {
+            "role": "system",
+            "content": "Summary of the earlier part of this conversation "
+                      "(context only -- don't refer to this note explicitly):\n"
+                      + conv["context_summary"],
+        })
+    return history
 
 
 @app.post("/api/chat")

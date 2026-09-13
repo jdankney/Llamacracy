@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     upload_dir: str = str(REPO_ROOT / "data" / "uploads")
     upload_max_mb: float = 8.0
 
+    # --- compact context -- summarize older turns to free the context window -
+    compact_keep_recent: int = 6          # most-recent messages always kept verbatim
+    compact_summary_max_tokens: int = 600  # cap on the generated summary itself
+
     # --- queue -----------------------------------------------------------
     idle_ttl_minutes: int = 15
     idle_ttl_seconds: float | None = None    # if set, wins over idle_ttl_minutes

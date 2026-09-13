@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS conversations (
     user_id      INTEGER NOT NULL REFERENCES users(id),
     title        TEXT NOT NULL DEFAULT '',  -- first 50 chars of first user message
     model_id     TEXT NOT NULL,
+    -- Compact context: messages with id <= compact_boundary_id are folded into
+    -- context_summary and no longer resent verbatim (still visible in the UI,
+    -- never deleted -- just excluded from the prompt going forward).
+    compact_boundary_id  INTEGER,
+    context_summary      TEXT,
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 );

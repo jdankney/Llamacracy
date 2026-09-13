@@ -148,6 +148,7 @@ const S = {
   usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
   searchOn: false, pendingImage: null,
   apiKeys: [], newApiKey: null, apiKeyLabel: '',
+  compacting: false,
 };
 
 /* ------------------------------------------------------------- SSE: queue */
@@ -241,13 +242,39 @@ function sidebar() {
 function chatView() {
   return h('main', { class: 'flex-1 flex flex-col min-w-0' },
     h('div', { id: 'thread', class: 'flex-1 overflow-y-auto px-4 py-4 space-y-4' },
-      S.messages.length ? S.messages.map(msgBubble)
+      S.messages.length ? threadItems()
         : h('div', { class: 'text-center text-zinc-600 mt-16 text-sm flex flex-col items-center gap-3' },
             h('img', { src: '/assets/llamacracy-logo.svg', alt: 'Llamacracy', width: 128, height: 128, class: 'opacity-90' }),
             h('div', {}, 'Pick a model and say something.')),
       S.active ? activeBubble() : null),
     composer(),
   );
+}
+// message bubbles, with a divider dropped in exactly where compaction cut
+// history off. Nothing is hidden -- every original message still renders;
+// the divider just marks the line the model no longer sees verbatim.
+function threadItems() {
+  const boundary = S.conv?.compact_boundary_id;
+  if (!boundary) return S.messages.map(msgBubble);
+  const items = [];
+  let shown = false;
+  for (const m of S.messages) {
+    if (!shown && (m.id == null || m.id > boundary)) { items.push(compactDivider()); shown = true; }
+    items.push(msgBubble(m));
+  }
+  if (!shown) items.push(compactDivider());
+  return items;
+}
+function compactDivider() {
+  const summary = S.conv?.context_summary;
+  if (!summary) return null;
+  return h('div', { class: 'flex justify-center' },
+    h('details', {
+      class: 'max-w-[46rem] w-full text-[11px] text-zinc-500 bg-panel2/60 border border-line rounded-lg px-3 py-1.5',
+    },
+      h('summary', { class: 'cursor-pointer hover:text-zinc-300 select-none' },
+        '🗜 earlier conversation compacted into a summary'),
+      h('div', { class: 'mt-2 text-zinc-400' }, mdBlock(summary))));
 }
 function msgBubble(m) {
   const mine = m.role === 'user';
@@ -320,37 +347,49 @@ function contextInfo() {
   const m = S.models.find(x => x.id === S.pickerModel);
   if (!m) return null;
   const limit = m.ctx, reply = m.max_tokens_default || 2048;
+  const boundary = S.conv?.compact_boundary_id || 0;
 
-  // last message with real usage = exact cost of everything up to and incl. it;
-  // anything after it (a dangling user turn, a model that skipped usage) is estimated
-  let base = 0, exact = false, from = 0;
+  // last message with real usage, *after* the compact boundary, = exact cost
+  // of everything up to and incl. it. Usage recorded before a compaction is
+  // stale -- the prompt it was billed for no longer reflects what gets sent
+  // -- so it no longer counts as the exact baseline once a boundary exists.
+  let base = 0, exact = false, from = 0, foundExact = false;
   for (let i = S.messages.length - 1; i >= 0; i--) {
     const msg = S.messages[i];
-    if (msg.role === 'assistant' && msg.prompt_tokens != null && msg.completion_tokens != null) {
+    if (msg.role === 'assistant' && msg.prompt_tokens != null && msg.completion_tokens != null
+        && (msg.id == null || msg.id > boundary)) {
       base = msg.prompt_tokens + msg.completion_tokens;
       exact = !msg.usage_estimated;
       from = i + 1;
+      foundExact = true;
       break;
     }
   }
   let tail = 0;
+  if (!foundExact && boundary && S.conv?.context_summary) {
+    tail += estTok(S.conv.context_summary) + 8;   // the summary itself, once
+  }
   for (let i = from; i < S.messages.length; i++) {
     const msg = S.messages[i];
+    if (msg.id != null && msg.id <= boundary) continue;   // folded into the summary, not resent
     tail += estTok(msg.content) + 4 + (msg.image || msg.image_upload_id ? IMG_TOK_ESTIMATE : 0);
   }
-  const estimated = (from === 0 && S.messages.length > 0) || (!exact && S.messages.length > 0) || tail > 0;
+  const estimated = (!foundExact && S.messages.length > 0) || (!exact && S.messages.length > 0) || tail > 0;
 
   const el = document.getElementById('composer');
   const draftTok = (el && el.value ? estTok(el.value) + 4 : 0) + (S.pendingImage ? IMG_TOK_ESTIMATE : 0);
 
   const used = base + tail;
   const projected = used + draftTok;          // the prompt the next send will build
+  const keep = S.me?.limits?.compact_keep_recent ?? 6;
+  const uncompacted = S.messages.filter(msg => msg.id == null || msg.id > boundary).length;
   return {
     m, limit, reply, used, draftTok, projected,
     afterReply: projected + reply, exact, estimated,
     pct: projected / limit,
     over: projected >= limit,                  // prompt itself won't fit
     tight: projected < limit && projected + reply > limit,  // reply may get truncated
+    compactable: !!S.conv && uncompacted > keep + 1,
   };
 }
 
@@ -390,10 +429,19 @@ function contextBreakdown(ci) {
     row('#3a3f4b', 'Reserved for reply', ci.reply),
     row('#23262e', 'Free', free),
     ci.over ? h('div', { class: 'mt-1 text-danger' },
-      'Over the window — trim the chat, start a new one, or pick a bigger-context model.')
+      'Over the window — compact it, trim the chat, start a new one, or pick a bigger-context model.')
       : ci.tight ? h('div', { class: 'mt-1 text-warn' },
-        'Close to full — the reply may be cut short. A bigger-context model has more room.')
-      : null);
+        'Close to full — the reply may be cut short. Compacting frees room, or a bigger-context model has more.')
+      : null,
+    ci.compactable ? h('div', { class: 'mt-2 pt-2 border-t border-line' },
+      h('button', {
+        type: 'button', disabled: S.compacting ? 'true' : null,
+        class: 'text-xs px-2 py-1 rounded border border-line text-zinc-300 hover:bg-panel2 disabled:opacity-50',
+        onclick: compactConversation,
+      }, S.compacting ? 'Compacting…' : '🗜 Compact history'),
+      h('div', { class: 'mt-1 text-zinc-600' },
+        `Summarizes everything except the last ${S.me?.limits?.compact_keep_recent ?? 6} messages ` +
+        'using this model. One real inference — billed like any other reply.')) : null);
 }
 
 let _ctxTimer = null;
@@ -665,6 +713,24 @@ async function delConv(id) {
   S.conversations = S.conversations.filter(c => c.id !== id);
   if (S.conv?.id === id) newChat(); else render();
 }
+async function compactConversation() {
+  if (!S.conv || S.compacting) return;
+  S.compacting = true; render();
+  try {
+    const r = await api.post(`/api/conversations/${S.conv.id}/compact`, {});
+    // nothing about the individual messages changes (they're never deleted --
+    // just excluded from what's sent from here on); only the conversation's
+    // own boundary/summary move, so no reload is needed.
+    S.conv.compact_boundary_id = r.compact_boundary_id;
+    S.conv.context_summary = r.context_summary;
+    flashInfo(`Compacted ${r.compacted_count} messages into a summary (${credits(r.credits)} credits).`);
+  } catch (e) {
+    flashError(e.message);
+  } finally {
+    S.compacting = false;
+    refreshCtx(); render();
+  }
+}
 
 let aborter = null;
 async function sendMessage(e) {
@@ -893,6 +959,10 @@ async function adminPost(path, body) {
 
 function flashError(msg) {
   const t = h('div', { class: 'fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-danger/20 border border-danger/50 text-danger text-sm px-3 py-2 rounded' }, msg);
+  document.body.append(t); setTimeout(() => t.remove(), 4000);
+}
+function flashInfo(msg) {
+  const t = h('div', { class: 'fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-good/20 border border-good/50 text-good text-sm px-3 py-2 rounded' }, msg);
   document.body.append(t); setTimeout(() => t.remove(), 4000);
 }
 function limitModal(detail) {

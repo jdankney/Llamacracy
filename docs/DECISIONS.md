@@ -3,6 +3,47 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Compact context (2026-09-13)
+
+The last item from the Phase 8 "future upgrades" list. On demand only — never
+automatic (no surprise credit spend, no surprise memory loss):
+
+- A **"🗜 Compact history"** button in the context breakdown panel (appears
+  once there's enough uncompacted history to be worth it). Summarizes
+  everything except the last `COMPACT_KEEP_RECENT` messages (default 6) into
+  one running note, using the **conversation's own model** — no separate
+  "summarizer model," no extra cold-load unless that model isn't already
+  loaded.
+- This is a **real inference**, not a free bookkeeping op like search: it
+  goes through the same FIFO queue, respects the same session/weekly limits,
+  and is billed exactly like a normal reply (`conversation_id=None` on the
+  job, though — the summary isn't a chat turn, so it isn't persisted as a
+  `messages` row and doesn't show up as one).
+- Storage: `conversations.compact_boundary_id` + `context_summary` (two new
+  columns, additive migration). Messages with `id <= boundary` are **never
+  deleted** — full history stays visible and scrollable in the UI forever —
+  they're just excluded from what `_load_history` actually sends to the model
+  from that point on, with the summary spliced in as a leading system
+  message instead. Re-compacting later folds the *old* summary plus the
+  newly-accumulated messages into one updated summary (cumulative, not
+  one-shot).
+- UI transparency: a divider drops into the thread exactly where the cut
+  happened ("🗜 earlier conversation compacted into a summary"), collapsible,
+  showing the actual summary text the model now relies on instead of the
+  original messages — so it's never a black box.
+- The context wheel had to learn about the boundary too: usage recorded
+  *before* a compaction is stale (that prompt no longer reflects reality), so
+  it stops counting as the "exact" baseline once a boundary exists; the tail
+  estimate skips folded-away messages and counts the summary once instead.
+  This matters for the ring reading correctly immediately after compacting,
+  before the next real reply re-establishes a fresh exact baseline.
+- Verified live: built a real 4-exchange conversation, compacted the first
+  exchange, then asked the model to recall all four facts in one reply — it
+  correctly recalled the compacted-away fact (from the summary alone) *and*
+  the three still-verbatim facts, confirming the substitution actually works
+  end-to-end, not just the DB bookkeeping. Also verified the "not enough
+  history yet" rejection path. Test conversations cleaned up after.
+
 ## Ops: one `llamacracy` command for the whole stack (2026-09-13)
 
 - `deploy/llamacracy-cli.sh`, symlinked onto `PATH` as `llamacracy` by
