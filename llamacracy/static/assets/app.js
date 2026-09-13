@@ -55,6 +55,34 @@ const h = (tag, attrs = {}, ...kids) => {
 };
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+// Copy the raw source (markdown/LaTeX as typed/generated, not rendered HTML)
+// to the clipboard. The async Clipboard API needs a secure context, and this
+// app is deliberately served over plain HTTP (the WireGuard/NetBird tunnel is
+// the encryption layer) -- so `navigator.clipboard` is unavailable in most
+// browsers here. Fall back to the old execCommand('copy') trick, which works
+// on any origin.
+async function copyText(btn, text) {
+  let ok = false;
+  try {
+    if (window.isSecureContext && navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch { /* fall through to the legacy path below */ }
+  if (!ok) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    document.body.removeChild(ta);
+  }
+  const orig = btn.textContent;
+  btn.textContent = ok ? '✓ Copied' : '✗ failed';
+  setTimeout(() => { btn.textContent = orig; }, 1200);
+}
+
 // LaTeX -> KaTeX HTML, done BEFORE marked so markdown doesn't eat the
 // backslashes in \(...\) and \[...\]. Each math span is pulled out, rendered,
 // and swapped back in after marked via a placeholder markdown ignores.
@@ -222,6 +250,10 @@ function chatView() {
 }
 function msgBubble(m) {
   const mine = m.role === 'user';
+  const meta = m.completion_tokens != null
+    ? `${m.model_id || ''} · ${m.prompt_tokens || 0}+${m.completion_tokens} tok` +
+      (m.usage_estimated ? ' (est)' : '')
+    : '';
   return h('div', { class: 'flex ' + (mine ? 'justify-end' : 'justify-start') },
     h('div', { class: 'max-w-[46rem] rounded-lg px-3 py-2 text-sm ' +
         (mine ? 'bg-accent/15 border border-accent/30' : 'bg-panel border border-line') },
@@ -230,9 +262,15 @@ function msgBubble(m) {
       }) : null,
       mdBlock(m.content),
       mine ? searchChip(m.search) : null,
-      m.completion_tokens != null ? h('div', { class: 'mt-1 text-[11px] text-zinc-600' },
-        `${m.model_id || ''} · ${m.prompt_tokens || 0}+${m.completion_tokens} tok` +
-        (m.usage_estimated ? ' (est)' : '')) : null));
+      h('div', { class: 'mt-1 flex items-center gap-2 text-[11px] text-zinc-600' },
+        h('span', { class: 'flex-1 truncate' }, meta),
+        h('button', {
+          type: 'button', title: 'Copy the raw markdown/LaTeX source',
+          class: 'shrink-0 px-1.5 py-0.5 rounded border border-transparent ' +
+            'text-zinc-500 hover:text-zinc-200 hover:border-line hover:bg-panel2',
+          onclick: e => copyText(e.currentTarget, m.content),
+        }, '⧉ Copy')),
+    ));
 }
 function searchChip(sr) {
   if (!sr) return null;
