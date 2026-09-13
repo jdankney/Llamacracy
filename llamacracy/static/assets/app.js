@@ -176,11 +176,11 @@ function render() {
 
 /* topbar */
 function topbar() {
-  return h('header', { id: 'topbar', class: 'shrink-0 h-12 border-b border-line flex items-center gap-3 px-3 bg-panel' },
-    h('button', { class: 'md:hidden text-zinc-400', onclick: () => { S.sidebarOpen = !S.sidebarOpen; render(); } }, '☰'),
+  return h('header', { id: 'topbar', class: 'shrink-0 h-12 border-b border-line flex items-center gap-2 sm:gap-3 px-2 sm:px-3 bg-panel min-w-0' },
+    h('button', { class: 'md:hidden text-zinc-400 shrink-0', onclick: () => { S.sidebarOpen = !S.sidebarOpen; render(); } }, '☰'),
     h('img', { src: '/assets/llamacracy-favicon.svg', alt: '', width: 24, height: 24, class: 'shrink-0' }),
-    h('span', { class: 'font-semibold tracking-tight' }, 'Llamacracy'),
-    h('span', { id: 'loaded-badge' }, loadedBadge()),
+    h('span', { class: 'font-semibold tracking-tight shrink-0 hidden sm:inline' }, 'Llamacracy'),
+    h('span', { id: 'loaded-badge', class: 'min-w-0 truncate hidden sm:block' }, loadedBadge()),
     h('div', { class: 'flex-1' }),
     gauge('session', S.usage?.session), gauge('week', S.usage?.weekly),
     h('button', {
@@ -213,28 +213,40 @@ function gauge(label, g) {
 
 /* sidebar */
 function sidebar() {
-  return h('aside', {
-    class: 'w-64 shrink-0 border-r border-line bg-panel flex flex-col ' +
-      (S.sidebarOpen ? 'absolute z-20 h-full' : 'hidden') + ' md:flex md:static',
-  },
-    h('div', { class: 'p-2' },
-      h('button', {
-        class: 'w-full text-sm rounded bg-panel2 hover:bg-line border border-line py-2',
-        onclick: newChat,
-      }, '+ New chat')),
-    h('div', { class: 'flex-1 overflow-y-auto px-1' },
-      S.conversations.map(c => h('div', {
-        class: 'group flex items-center rounded px-2 py-1.5 text-sm cursor-pointer ' +
-          (S.conv?.id === c.id ? 'bg-panel2 text-zinc-100' : 'text-zinc-400 hover:bg-panel2'),
-        onclick: () => openConv(c.id),
-      },
-        h('span', { class: 'truncate flex-1' }, c.title || 'untitled'),
+  // `contents` keeps this a no-op wrapper for the flex row in render() -- the
+  // <aside> below still sizes/participates exactly as if it were the direct
+  // child, while the mobile-only backdrop renders alongside it, not inside it.
+  return h('div', { class: 'contents' },
+    S.sidebarOpen ? h('div', {
+      class: 'fixed inset-0 z-10 bg-black/50 md:hidden',
+      onclick: () => { S.sidebarOpen = false; render(); },
+    }) : null,
+    h('aside', {
+      class: 'w-64 shrink-0 border-r border-line bg-panel flex flex-col ' +
+        (S.sidebarOpen ? 'absolute z-20 h-full' : 'hidden') + ' md:flex md:static',
+    },
+      h('div', { class: 'p-2' },
         h('button', {
-          class: 'opacity-0 group-hover:opacity-100 text-zinc-600 hover:text-danger px-1',
-          onclick: e => { e.stopPropagation(); delConv(c.id); },
-        }, '×')))),
-    h('div', { class: 'p-2 text-xs text-zinc-600 border-t border-line' },
-      `${S.queue.depth} in queue`),
+          class: 'w-full text-sm rounded bg-panel2 hover:bg-line border border-line py-2',
+          onclick: newChat,
+        }, '+ New chat')),
+      h('div', { class: 'flex-1 overflow-y-auto px-1' },
+        S.conversations.map(c => h('div', {
+          class: 'group flex items-center rounded px-2 py-1.5 text-sm cursor-pointer ' +
+            (S.conv?.id === c.id ? 'bg-panel2 text-zinc-100' : 'text-zinc-400 hover:bg-panel2'),
+          onclick: () => openConv(c.id),
+        },
+          h('span', { class: 'truncate flex-1' }, c.title || 'untitled'),
+          h('button', {
+            // group-hover alone is unreachable on touch (no :hover) -- keep it
+            // faintly visible by default and let hover still sharpen it up on
+            // pointer devices.
+            class: 'opacity-60 md:opacity-0 md:group-hover:opacity-100 text-zinc-600 hover:text-danger px-1',
+            onclick: e => { e.stopPropagation(); delConv(c.id); },
+          }, '×')))),
+      h('div', { class: 'p-2 text-xs text-zinc-600 border-t border-line' },
+        `${S.queue.depth} in queue`),
+    ),
   );
 }
 
@@ -574,7 +586,7 @@ function usageView() {
           class: 'flex-1 max-w-[24px] bg-accent/40 rounded-t', style: `height:${Math.max(2, 100 * b.credits / max)}%`,
           title: `${credits(b.credits)} credits · ${money(b.cost_usd)}`,
         })) : h('div', { class: 'text-xs text-zinc-600 self-center' }, 'no activity yet'))),
-    h('div', { class: 'bg-panel border border-line rounded-lg overflow-hidden' },
+    h('div', { class: 'bg-panel border border-line rounded-lg overflow-x-auto' },
       h('table', { class: 'w-full text-sm' },
         h('thead', { class: 'text-zinc-500 text-xs' }, h('tr', {},
           ...['Model', 'Requests', 'Credits', 'Tokens', 'Cost'].map(t =>

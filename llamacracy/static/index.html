@@ -7,6 +7,21 @@
 <link rel="icon" href="/assets/llamacracy-favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/assets/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<!-- PWA: installable from the phone's browser, no App Store / Play Store
+     involved. iOS honors the old apple-* tags for "Add to Home Screen"
+     (works without HTTPS -- that mechanism predates and doesn't require the
+     Service Worker / installability spec); the manifest covers Android +
+     modern Safari too. No service worker: it needs a secure context (https
+     or localhost) to register at all, and this app is deliberately plain
+     HTTP (the NetBird/WireGuard tunnel is the encryption layer) -- one would
+     just silently fail here, and there's no meaningful offline mode for a
+     live-inference chat anyway. -->
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<meta name="theme-color" content="#0c0d10">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Llamacracy">
 <script src="https://cdn.tailwindcss.com"></script>
 <!-- markdown rendering: parser + HTML sanitiser + code highlighting.
      Classic scripts, so they're ready before the deferred module app.js. -->

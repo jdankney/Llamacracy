@@ -3,6 +3,43 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Mobile: installable PWA, not a native iOS app (2026-09-13)
+
+Owner's first instinct was a non-App-Store iOS app; reconsidered before
+building anything — without a Mac/Xcode, and without a paid Apple Developer
+account, any sideloaded IPA re-signs and expires every 7 days. Genuinely the
+wrong tool here.
+
+- Added `manifest.webmanifest` + `apple-mobile-web-app-*` meta tags so
+  "Add to Home Screen" (iOS Safari) or "Install app" (Android Chrome) gives a
+  chrome-less, icon-launched window — no App Store, no Apple Developer
+  Program, nothing to re-sign. New 192/512 + a maskable-safe-zone icon
+  rendered straight from the existing logo SVG (same navy background the
+  existing apple-touch-icon already used) via `rsvg-convert`.
+- **Deliberately no service worker.** Registering one needs a secure context
+  (HTTPS or literally `localhost`) in every engine that matters, and this app
+  is intentionally plain HTTP (NetBird/WireGuard is the encryption layer, per
+  the Phase 6 decision) — a real hostname like
+  `myhost.netbird.selfhosted` doesn't qualify, so a service worker would
+  just silently fail to register. Also genuinely not needed: iOS's home
+  -screen-webapp mechanism predates and doesn't require the Service Worker /
+  Chrome installability spec, and there's no meaningful offline mode for a
+  tool whose entire job is live GPU inference anyway.
+- Access control doesn't change at all — same NetBird-gated URL as always,
+  just launchable from an icon instead of a bookmark. The phone still needs
+  the NetBird app installed and connected first.
+- Audited the existing layout for phone widths while in there (it was
+  already mobile-aware — collapsible sidebar, wrapping composer row — from
+  earlier phases, just not stress-tested): fixed a table that silently
+  clipped a column instead of scrolling (`overflow-hidden` → `overflow-x-auto`,
+  matching the pattern the admin tables already used), trimmed the topbar
+  (wordmark + resident-model badge hide below `sm:` — the loaded-model state
+  is already visible in the composer) so gauges/Usage/Admin don't get
+  crushed on a narrow phone, and fixed two real touch-usability bugs: the
+  sidebar's conversation-delete button only appeared on CSS `:hover` (which
+  doesn't fire on touch — unreachable on a phone before this), and the
+  mobile drawer had no backdrop / tap-outside-to-close.
+
 ## Compact context (2026-09-13)
 
 The last item from the Phase 8 "future upgrades" list. On demand only — never
