@@ -164,6 +164,10 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 | `MARKUP` | multiplier on `cost_usd`. Default 1.0 -- raise to 2-3x for non-trivial invoices. |
 | `IDLE_TTL_MINUTES` | unload the resident model after this long idle. Default 15. |
 | `IDLE_TTL_SECONDS` | seconds-granularity idle unload; wins over `IDLE_TTL_MINUTES` when set. `.env` ships 60. Short = frees VRAM fast but quick follow-ups re-pay the cold load. |
+| `SEARXNG_URL` / `SEARCH_MAX_RESULTS` | local SearXNG instance + how many snippets get prepended when a user flips the search toggle on. Not metered (a local HTTP call, not GPU time). |
+| `UPLOAD_DIR` / `UPLOAD_MAX_MB` | where attached images land on disk (never base64 in the DB) and the per-file size cap. Default `./data/uploads`, 8 MB. |
+| `COMPACT_KEEP_RECENT` | messages always left verbatim when a user compacts a conversation; everything older gets folded into the running summary. Default 6. |
+| `COMPACT_SUMMARY_MAX_TOKENS` | cap on the length of the generated summary itself. Default 600. |
 
 **Per-user**, in the admin dashboard → Admin → Users tab (no restart):
 - **Overrides** — type a number in the `sess` / `week` box and hit *set* to give
@@ -203,6 +207,16 @@ lane would be needed first).
 
 A revoked/deleted key stops authenticating immediately (`/api/keys/{id}`,
 DELETE, self-service from the same page).
+
+## Mobile access (PWA)
+
+Nothing to run — it's static files (`manifest.webmanifest` + meta tags in
+`static/index.html`), served by the same app. Users install it themselves:
+NetBird connected, open the site in Safari (iOS) or Chrome (Android), then
+"Add to Home Screen" / "Install app". See [docs/WELCOME.md](../docs/WELCOME.md)
+for the exact steps sent to users, and
+[docs/DECISIONS.md](../docs/DECISIONS.md) for why there's deliberately no
+service worker (needs a secure context; this app is plain HTTP by design).
 
 ## Backup
 

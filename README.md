@@ -17,6 +17,8 @@ See [docs/SPEC.md](docs/SPEC.md) for the full design brief.
 | 4 | Frontend — chat UI, model picker, live queue, usage page | **done** (`static/`) |
 | 5 | Admin dashboard | **done** (`admin.py`) |
 | 6 | Deployment — systemd units, local Dex, oauth2-proxy, NetBird binding | **done** (`deploy/`) |
+| 7 | Markdown/LaTeX rendering, copy button, `llamacracy` CLI | **done** |
+| 8 | Post-launch features — max context, context wheel, SearXNG search, on-demand vision, Continue.dev API, compact context, installable PWA | **done** (see [docs/DECISIONS.md](docs/DECISIONS.md)) |
 
 ## Hardware
 
@@ -58,11 +60,14 @@ edge — all on the NetBird interface, nothing public):
 cd deploy/dex && ./gen-hash.sh 'your-password'          # add yourself (+ friends)
 cd ../.. && llamacracy up                               # start everything
 ```
-Users sign in at `http://myhost.netbird.selfhosted:4180`. Day to day:
-`llamacracy {up,down,restart,status,logs}` controls the whole stack at once.
-See [deploy/OPERATIONS.md](deploy/OPERATIONS.md) for adding a user, restarts,
-adding a model, adjusting limits, and backup;
-[deploy/dex/README.md](deploy/dex/README.md) for the IdP.
+Users sign in at `http://myhost.netbird.selfhosted:4180`. It's installable
+as a phone app too — Safari → Share → "Add to Home Screen" while on NetBird —
+no App Store involved (see [docs/DECISIONS.md](docs/DECISIONS.md)). Day to
+day: `llamacracy {up,down,restart,status,logs}` controls the whole stack at
+once. See [deploy/OPERATIONS.md](deploy/OPERATIONS.md) for adding a user,
+restarts, adding a model, adjusting limits, and backup;
+[deploy/dex/README.md](deploy/dex/README.md) for the IdP;
+[docs/WELCOME.md](docs/WELCOME.md) is the onboarding doc sent to users.
 
 ## Design
 

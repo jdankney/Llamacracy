@@ -13,8 +13,20 @@ bill has a face, and that face is mine.
   quick stuff, a couple of mid-size ones, and a 35-billion-parameter monster
   for long documents and hard problems.
 - Proper markdown rendering, code with syntax highlighting, rendered math for
-  the physics/maths crowd, answers that stream in as they're written.
-- Your own conversation history and a personal usage page.
+  the physics/maths crowd, answers that stream in as they're written — and a
+  **copy button** on every message so you can pull the raw markdown/LaTeX
+  straight into your own notes.
+- Drop an image into the composer and the two biggest models can see it
+  (describe it, read text in it, answer questions about it).
+- A **search toggle** in the composer — flip it on and that message gets a
+  real web search first, with sources cited underneath, before the model
+  answers. Off by default.
+- Your own conversation history and a personal usage page. Long chats can be
+  **compacted** on demand (a button in the context panel) to free up room
+  without losing the thread — it folds the older part into a summary, it
+  doesn't delete anything.
+- Installable as an actual app icon on your phone (see below) — not just a
+  bookmark.
 - No signup circus, nothing sold to anyone, no "as an AI language model, I
   can't help with that." Some of these models are... not very censored.
 
@@ -31,6 +43,19 @@ bill has a face, and that face is mine.
 
 If you're not connected to NetBird, the site simply doesn't exist for you —
 it's never on the public internet. That's deliberate.
+
+### On your phone
+
+Same deal — NetBird app connected, then open the site in **Safari** (iPhone)
+or **Chrome** (Android). Then:
+
+- **iPhone:** tap Share → **Add to Home Screen**.
+- **Android:** tap the menu (⋮) → **Install app** (or Chrome may offer a
+  banner on its own).
+
+You'll get a real icon that opens full-screen, no browser address bar — no
+App Store, nothing to install from anywhere but the site itself. You still
+need NetBird connected for it to load, same as on a computer.
 
 ## The one thing to understand: there's only one machine
 
@@ -85,9 +110,12 @@ ask your question normally.
 
 ## What it can't do (yet)
 
-- No image input, no file uploads, no web browsing.
+- Image input only works on the two biggest models, and only the current
+  message's image is "seen" — it won't re-look at a photo from three messages
+  ago on a follow-up.
 - Each conversation stands on its own — no shared memory between chats (your
-  history is saved, though).
+  history is saved, though, and you can compact a long one instead of losing
+  it).
 - No knobs for temperature and such — I've set sensible defaults per model.
 - It's a home server. If the power blips or I reboot the machine, it'll drop
   for a minute. It comes back.
