@@ -26,7 +26,7 @@ Newest first.
 
 Post-launch additions the owner wants, tackled one at a time. Agreed order:
 **(5) max context ✓ → (3) context wheel ✓ → (1) SearXNG ✓ → (4) multimodal ✓ →
-(2) Continue.dev**, then "compact context" later.
+(2) Continue.dev ✓** — all five done. "Compact context" is next, whenever.
 
 ### 1 · SearXNG search (done 2026-09-10)
 
@@ -67,10 +67,45 @@ Post-launch additions the owner wants, tackled one at a time. Agreed order:
 - Updates on every render (turn, model switch, conv open) and debounced on
   composer input. Matters now that models span 8K–128K.
 
-**Still to come — 2 · Continue.dev**: OpenAI-compat endpoint authed by a
-per-user bearer key (`api_keys` table, generated in `/usage`); still flows
-through the FIFO queue + metering. v1 scope = chat + `/v1/models` only, no
-editor autocomplete (would swamp the queue).
+### 2 · Continue.dev / OpenAI-compatible API (done 2026-09-13)
+
+- `/v1/models` + `/v1/chat/completions` (chat + `/v1/models` only — no
+  `/v1/completions`, so no editor-autocomplete integration; that's a fast-lane
+  problem for another day, not this queue).
+- Auth is a per-user **bearer API key**, not oauth2-proxy: an IDE isn't a
+  browser session, so it can't do the OIDC cookie dance. Keys are
+  self-service from the usage page (`POST /api/keys`), shown once, stored as
+  a sha256 hash only (`llamacracy/apikeys.py`) — same model as a GitHub PAT.
+  `llamacracy/identity.py`'s `get_principal_api_key` is the only gate on
+  those two paths; everywhere else still requires a real login.
+- Those two paths are also carved out of oauth2-proxy's own auth
+  (`skip_auth_routes` in `deploy/oauth2-proxy.cfg`) — otherwise an
+  unauthenticated IDE request would just get redirected to the Dex login page
+  instead of a clean 401. Verified live through the real public edge
+  (`myhost.netbird.selfhosted:4180`, not just localhost): no key → 401,
+  bogus key → 401, valid key → 200, no login-redirect loop.
+- Still the **same FIFO queue and metering** as the web UI — a job is a job
+  regardless of which door it came through, one shared session/weekly cap.
+  The difference is **no conversation is persisted**: the client sends its
+  full message list every call (real OpenAI semantics), so there's nothing
+  to store server-side except the `jobs` row for billing — IDE chatter
+  doesn't clutter the web UI's chat history.
+- Streaming translates the queue's internal chunk events to the real OpenAI
+  SSE wire format (`chat.completion.chunk` / `[DONE]`), including sending the
+  initial `{"role":"assistant"}` chunk immediately on submit — before the job
+  even leaves the queue — so a slow cold-load or a queue wait doesn't read as
+  silence to the client and risk a timeout. Non-streaming drains the same
+  event stream fully and returns one `chat.completion` object with real
+  `usage` token counts.
+- Verified live end-to-end through the real edge: `/v1/models` lists the
+  picker models; a non-streaming and a streaming chat call both ran a real
+  inference and returned correctly-shaped OpenAI responses; a revoked key
+  stopped authenticating immediately; confirmed no `conversations`/`messages`
+  rows were created by API traffic, only `jobs` rows (for billing).
+- Mid-verification, an old test artifact from an earlier feature's testing
+  surfaced (a stray user row created by a header-spoofing mistake in a
+  previous session, not the owner) — cleaned it up along with its test jobs;
+  no real user data was touched.
 
 ### 4 · On-demand multimodal / vision (done 2026-09-13)
 

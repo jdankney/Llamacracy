@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
 
+from .apikeys import hash_key
 from .config import Settings, get_settings
 from .db import Database, get_db, now
 
@@ -92,3 +93,42 @@ async def require_admin(principal: Principal = Depends(get_principal)) -> Princi
     if not principal.is_admin:
         raise HTTPException(status_code=403, detail="admin only")
     return principal
+
+
+_UNAUTHORIZED = HTTPException(
+    status_code=401, detail="missing or invalid API key",
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
+
+async def get_principal_api_key(
+    request: Request,
+    db: Database = Depends(get_db),
+) -> Principal:
+    """Identity for the OpenAI-compatible endpoint (/v1/*) -- a bearer API
+    key instead of oauth2-proxy's forwarded headers. That endpoint is reached
+    by IDE tools directly, outside the browser session, so oauth2-proxy skips
+    auth on those paths entirely (deploy/oauth2-proxy.cfg) and this is the
+    only gate. Keys are generated from the usage page and stored as a sha256
+    hash only (see llamacracy/apikeys.py)."""
+    auth = request.headers.get("authorization", "")
+    scheme, _, token = auth.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise _UNAUTHORIZED
+    row = await db.fetch_one(
+        "SELECT k.id AS key_id, u.id, u.oidc_sub, u.email, u.display_name, "
+        "  u.is_admin, u.disabled "
+        "FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ?",
+        (hash_key(token.strip()),),
+    )
+    if row is None:
+        raise _UNAUTHORIZED
+    if row["disabled"]:
+        raise HTTPException(status_code=403, detail="account disabled")
+    # is_admin is cached on the user row from their last OIDC login; fine to
+    # trust here too -- an API key can't grant admin, only reflect it.
+    await db.execute("UPDATE api_keys SET last_used_at = ? WHERE id = ?", (now(), row["key_id"]))
+    return Principal(
+        row["id"], row["oidc_sub"], row["email"], row["display_name"],
+        bool(row["is_admin"]), bool(row["disabled"]),
+    )

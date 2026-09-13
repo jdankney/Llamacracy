@@ -18,9 +18,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .admin import router as admin_router
+from .apikeys import generate as generate_api_key
 from .config import Settings, get_settings
 from .db import Database, get_db, now
-from .identity import Principal, get_principal
+from .identity import Principal, get_principal, get_principal_api_key
 from .metering import Meter
 from .queue import Job, JobState, QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
@@ -131,6 +132,51 @@ async def usage(principal: Principal = Depends(get_principal),
         "daily": [dict(r) for r in daily],
         "estimated_fraction": round(frac, 4),
     }
+
+
+# --------------------------------------------------------------------------- #
+# API keys (Phase 8.2) -- self-service, for the OpenAI-compatible endpoint
+# --------------------------------------------------------------------------- #
+class CreateApiKey(BaseModel):
+    label: str = ""
+
+
+@app.get("/api/keys")
+async def list_api_keys(principal: Principal = Depends(get_principal),
+                        db: Database = Depends(get_db)):
+    rows = await db.fetch_all(
+        "SELECT id, label, created_at, last_used_at FROM api_keys "
+        "WHERE user_id = ? ORDER BY id DESC",
+        (principal.user_id,),
+    )
+    return {"keys": [dict(r) for r in rows]}
+
+
+@app.post("/api/keys")
+async def create_api_key(req: CreateApiKey,
+                         principal: Principal = Depends(get_principal),
+                         db: Database = Depends(get_db)):
+    key, key_hash = generate_api_key()
+    await db.execute(
+        "INSERT INTO api_keys (user_id, key_hash, label, created_at) VALUES (?, ?, ?, ?)",
+        (principal.user_id, key_hash, req.label.strip()[:80], now()),
+    )
+    # shown once -- only the hash is ever stored, so this is the one chance
+    return {"key": key}
+
+
+@app.delete("/api/keys/{key_id}")
+async def revoke_api_key(key_id: int,
+                         principal: Principal = Depends(get_principal),
+                         db: Database = Depends(get_db)):
+    row = await db.fetch_one(
+        "SELECT id FROM api_keys WHERE id = ? AND user_id = ?",
+        (key_id, principal.user_id),
+    )
+    if row is None:
+        raise HTTPException(404, "no such key")
+    await db.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+    return {"revoked": key_id}
 
 
 @app.get("/api/models")
@@ -494,6 +540,159 @@ async def infill(req: InfillRequest,
     except UpstreamError as e:
         raise HTTPException(502, str(e))
     return {"content": res.get("content", ""), "model": fim.display}
+
+
+# --------------------------------------------------------------------------- #
+# OpenAI-compatible API (Phase 8.2) -- for IDE tools (Continue.dev etc.), not
+# the web UI. Bearer API-key auth (get_principal_api_key), not oauth2-proxy --
+# these paths are in oauth2-proxy's skip_auth_routes (deploy/oauth2-proxy.cfg)
+# since an IDE isn't a browser session. Same FIFO queue + metering as
+# everything else -- a `jobs` row is still written for billing, but there's no
+# conversation to persist: the client sends its full message list every call,
+# exactly like the real OpenAI API, and we don't keep IDE chatter in the web
+# UI's history.
+# --------------------------------------------------------------------------- #
+@app.get("/v1/models")
+async def v1_models(principal: Principal = Depends(get_principal_api_key),
+                    reg: Registry = Depends(get_registry)):
+    return {
+        "object": "list",
+        "data": [{"id": m.key, "object": "model", "created": 0, "owned_by": "llamacracy"}
+                 for m in reg.chat_models()],
+    }
+
+
+class V1Message(BaseModel):
+    role: str
+    content: str    # v1 scope: text only -- no vision/tool-calls over this endpoint
+
+
+class V1ChatRequest(BaseModel):
+    model: str
+    messages: list[V1Message] = Field(min_length=1)
+    stream: bool = False
+    max_tokens: int | None = None
+
+
+def _v1_chunk(job_id: str, model: str, created: int, delta: dict,
+             finish_reason: str | None) -> dict:
+    return {
+        "id": f"chatcmpl-{job_id}", "object": "chat.completion.chunk", "created": created,
+        "model": model, "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+
+
+async def _v1_drain(job: Job, qm: QueueManager, request: Request):
+    """Yields the queue's own internal chunk events until the job ends,
+    cancelling on client disconnect -- same contract as /api/chat's stream."""
+    try:
+        while True:
+            chunk = await job._chunks.get()
+            if chunk is None:
+                break
+            yield chunk
+    except asyncio.CancelledError:
+        await qm.cancel(job.id, job.user_id)
+        raise
+    if await request.is_disconnected():
+        await qm.cancel(job.id, job.user_id)
+
+
+@app.post("/v1/chat/completions")
+async def v1_chat_completions(req: V1ChatRequest,
+                              request: Request,
+                              principal: Principal = Depends(get_principal_api_key),
+                              settings: Settings = Depends(get_settings),
+                              reg: Registry = Depends(get_registry),
+                              qm: QueueManager = Depends(get_queue)):
+    model = reg.get(req.model)
+    if model is None or model.kind != "chat" or not model.in_picker:
+        raise HTTPException(400, f"unknown model: {req.model}")
+
+    cap = min(
+        req.max_tokens or model.max_tokens_default,
+        model.max_tokens_default,
+        settings.max_tokens_per_request,
+    )
+    payload = {
+        "messages": [m.model_dump() for m in req.messages],
+        "max_tokens": cap,
+        **model.sampling,
+    }
+
+    job = Job(
+        user_id=principal.user_id,
+        owner_name=principal.display_name,
+        owner_email=principal.email,
+        model_id=req.model,
+        payload=payload,
+        conversation_id=None,   # the client owns history; nothing to persist here
+    )
+
+    # Same enqueue-time limit check as /api/chat -- one shared meter, one
+    # shared session/weekly cap regardless of which door a job came in through.
+    if qm.check_limits is not None:
+        decision = await qm.check_limits(principal.user_id, req.model)
+        job.session_id = decision.session_id
+        if not decision.allowed:
+            job.state = JobState.LIMIT_EXCEEDED
+            job.finished_at = now()
+            await qm._persist_job(job)
+            raise HTTPException(429, detail=decision.as_dict())
+
+    await qm.submit(job)
+    created = int(now())
+
+    if req.stream:
+        async def event_stream():
+            # sent immediately, before the job even leaves the queue -- keeps
+            # the connection alive with real bytes through a cold load/wait
+            # instead of going silent and risking a client-side timeout.
+            yield _sse(_v1_chunk(job.id, req.model, created,
+                                 {"role": "assistant", "content": ""}, None))
+            async for chunk in _v1_drain(job, qm, request):
+                t = chunk.get("type")
+                if t == "token":
+                    yield _sse(_v1_chunk(job.id, req.model, created,
+                                         {"content": chunk["text"]}, None))
+                elif t in ("done", "cancelled"):
+                    yield _sse(_v1_chunk(job.id, req.model, created, {}, "stop"))
+                    yield "data: [DONE]\n\n"
+                elif t == "error":
+                    yield _sse({"error": {"message": chunk.get("detail", "generation error")}})
+                    yield "data: [DONE]\n\n"
+                # "loading" / "reasoning" have no OpenAI wire-format equivalent; skip
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
+    # non-streaming: drain fully, return one JSON object
+    text: list[str] = []
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    finish_reason = "stop"
+    async for chunk in _v1_drain(job, qm, request):
+        t = chunk.get("type")
+        if t == "token":
+            text.append(chunk["text"])
+        elif t == "done":
+            usage = {
+                "prompt_tokens": chunk.get("prompt_tokens") or 0,
+                "completion_tokens": chunk.get("completion_tokens") or 0,
+                "total_tokens": (chunk.get("prompt_tokens") or 0) + (chunk.get("completion_tokens") or 0),
+            }
+        elif t == "cancelled":
+            finish_reason = "cancelled"
+        elif t == "error":
+            raise HTTPException(502, chunk.get("detail", "generation error"))
+
+    return {
+        "id": f"chatcmpl-{job.id}", "object": "chat.completion", "created": created,
+        "model": req.model,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "".join(text)},
+                    "finish_reason": finish_reason}],
+        "usage": usage,
+    }
 
 
 # --------------------------------------------------------------------------- #

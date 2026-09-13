@@ -147,6 +147,7 @@ const S = {
   conv: null, messages: [], active: null, queue: { jobs: [], depth: 0 },
   usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
   searchOn: false, pendingImage: null,
+  apiKeys: [], newApiKey: null, apiKeyLabel: '',
 };
 
 /* ------------------------------------------------------------- SSE: queue */
@@ -183,7 +184,7 @@ function topbar() {
     gauge('session', S.usage?.session), gauge('week', S.usage?.weekly),
     h('button', {
       class: 'text-sm px-2 py-1 rounded ' + (S.view === 'usage' ? 'bg-panel2 text-accent' : 'text-zinc-400 hover:text-zinc-200'),
-      onclick: () => { S.view = S.view === 'usage' ? 'chat' : 'usage'; if (S.view === 'usage') loadUsage(); render(); },
+      onclick: () => { S.view = S.view === 'usage' ? 'chat' : 'usage'; if (S.view === 'usage') { loadUsage(); loadApiKeys(); } render(); },
     }, 'Usage'),
     S.me?.is_admin ? h('button', {
       class: 'text-sm px-2 py-1 rounded ' + (S.view === 'admin' ? 'bg-panel2 text-accent' : 'text-zinc-400 hover:text-zinc-200'),
@@ -538,6 +539,7 @@ function usageView() {
           h('td', { class: 'px-3 py-2' }, money(r.cost_usd))))))),
     u.estimated_fraction > 0.03 ? h('div', { class: 'mt-3 text-xs text-warn' },
       `${(u.estimated_fraction * 100).toFixed(1)}% of recent credits are from estimated token counts.`) : null,
+    apiKeysCard(),
   );
 }
 function usageCard(title, g, sub) {
@@ -550,6 +552,79 @@ function usageCard(title, g, sub) {
     h('div', { class: 'h-1.5 bg-panel2 rounded mt-2 overflow-hidden' },
       h('div', { class: col + ' h-full', style: `width:${Math.min(100, g.pct)}%` })),
     g.reset_at ? h('div', { class: 'text-xs text-zinc-600 mt-1' }, 'resets in ' + untilStr(g.reset_at)) : null);
+}
+
+/* API keys (Phase 8.2) -- for Continue.dev and other OpenAI-compatible tools.
+   Same queue + credits as the web chat; the key is just a different door in. */
+function apiKeysCard() {
+  const base = window.location.origin + '/v1';
+  return h('div', { class: 'bg-panel border border-line rounded-lg p-4 mt-6' },
+    h('div', { class: 'text-sm font-semibold mb-1' }, 'API access'),
+    h('div', { class: 'text-xs text-zinc-500 mb-3' },
+      'OpenAI-compatible endpoint for tools like Continue.dev -- same queue and ' +
+      'credits as the web chat. Base URL ',
+      h('code', { class: 'text-zinc-300 bg-panel2 rounded px-1' }, base),
+      ', model = any id from the picker (e.g. ',
+      h('code', { class: 'text-zinc-300 bg-panel2 rounded px-1' }, S.pickerModel || 'fast-4b'),
+      ').'),
+    S.newApiKey ? h('div', { class: 'mb-3 p-2 rounded border border-accent/40 bg-accent/10' },
+      h('div', { class: 'text-xs text-zinc-300 mb-1' },
+        'Copy this now — it will not be shown again:'),
+      h('div', { class: 'flex items-center gap-2' },
+        h('code', { class: 'flex-1 min-w-0 break-all text-xs text-accent' }, S.newApiKey),
+        h('button', {
+          type: 'button',
+          class: 'shrink-0 text-xs px-2 py-1 rounded border border-line text-zinc-300 hover:bg-panel2',
+          onclick: e => copyText(e.currentTarget, S.newApiKey),
+        }, '⧉ Copy')),
+      h('button', {
+        type: 'button', class: 'mt-2 text-xs text-zinc-500 hover:text-zinc-300',
+        onclick: () => { S.newApiKey = null; render(); },
+      }, 'Done')) : null,
+    h('div', { class: 'flex items-center gap-2 mb-3' },
+      h('input', {
+        type: 'text', placeholder: 'label (e.g. laptop)', value: S.apiKeyLabel,
+        class: 'flex-1 bg-panel2 border border-line rounded px-2 py-1 text-sm',
+        oninput: e => { S.apiKeyLabel = e.target.value; },
+      }),
+      h('button', {
+        type: 'button',
+        class: 'text-sm px-3 py-1 rounded border border-accent/40 bg-accent/20 text-accent whitespace-nowrap',
+        onclick: genApiKey,
+      }, '+ Generate key')),
+    S.apiKeys.length
+      ? h('div', { class: 'divide-y divide-line' }, S.apiKeys.map(k => h('div', {
+          class: 'flex items-center justify-between py-1.5 text-sm',
+        },
+          h('div', { class: 'min-w-0' },
+            h('div', { class: 'truncate' }, k.label || '(unlabeled)'),
+            h('div', { class: 'text-[11px] text-zinc-600' },
+              `created ${new Date(k.created_at * 1000).toLocaleDateString()}` +
+              (k.last_used_at
+                ? ` · last used ${new Date(k.last_used_at * 1000).toLocaleDateString()}`
+                : ' · never used'))),
+          h('button', {
+            type: 'button', class: 'shrink-0 text-xs text-zinc-500 hover:text-danger',
+            onclick: () => revokeApiKey(k.id),
+          }, 'revoke'))))
+      : h('div', { class: 'text-xs text-zinc-600' }, 'No API keys yet.'));
+}
+async function loadApiKeys() {
+  try { S.apiKeys = (await api.get('/api/keys')).keys; if (S.view === 'usage') render(); } catch { /* ignore */ }
+}
+async function genApiKey() {
+  try {
+    const r = await api.post('/api/keys', { label: S.apiKeyLabel });
+    S.newApiKey = r.key; S.apiKeyLabel = '';
+    await loadApiKeys(); render();
+  } catch (e) { flashError(e.message); }
+}
+async function revokeApiKey(id) {
+  try {
+    await api.del('/api/keys/' + id);
+    S.apiKeys = S.apiKeys.filter(k => k.id !== id);
+    render();
+  } catch (e) { flashError(e.message); }
 }
 
 /* ---------------------------------------------------------------- actions */

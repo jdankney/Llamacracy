@@ -56,6 +56,20 @@ CREATE TABLE IF NOT EXISTS uploads (
     created_at   REAL NOT NULL
 );
 
+-- Per-user API keys for the OpenAI-compatible endpoint (Phase 8.2, Continue.dev
+-- etc.) -- bearer-token auth for that endpoint only; the web UI still uses
+-- oauth2-proxy. Only the sha256 hash is stored -- the plaintext key is shown
+-- once at creation and never retrievable again.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL REFERENCES users(id),
+    key_hash       TEXT NOT NULL UNIQUE,
+    label          TEXT NOT NULL DEFAULT '',
+    created_at     REAL NOT NULL,
+    last_used_at   REAL
+);
+CREATE INDEX IF NOT EXISTS ix_api_keys_user ON api_keys(user_id);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id                TEXT PRIMARY KEY,       -- uuid hex
     user_id           INTEGER NOT NULL REFERENCES users(id),

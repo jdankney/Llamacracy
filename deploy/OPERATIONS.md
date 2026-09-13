@@ -177,6 +177,33 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 Changing a rate only affects **future** jobs -- `rate_used` and `cost_usd` are
 frozen on each job row when it finishes.
 
+## Continue.dev / any OpenAI-compatible tool
+
+Each user generates their own key from **Usage → API access** in the web UI
+(shown once — copy it then, it can't be viewed again; revoke and re-generate
+if it leaks). It flows through the same FIFO queue and credit limits as the
+web chat; the only difference is nothing gets saved to the web UI's chat
+history (the IDE sends its own full message list every call, like the real
+OpenAI API).
+
+Continue.dev `config.yaml` (`~/.continue/config.yaml`):
+```yaml
+models:
+  - name: Llamacracy - FamilyA 4B
+    provider: openai
+    model: fast-4b                                       # any id from /v1/models
+    apiBase: http://myhost.netbird.selfhosted:4180/v1
+    apiKey: llk_...                                        # from Usage -> API access
+    roles: [chat, edit]
+```
+`GET /v1/models` lists the current picker models (same ids as `config/models.json`).
+No `/v1/completions` in v1 — editor autocomplete isn't wired up (it would
+contend with everyone else's chats on the same single-GPU FIFO queue; a fast
+lane would be needed first).
+
+A revoked/deleted key stops authenticating immediately (`/api/keys/{id}`,
+DELETE, self-service from the same page).
+
 ## Backup
 
 Everything that matters is `data/llamacracy.db` (SQLite WAL). Snapshot it:
