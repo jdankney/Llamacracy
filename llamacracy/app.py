@@ -5,13 +5,14 @@ deploy/). Serves the SPA and the JSON/SSE API.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -24,6 +25,9 @@ from .metering import Meter
 from .queue import Job, JobState, QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
 from .search import get_search
+from .uploads import UploadRejected
+from .uploads import save as save_upload
+from .uploads import validate as validate_upload
 from .upstream import Upstream, UpstreamError, get_upstream
 
 logging.basicConfig(level=logging.INFO,
@@ -82,6 +86,7 @@ async def me(principal: Principal = Depends(get_principal),
             "weekly_credit_limit": settings.weekly_credit_limit,
             "session_window_hours": settings.session_window_hours,
             "max_tokens_per_request": settings.max_tokens_per_request,
+            "upload_max_mb": settings.upload_max_mb,
         },
     }
 
@@ -134,7 +139,12 @@ async def list_models(principal: Principal = Depends(get_principal),
                       qm: QueueManager = Depends(get_queue)):
     loaded = qm._loaded_model
     out = []
-    for m in reg.chat_models():
+    # All chat-kind models, including unlisted -vision variants -- the picker
+    # only shows in_picker ones, but the app needs the rest resolvable (e.g.
+    # to show a friendly name for whatever a vision turn actually dispatched to).
+    for m in reg.all():
+        if m.kind != "chat":
+            continue
         out.append({
             "id": m.key,
             "display": m.display,
@@ -147,6 +157,8 @@ async def list_models(principal: Principal = Depends(get_principal),
             "resident": m.key == loaded,
             "max_tokens_default": min(m.max_tokens_default,
                                       get_settings().max_tokens_per_request),
+            "vision": bool(m.vision_key),
+            "in_picker": m.in_picker,
         })
     return {"models": out, "loaded_model": loaded}
 
@@ -182,7 +194,7 @@ async def conversation_detail(conv_id: str,
         raise HTTPException(404, "no such conversation")
     msgs = await db.fetch_all(
         "SELECT role, content, model_id, prompt_tokens, completion_tokens, "
-        "usage_estimated, search_json, created_at FROM messages "
+        "usage_estimated, search_json, image_upload_id, created_at FROM messages "
         "WHERE conversation_id = ? ORDER BY id",
         (conv_id,),
     )
@@ -199,12 +211,60 @@ async def delete_conversation(conv_id: str,
     )
     if conv is None:
         raise HTTPException(404, "no such conversation")
+    # any attached images belong only to this conversation's messages -- clean
+    # up their rows *and* the on-disk files so deleted chats don't leave orphans
+    uploads = await db.fetch_all(
+        "SELECT DISTINCT u.id, u.path FROM uploads u "
+        "JOIN messages m ON m.image_upload_id = u.id WHERE m.conversation_id = ?",
+        (conv_id,),
+    )
     await db.transaction([
         ("DELETE FROM messages WHERE conversation_id = ?", (conv_id,)),
         ("UPDATE jobs SET conversation_id = NULL WHERE conversation_id = ?", (conv_id,)),
         ("DELETE FROM conversations WHERE id = ?", (conv_id,)),
+        *[("DELETE FROM uploads WHERE id = ?", (u["id"],)) for u in uploads],
     ])
+    for u in uploads:
+        try:
+            Path(u["path"]).unlink(missing_ok=True)
+        except OSError:
+            log.warning("failed to remove upload file %s", u["path"])
     return {"deleted": conv_id}
+
+
+# --------------------------------------------------------------------------- #
+# vision uploads (Phase 8.4) -- on disk, scoped to the uploader
+# --------------------------------------------------------------------------- #
+@app.post("/api/uploads")
+async def upload_image(file: UploadFile = File(...),
+                       principal: Principal = Depends(get_principal),
+                       settings: Settings = Depends(get_settings),
+                       db: Database = Depends(get_db)):
+    data = await file.read()
+    try:
+        ext = validate_upload(file.content_type, len(data), settings.upload_max_mb)
+    except UploadRejected as e:
+        raise HTTPException(400, str(e)) from e
+    file_id, path = save_upload(settings.upload_dir, data, ext)
+    await db.execute(
+        "INSERT INTO uploads (id, user_id, path, mime, bytes, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (file_id, principal.user_id, path, file.content_type, len(data), now()),
+    )
+    return {"id": file_id, "mime": file.content_type, "bytes": len(data)}
+
+
+@app.get("/api/uploads/{upload_id}")
+async def get_upload(upload_id: str,
+                     principal: Principal = Depends(get_principal),
+                     db: Database = Depends(get_db)):
+    row = await db.fetch_one(
+        "SELECT path, mime FROM uploads WHERE id = ? AND user_id = ?",
+        (upload_id, principal.user_id),
+    )
+    if row is None:
+        raise HTTPException(404, "no such upload")
+    return FileResponse(row["path"], media_type=row["mime"])
 
 
 # --------------------------------------------------------------------------- #
@@ -216,6 +276,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     max_tokens: int | None = None
     search: bool = False
+    image_id: str | None = None
 
 
 async def _load_history(db: Database, conv_id: str) -> list[dict]:
@@ -237,6 +298,24 @@ async def chat(req: ChatRequest,
     model = reg.get(req.model)
     if model is None or model.kind != "chat" or not model.in_picker:
         raise HTTPException(400, f"not a selectable chat model: {req.model}")
+
+    # An attached image routes this turn to the paired -vision llama-swap
+    # entry (same weights + --mmproj) instead of the picked text model. The
+    # extra VRAM/cold-load only happens on turns that actually carry an
+    # image; every other turn behaves exactly as before.
+    dispatch_model_id = req.model
+    image_row = None
+    if req.image_id:
+        image_row = await db.fetch_one(
+            "SELECT * FROM uploads WHERE id = ? AND user_id = ?",
+            (req.image_id, principal.user_id),
+        )
+        if image_row is None:
+            raise HTTPException(404, "no such upload")
+        vision = reg.vision_variant(req.model)
+        if vision is None:
+            raise HTTPException(400, f"{model.display} doesn't support images yet")
+        dispatch_model_id = vision.key
 
     ts = now()
     conv_id = req.conversation_id
@@ -266,16 +345,31 @@ async def chat(req: ChatRequest,
         search_outcome = await get_search().search(req.message, settings.search_max_results)
 
     await db.execute(
-        "INSERT INTO messages (conversation_id, role, content, search_json, created_at) "
-        "VALUES (?, 'user', ?, ?, ?)",
+        "INSERT INTO messages (conversation_id, role, content, search_json, "
+        "  image_upload_id, created_at) "
+        "VALUES (?, 'user', ?, ?, ?, ?)",
         (conv_id, req.message,
-         json.dumps(search_outcome.as_dict()) if search_outcome else None, ts),
+         json.dumps(search_outcome.as_dict()) if search_outcome else None,
+         req.image_id, ts),
     )
 
     prompt_content = req.message
     if search_outcome and search_outcome.ok and search_outcome.results:
         prompt_content = search_outcome.to_prompt_block() + req.message
-    messages = history + [{"role": "user", "content": prompt_content}]
+
+    # The image is sent for THIS turn only -- past turns' images aren't
+    # resent on every follow-up (that would re-pay their full prompt-eval
+    # cost, in GPU seconds, every single message). The model still has the
+    # text of what it said about them; it just can't re-look.
+    if image_row is not None:
+        b64 = base64.b64encode(Path(image_row["path"]).read_bytes()).decode("ascii")
+        user_content = [
+            {"type": "image_url", "image_url": {"url": f"data:{image_row['mime']};base64,{b64}"}},
+            {"type": "text", "text": prompt_content},
+        ]
+    else:
+        user_content = prompt_content
+    messages = history + [{"role": "user", "content": user_content}]
 
     cap = min(
         req.max_tokens or model.max_tokens_default,
@@ -288,7 +382,7 @@ async def chat(req: ChatRequest,
         user_id=principal.user_id,
         owner_name=principal.display_name,
         owner_email=principal.email,
-        model_id=req.model,
+        model_id=dispatch_model_id,
         payload=payload,
         conversation_id=conv_id,
     )
@@ -297,7 +391,7 @@ async def chat(req: ChatRequest,
     # Opens the user's session if they have none. Overshoot is allowed: an
     # admitted job runs to completion even if it finishes over the cap.
     if qm.check_limits is not None:
-        decision = await qm.check_limits(principal.user_id, req.model)
+        decision = await qm.check_limits(principal.user_id, dispatch_model_id)
         job.session_id = decision.session_id
         if not decision.allowed:
             job.state = JobState.LIMIT_EXCEEDED

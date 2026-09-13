@@ -197,13 +197,69 @@ models:
         chat_template_kwargs:
           enable_thinking: false
 
+  "moe-35b-vision":
+    # FamilyA 35B (Q4_K_M, MoE) -- vision | mmproj: mmproj-F16.gguf
+    cmd: |
+      ${server}
+      -m /home/you/models/moe-35b.gguf
+      --host 127.0.0.1
+      --port ${PORT}
+      -c 49152
+      -ngl 99
+      -fa on
+      -t 6
+      -np 1
+      --no-webui
+      --metrics
+      --mmproj /home/you/models/moe-35b.mmproj.gguf
+      --n-cpu-moe 32
+      -ctk q8_0
+      -ctv q8_0
+      --no-mmap
+    proxy: "http://127.0.0.1:${PORT}"
+    checkEndpoint: "/health"
+    ttl: 1200
+    filters:
+      setParams:
+        chat_template_kwargs:
+          enable_thinking: false
+    unlisted: true
+
+  "moe-26b-vision":
+    # FamilyB 26B QAT (Q4_0, MoE) -- vision | mmproj: moe-26b.gguf
+    cmd: |
+      ${server}
+      -m /home/you/models/moe-26b.gguf
+      --host 127.0.0.1
+      --port ${PORT}
+      -c 24576
+      -ngl 99
+      -fa on
+      -t 6
+      -np 1
+      --no-webui
+      --metrics
+      --mmproj /home/you/models/moe-26b.mmproj.gguf
+      --n-cpu-moe 20
+      -ctk q8_0
+      -ctv q8_0
+      --no-mmap
+    proxy: "http://127.0.0.1:${PORT}"
+    checkEndpoint: "/health"
+    ttl: 1200
+    filters:
+      setParams:
+        chat_template_kwargs:
+          enable_thinking: false
+    unlisted: true
+
 groups:
   # v1: SMALL_MODEL_FAST_LANE off -> app serialises everything, one
   # model loaded at a time. Groups make that explicit + ready the fast lane.
   "heavyweights":
     swap: true
     exclusive: true
-    members: ["moe-26b", "moe-30b", "moe-35b"]
+    members: ["moe-26b", "moe-30b", "moe-35b", "moe-26b-vision", "moe-35b-vision"]
   "standard":
     swap: true
     exclusive: true

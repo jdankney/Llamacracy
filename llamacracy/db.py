@@ -22,6 +22,7 @@ _SCHEMA = (Path(__file__).parent / "schema.sql").read_text()
 _MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN uncapped INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE messages ADD COLUMN search_json TEXT",
+    "ALTER TABLE messages ADD COLUMN image_upload_id TEXT REFERENCES uploads(id)",
 ]
 
 

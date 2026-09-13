@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     searxng_url: str = "http://127.0.0.1:8085"
     search_max_results: int = 4
 
+    # --- vision uploads (Phase 8.4) -- on-disk, never base64-in-DB -----------
+    upload_dir: str = str(REPO_ROOT / "data" / "uploads")
+    upload_max_mb: float = 8.0
+
     # --- queue -----------------------------------------------------------
     idle_ttl_minutes: int = 15
     idle_ttl_seconds: float | None = None    # if set, wins over idle_ttl_minutes

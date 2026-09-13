@@ -31,6 +31,7 @@ class ModelInfo:
     vram_used_mib: int = 0
     gpu_gen_watts: float | None = None
     max_tokens_default: int = 2048
+    vision_key: str | None = None    # paired -vision llama-swap entry, if any (Phase 8.4)
 
 
 class Registry:
@@ -56,6 +57,13 @@ class Registry:
     def fim_model(self) -> ModelInfo | None:
         return next((m for m in self._models.values() if m.kind == "fim"), None)
 
+    def vision_variant(self, key: str) -> ModelInfo | None:
+        """The unlisted -vision llama-swap entry paired with `key`, if any."""
+        base = self._models.get(key)
+        if base is None or not base.vision_key:
+            return None
+        return self._models.get(base.vision_key)
+
 
 @lru_cache
 def get_registry() -> Registry:
@@ -79,5 +87,6 @@ def get_registry() -> Registry:
             vram_used_mib=m.get("vram_used_mib", 0),
             gpu_gen_watts=m.get("gpu_gen_watts"),
             max_tokens_default=m.get("max_tokens_default", 2048),
+            vision_key=m.get("vision_key"),
         )
     return Registry(models, data.get("generated_at", ""))

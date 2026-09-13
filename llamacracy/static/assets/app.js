@@ -9,6 +9,11 @@ const api = {
     if (!r.ok) throw await err(r); return r.json();
   },
   async del(p) { const r = await fetch(p, { method: 'DELETE' }); if (!r.ok) throw await err(r); return r.json(); },
+  async upload(file) {
+    const fd = new FormData(); fd.append('file', file);
+    const r = await fetch('/api/uploads', { method: 'POST', body: fd });
+    if (!r.ok) throw await err(r); return r.json();
+  },
   // POST + read an SSE stream (EventSource can't POST)
   async *chatStream(body, signal) {
     const r = await fetch('/api/chat', {
@@ -113,7 +118,7 @@ const S = {
   me: null, models: [], loadedModel: null, conversations: [],
   conv: null, messages: [], active: null, queue: { jobs: [], depth: 0 },
   usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
-  searchOn: false,
+  searchOn: false, pendingImage: null,
 };
 
 /* ------------------------------------------------------------- SSE: queue */
@@ -220,6 +225,9 @@ function msgBubble(m) {
   return h('div', { class: 'flex ' + (mine ? 'justify-end' : 'justify-start') },
     h('div', { class: 'max-w-[46rem] rounded-lg px-3 py-2 text-sm ' +
         (mine ? 'bg-accent/15 border border-accent/30' : 'bg-panel border border-line') },
+      mine && m.image ? h('img', {
+        src: m.image.url, class: 'max-w-[12rem] max-h-48 rounded-lg border border-line mb-2 block',
+      }) : null,
       mdBlock(m.content),
       mine ? searchChip(m.search) : null,
       m.completion_tokens != null ? h('div', { class: 'mt-1 text-[11px] text-zinc-600' },
@@ -260,6 +268,10 @@ const modelName = id => S.models.find(m => m.id === id)?.display || id;
 // rough token estimate for text we have no exact usage for (~3.6 chars/token,
 // a middle ground for English + code). Exact counts come from job usage.
 const estTok = s => Math.ceil((s || '').length / 3.6);
+// placeholder image cost -- actual vision-token count varies by encoder/tiling
+// and isn't benchmarked; once a turn actually returns usage, prompt_tokens
+// (exact) takes over from this guess automatically (see contextInfo below).
+const IMG_TOK_ESTIMATE = 600;
 const fmtTok = n => n >= 10000 ? Math.round(n / 1000) + 'K'
   : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(Math.round(n));
 const fmtCtx = n => Math.round(n / 1024) + 'K';   // model windows are 1024-multiples
@@ -283,11 +295,14 @@ function contextInfo() {
     }
   }
   let tail = 0;
-  for (let i = from; i < S.messages.length; i++) tail += estTok(S.messages[i].content) + 4;
+  for (let i = from; i < S.messages.length; i++) {
+    const msg = S.messages[i];
+    tail += estTok(msg.content) + 4 + (msg.image || msg.image_upload_id ? IMG_TOK_ESTIMATE : 0);
+  }
   const estimated = (from === 0 && S.messages.length > 0) || (!exact && S.messages.length > 0) || tail > 0;
 
   const el = document.getElementById('composer');
-  const draftTok = el && el.value ? estTok(el.value) + 4 : 0;
+  const draftTok = (el && el.value ? estTok(el.value) + 4 : 0) + (S.pendingImage ? IMG_TOK_ESTIMATE : 0);
 
   const used = base + tail;
   const projected = used + draftTok;          // the prompt the next send will build
@@ -354,6 +369,18 @@ function refreshCtx() {
   }, 120);
 }
 
+async function onPickImage(e) {
+  const file = e.target.files[0]; e.target.value = '';
+  if (!file) return;
+  const maxMb = S.me?.limits?.upload_max_mb || 8;
+  if (file.size > maxMb * 1024 * 1024) { flashError(`image too large (max ${maxMb} MB)`); return; }
+  try {
+    const up = await api.upload(file);
+    S.pendingImage = { id: up.id, url: URL.createObjectURL(file) };
+    render();
+  } catch (e2) { flashError(e2.message); }
+}
+
 function composer() {
   const m = S.pickerModel && S.models.find(x => x.id === S.pickerModel);
   return h('div', { class: 'shrink-0 border-t border-line bg-panel p-3' },
@@ -361,9 +388,15 @@ function composer() {
       h('div', { class: 'flex items-center gap-2 mb-2 flex-wrap' },
         h('select', {
           class: 'bg-panel2 border border-line rounded px-2 py-1 text-sm',
-          onchange: e => { S.pickerModel = e.target.value; render(); },
-        }, S.models.map(md => h('option', { value: md.id, selected: md.id === S.pickerModel || null },
-          `${md.display}${md.tier ? `  [${md.tier}]` : ''}`))),
+          onchange: e => {
+            S.pickerModel = e.target.value;
+            const nm = S.models.find(x => x.id === S.pickerModel);
+            if (!nm?.vision) S.pendingImage = null;   // no longer attachable on this model
+            render();
+          },
+        }, S.models.filter(md => md.in_picker).map(md => h('option',
+          { value: md.id, selected: md.id === S.pickerModel || null },
+          `${md.display}${md.vision ? ' 👁' : ''}${md.tier ? `  [${md.tier}]` : ''}`))),
         m ? h('span', { class: 'text-xs text-zinc-500' },
           m.resident ? '● loaded' : `cold start ~${fmtDur(m.cold_load_s)}`,
           ` · ~${Math.round(m.tok_s)} tok/s`) : null,
@@ -374,10 +407,31 @@ function composer() {
             : 'border-line text-zinc-500 hover:text-zinc-300'),
           onclick: () => { S.searchOn = !S.searchOn; render(); },
         }, '🔍 Search' + (S.searchOn ? ': on' : '')),
+        h('input', {
+          type: 'file', id: 'img-input', class: 'hidden',
+          accept: 'image/png,image/jpeg,image/webp', onchange: onPickImage,
+        }),
+        h('button', {
+          type: 'button',
+          title: m?.vision ? 'Attach an image' : 'Switch to a 👁 model to attach images',
+          disabled: m?.vision ? null : 'true',
+          class: 'text-xs px-2 py-1 rounded border disabled:opacity-30 ' + (S.pendingImage
+            ? 'bg-accent/20 border-accent/40 text-accent'
+            : 'border-line text-zinc-500 hover:text-zinc-300'),
+          onclick: () => document.getElementById('img-input').click(),
+        }, '📎' + (S.pendingImage ? ' 1' : '')),
         h('div', { class: 'flex-1' }),
         h('span', { id: 'ctx-slot' }, contextRing(contextInfo()))),
       m?.blurb ? h('div', { class: 'text-[11px] text-zinc-600 mb-2' }, m.blurb) : null,
       h('div', { id: 'ctx-breakdown' }, contextBreakdown(contextInfo())),
+      S.pendingImage ? h('div', { class: 'flex items-center gap-2 mb-2' },
+        h('img', { src: S.pendingImage.url, class: 'h-14 w-14 object-cover rounded border border-line' }),
+        h('span', { class: 'text-[11px] text-zinc-500 flex-1' },
+          'Image attached — sent with your next message (routes to the vision variant)'),
+        h('button', {
+          type: 'button', class: 'text-xs text-zinc-500 hover:text-danger',
+          onclick: () => { S.pendingImage = null; render(); },
+        }, '✕')) : null,
       h('form', { class: 'flex gap-2 items-end', onsubmit: sendMessage },
         h('textarea', {
           id: 'composer', rows: 1, placeholder: 'Message…',
@@ -468,7 +522,8 @@ async function boot() {
   catch (e) { $app.replaceChildren(h('div', { class: 'p-8 text-danger' }, 'Auth error: ' + e.message)); return; }
   const mods = await api.get('/api/models');
   S.models = mods.models; S.loadedModel = mods.loaded_model;
-  S.pickerModel = S.models.find(m => m.tier === 'daily')?.id || S.models[0]?.id;
+  const pickable = S.models.filter(m => m.in_picker);
+  S.pickerModel = pickable.find(m => m.tier === 'daily')?.id || pickable[0]?.id;
   render();                       // paint the shell as soon as we can
   try { S.conversations = (await api.get('/api/conversations')).conversations; } catch {}
   await loadUsage();
@@ -483,7 +538,10 @@ async function loadUsage() {
 function newChat() { S.conv = null; S.messages = []; S.view = 'chat'; S.sidebarOpen = false; render(); }
 async function openConv(id) {
   const d = await api.get('/api/conversations/' + id);
-  d.messages.forEach(m => { if (m.search_json) { try { m.search = JSON.parse(m.search_json); } catch { /* ignore */ } } });
+  d.messages.forEach(m => {
+    if (m.search_json) { try { m.search = JSON.parse(m.search_json); } catch { /* ignore */ } }
+    if (m.image_upload_id) m.image = { url: '/api/uploads/' + m.image_upload_id };
+  });
   S.conv = d.conversation; S.messages = d.messages; S.view = 'chat'; S.sidebarOpen = false;
   if (d.conversation.model_id && S.models.some(m => m.id === d.conversation.model_id))
     S.pickerModel = d.conversation.model_id;
@@ -502,12 +560,14 @@ async function sendMessage(e) {
   const ta = document.getElementById('composer');
   const text = ta.value.trim(); if (!text) return;
   ta.value = ''; ta.style.height = 'auto';
-  S.messages.push({ role: 'user', content: text });
+  const img = S.pendingImage; S.pendingImage = null;
+  S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined });
   S.active = { state: 'queued', position: '?', model: S.pickerModel, text: '' };
   render();
 
   aborter = new AbortController();
   const body = { model: S.pickerModel, message: text, search: S.searchOn };
+  if (img) body.image_id = img.id;
   if (S.conv) body.conversation_id = S.conv.id;
   try {
     for await (const ev of api.chatStream(body, aborter.signal)) {
@@ -529,7 +589,10 @@ async function sendMessage(e) {
       else if (ev.type === 'reasoning') { /* thinking hidden in v1 */ }
       else if (ev.type === 'done') {
         S.messages.push({
-          role: 'assistant', content: S.active.text, model_id: S.active.model,
+          // ev.model is the model actually dispatched (may be a model's
+          // -vision variant if this turn carried an image), not just the
+          // picker's selection -- matches what's persisted server-side.
+          role: 'assistant', content: S.active.text, model_id: ev.model || S.active.model,
           prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens,
           usage_estimated: ev.usage_estimated,
         });

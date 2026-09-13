@@ -17,7 +17,8 @@
       "seed_pp_tok_s": 3784.4,
       "vram_used_mib": 1999,
       "gpu_gen_watts": 193.6,
-      "max_tokens_default": 2048
+      "max_tokens_default": 2048,
+      "vision_key": null
     },
     "fast-4b": {
       "display": "FamilyA 4B (Q8_0)",
@@ -39,7 +40,8 @@
       "seed_pp_tok_s": 1394.3,
       "vram_used_mib": 7125,
       "gpu_gen_watts": 219.6,
-      "max_tokens_default": 2048
+      "max_tokens_default": 2048,
+      "vision_key": null
     },
     "daily-9b": {
       "display": "FamilyA 9B (Q6_K)",
@@ -61,7 +63,8 @@
       "seed_pp_tok_s": 764.1,
       "vram_used_mib": 8377,
       "gpu_gen_watts": 273.7,
-      "max_tokens_default": 2048
+      "max_tokens_default": 2048,
+      "vision_key": null
     },
     "alt-4b": {
       "display": "FamilyB 4B (alt finetune, Q8_0)",
@@ -78,7 +81,8 @@
       "seed_pp_tok_s": 1266.3,
       "vram_used_mib": 6057,
       "gpu_gen_watts": 223.5,
-      "max_tokens_default": 2048
+      "max_tokens_default": 2048,
+      "vision_key": null
     },
     "moe-26b": {
       "display": "FamilyB 26B QAT (Q4_0, MoE)",
@@ -95,7 +99,8 @@
       "seed_pp_tok_s": 398.9,
       "vram_used_mib": 6787,
       "gpu_gen_watts": 135.8,
-      "max_tokens_default": 2048
+      "max_tokens_default": 2048,
+      "vision_key": "moe-26b-vision"
     },
     "moe-30b": {
       "display": "FamilyC Flash (Q4_K_M, MoE)",
@@ -115,7 +120,8 @@
       "seed_pp_tok_s": 271.8,
       "vram_used_mib": 8063,
       "gpu_gen_watts": 132.1,
-      "max_tokens_default": 2048
+      "max_tokens_default": 2048,
+      "vision_key": null
     },
     "moe-35b": {
       "display": "FamilyA 35B (Q4_K_M, MoE)",
@@ -137,7 +143,49 @@
       "seed_pp_tok_s": 278.4,
       "vram_used_mib": 7155,
       "gpu_gen_watts": 132.5,
-      "max_tokens_default": 2048
+      "max_tokens_default": 2048,
+      "vision_key": "moe-35b-vision"
+    },
+    "moe-35b-vision": {
+      "display": "FamilyA 35B (Q4_K_M, MoE) -- vision",
+      "kind": "chat",
+      "path": "/home/you/models/moe-35b.gguf",
+      "tier": "heavy",
+      "in_picker": false,
+      "blurb": "Same model, with image understanding. Loaded only when a message includes an image.",
+      "reasoning": "off",
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0
+      },
+      "ctx": 49152,
+      "seed_cold_load_s": 22.95,
+      "seed_tg_tok_s": 32.0,
+      "seed_pp_tok_s": 278.4,
+      "vram_used_mib": 7155,
+      "gpu_gen_watts": 132.5,
+      "max_tokens_default": 2048,
+      "vision_key": null
+    },
+    "moe-26b-vision": {
+      "display": "FamilyB 26B QAT (Q4_0, MoE) -- vision",
+      "kind": "chat",
+      "path": "/home/you/models/moe-26b.gguf",
+      "tier": "heavy",
+      "in_picker": false,
+      "blurb": "Same model, with image understanding. Loaded only when a message includes an image.",
+      "reasoning": "off",
+      "sampling": {},
+      "ctx": 24576,
+      "seed_cold_load_s": 11.91,
+      "seed_tg_tok_s": 34.8,
+      "seed_pp_tok_s": 398.9,
+      "vram_used_mib": 6787,
+      "gpu_gen_watts": 135.8,
+      "max_tokens_default": 2048,
+      "vision_key": null
     }
   }
 }

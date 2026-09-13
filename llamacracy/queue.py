@@ -343,6 +343,7 @@ class QueueManager:
         await self._emit(job, {
             "type": "done",
             "state": job.state.value,
+            "model": job.model_id,
             "prompt_tokens": job.prompt_tokens,
             "completion_tokens": job.completion_tokens,
             "usage_estimated": job.usage_estimated,

@@ -40,9 +40,21 @@ CREATE TABLE IF NOT EXISTS messages (
     completion_tokens INTEGER,
     usage_estimated   INTEGER NOT NULL DEFAULT 0,
     search_json       TEXT,                  -- SearXNG outcome for this (user) turn, if requested
+    image_upload_id   TEXT REFERENCES uploads(id),  -- attached image for this (user) turn, if any
     created_at        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation ON messages(conversation_id, id);
+
+-- uploaded images (Phase 8.4) -- on disk under UPLOAD_DIR, never base64-in-DB.
+-- Scoped to the uploader; served back only to them (see /api/uploads/{id}).
+CREATE TABLE IF NOT EXISTS uploads (
+    id           TEXT PRIMARY KEY,       -- uuid hex, also the on-disk filename stem
+    user_id      INTEGER NOT NULL REFERENCES users(id),
+    path         TEXT NOT NULL,
+    mime         TEXT NOT NULL,
+    bytes        INTEGER NOT NULL,
+    created_at   REAL NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS jobs (
     id                TEXT PRIMARY KEY,       -- uuid hex
