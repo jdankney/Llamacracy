@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Llamacracy deployment (Phase 6). Idempotent -- safe to re-run.
-# Sets up three systemd *user* units: llama-swap, llamacracy, llamacracy-auth.
+# Sets up four systemd *user* units (llama-swap, llamacracy, llamacracy-dex,
+# llamacracy-auth) and the `llamacracy` CLI that controls all of them at once.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,7 +49,7 @@ if [ ! -f "$REPO/deploy/dex/config.yaml" ]; then
   sed -i "s#^\(OAUTH2_PROXY_CLIENT_SECRET=\).*#\1${cs}#" "$REPO/deploy/oauth2-proxy.env"
   warn "created deploy/dex/config.yaml with a fresh client secret (matched into oauth2-proxy.env)"
   warn "  -> add a staticPasswords entry per user (deploy/dex/gen-hash.sh 'password'), then:"
-  warn "     cd deploy/dex && docker compose up -d"
+  warn "     systemctl --user enable --now llamacracy-dex.service"
 fi
 
 # --- 5. llama-swap config (from the last benchmark) -------------------------
@@ -61,6 +62,12 @@ mkdir -p "$UNIT_DIR"
 cp "$REPO"/deploy/systemd/*.service "$UNIT_DIR/"
 systemctl --user daemon-reload
 systemctl --user enable --now llama-swap.service llamacracy.service
+
+# --- 6b. `llamacracy` CLI (up/down/restart/status/logs for the whole stack) --
+mkdir -p "$BIN"
+ln -sf "$REPO/deploy/llamacracy-cli.sh" "$BIN/llamacracy"
+chmod +x "$REPO/deploy/llamacracy-cli.sh"
+say "installed: llamacracy up|down|restart|status|logs  (make sure $BIN is on PATH)"
 
 # --- 7. auth: Dex (docker) + oauth2-proxy --------------------------------
 if ip -4 -o addr show wt0 >/dev/null 2>&1; then

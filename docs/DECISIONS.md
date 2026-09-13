@@ -3,6 +3,25 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Ops: one `llamacracy` command for the whole stack (2026-09-13)
+
+- `deploy/llamacracy-cli.sh`, symlinked onto `PATH` as `llamacracy` by
+  `install.sh` — `up` / `down` / `restart` / `status` / `logs` across all four
+  units (`llama-swap`, `llamacracy`, `llamacracy-dex`, `llamacracy-auth`). A
+  thin wrapper, not a new supervisor: it just hands all four unit names to one
+  `systemctl --user {start,stop,restart}` call and lets systemd's own
+  `After=`/`Wants=` resolve the real order, whatever order they're listed in.
+- Testing "down" for real (not just individual `restart`s, which is all
+  anyone had done before) surfaced a genuine bug: `llamacracy.service` hung on
+  SIGTERM waiting for a long-lived connection (the queue SSE stream, or an
+  in-flight chat) to drain, then got SIGKILLed by systemd's stop timeout and
+  reported `failed` instead of a clean stop. Fixed with uvicorn's own
+  `--timeout-graceful-shutdown 5`, so it self-bounds the drain wait and always
+  exits cleanly. oauth2-proxy has no equivalent flag and can still show the
+  same `failed (timeout)` on `down` if a browser has the live queue view open
+  — harmless (stateless, no data at risk), documented in OPERATIONS.md rather
+  than worked around.
+
 ## Phase 8 — more useful features (2026-09-10, in progress)
 
 Post-launch additions the owner wants, tackled one at a time. Agreed order:

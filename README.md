@@ -49,15 +49,18 @@ uv run uvicorn llamacracy.app:app --host 127.0.0.1 --port 8000   # DEV_MODE=1 in
 uv run pytest -q
 ```
 
-**Production** (systemd user units + a local Dex + oauth2-proxy, all on the
-NetBird interface — nothing public):
+**Production** (four systemd user units — app, inference layer, Dex, auth
+edge — all on the NetBird interface, nothing public):
 ```bash
-cd deploy/dex && cp config.yaml.example config.yaml   # set secret + a hash per user
-docker compose up -d                                  # the identity provider
-cd ../.. && ./deploy/install.sh                        # app + auth edge + units
+./deploy/install.sh                                    # scaffolds config, installs
+                                                        # all four units + the
+                                                        # `llamacracy` CLI
+cd deploy/dex && ./gen-hash.sh 'your-password'          # add yourself (+ friends)
+cd ../.. && llamacracy up                               # start everything
 ```
-Users sign in at `http://myhost.netbird.selfhosted:4180`. See
-[deploy/OPERATIONS.md](deploy/OPERATIONS.md) for adding a user, restarts,
+Users sign in at `http://myhost.netbird.selfhosted:4180`. Day to day:
+`llamacracy {up,down,restart,status,logs}` controls the whole stack at once.
+See [deploy/OPERATIONS.md](deploy/OPERATIONS.md) for adding a user, restarts,
 adding a model, adjusting limits, and backup;
 [deploy/dex/README.md](deploy/dex/README.md) for the IdP.
 

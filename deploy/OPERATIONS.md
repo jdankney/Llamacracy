@@ -1,48 +1,78 @@
 # Llamacracy operations
 
-Three systemd **user** units on `myhost`, plus one Docker container:
+Four systemd **user** units on `myhost` (one of them, `llamacracy-dex`,
+just wraps a Docker container):
 
 | Process | What | Binds |
 |---|---|---|
 | `llama-swap.service` | inference layer, loads/swaps GGUF models | `127.0.0.1:8091` |
 | `llamacracy.service` | FastAPI app (queue, metering, SPA) | `127.0.0.1:8000` |
+| `llamacracy-dex.service` | Dex (docker, `deploy/dex/`) — identity provider, the user list | `wt0:5556` (NetBird) |
 | `llamacracy-auth.service` | oauth2-proxy, the auth edge | `wt0:4180` (NetBird) |
-| `llamacracy-dex` (docker, `deploy/dex/`) | identity provider — the user list | `wt0:5556` (NetBird) |
 
 Everything is on the NetBird network; nothing is on the public internet.
 NetBird's *own* embedded IdP can't take extra OAuth clients
 ([netbirdio/netbird#5335](https://github.com/netbirdio/netbird/issues/5335)),
 so Llamacracy runs its own Dex.
 
-`llamacracy-auth` reads the `wt0` address at start, so it survives NetBird
-reconnects (it just needs a restart: `systemctl --user restart llamacracy-auth`).
-The Dex issuer + oauth2-proxy redirect are pinned to the NetBird **FQDN**
-(`myhost.netbird.selfhosted`), which doesn't change on reconnect — but the
-Dex container's port binding is a literal IP (`deploy/dex/docker-compose.yml`),
-so after a peer **re-enrol** update that line and `docker compose up -d`.
-`install.sh` rewrites it to the current `wt0` address on each run.
+Both `llamacracy-dex` and `llamacracy-auth` discover the current `wt0` address
+themselves at every start (`ExecStartPre`), so they survive NetBird reconnects
+and peer re-enrols — no more hand-editing an IP into `docker-compose.yml`.
+Just restart the affected unit (`systemctl --user restart llamacracy-dex` /
+`llamacracy-auth`), or use `llamacracy restart` for both at once. The Dex
+issuer + oauth2-proxy redirect are pinned to the NetBird **FQDN**
+(`myhost.netbird.selfhosted`), which never changes.
+
+## The `llamacracy` command
+
+`deploy/install.sh` puts a `llamacracy` script on `PATH` (`~/.local/bin`,
+symlinked to `deploy/llamacracy-cli.sh` so `git pull` always gives you the
+latest version) that drives all four units together:
+
+```bash
+llamacracy up        # start everything, in the right order
+llamacracy down       # stop everything
+llamacracy restart    # down then up
+llamacracy status     # one line per unit + a quick /healthz check
+llamacracy logs        # follow all four units' logs, interleaved
+llamacracy logs app    # or just one: swap|dex|app|auth
+```
+
+It just calls `systemctl --user {start,stop,restart}` with all four unit
+names — systemd itself resolves the actual dependency order from each unit's
+own `After=`/`Wants=` (see `deploy/systemd/*.service`), regardless of the
+order given. Nothing here bypasses systemd; it's a shortcut, not a separate
+supervisor.
+
+Note: on `down`, `llamacracy-auth` (oauth2-proxy) occasionally reports
+`failed (Result: timeout)` rather than a clean stop if a browser still has the
+live queue view open (an SSE connection oauth2-proxy waits to drain before
+exiting). Harmless — it's stateless, gets SIGKILLed a few seconds later
+either way, and `up` clears the failed state on the next start. `llamacracy.service`
+itself is not affected (`--timeout-graceful-shutdown 5` on uvicorn bounds its
+own drain wait so it always exits cleanly within systemd's stop timeout).
 
 ## First install
 
 ```bash
 netbird up                          # if not already connected
 
-# 1. identity provider
+# 1. app + auth edge + dex, all scaffolded and installed in one pass
+./deploy/install.sh                 # idempotent; creates deploy/dex/config.yaml
+                                    # with a fresh secret if missing, installs
+                                    # all four units + the `llamacracy` CLI
+
+# 2. add yourself (and friends) to dex before anyone can actually log in
 cd deploy/dex
-cp config.yaml.example config.yaml
-sed -i "s/REPLACE_WITH_openssl_rand_hex_32/$(openssl rand -hex 32)/" config.yaml
 ./gen-hash.sh 'your-password'        # paste into the j4mes staticPasswords hash:
 #   ...repeat gen-hash.sh + add a staticPasswords block per friend...
-docker compose up -d
-curl -sf http://myhost.netbird.selfhosted:5556/.well-known/openid-configuration >/dev/null && echo "dex ok"
 cd ../..
+systemctl --user restart llamacracy-dex   # picks up the password you just added
 
-# 2. app + auth edge
-./deploy/install.sh                 # idempotent; picks up the dex client secret,
-                                    # generates the cookie secret, installs units
-# if it reports the client secret wasn't matched, set OAUTH2_PROXY_CLIENT_SECRET
-# in deploy/oauth2-proxy.env to the `secret:` from deploy/dex/config.yaml, then:
-systemctl --user enable --now llamacracy-auth.service
+# 3. bring the auth edge up now that dex is answering (install.sh usually
+# already did this -- rerun if it warned the secret wasn't matched yet)
+llamacracy up
+curl -sf http://myhost.netbird.selfhosted:5556/.well-known/openid-configuration >/dev/null && echo "dex ok"
 ```
 
 Friends reach it at **`http://myhost.netbird.selfhosted:4180`** while on the
@@ -51,9 +81,21 @@ login redirect is pinned to the FQDN and the bare IP will bounce-loop.
 
 ## Everyday commands
 
+The whole stack at once (see "The `llamacracy` command" above):
+
 ```bash
-# status / logs
-systemctl --user status llama-swap llamacracy llamacracy-auth
+llamacracy status      # one line per unit + a quick /healthz check
+llamacracy up            # start everything
+llamacracy down           # stop everything
+llamacracy restart        # e.g. after NetBird reconnected / changed address
+llamacracy logs            # follow all four, interleaved
+llamacracy logs swap       # or just one: swap|dex|app|auth
+```
+
+By hand, one unit at a time (what `llamacracy` is calling under the hood):
+
+```bash
+systemctl --user status llama-swap llamacracy llamacracy-dex llamacracy-auth
 journalctl --user -u llamacracy -f
 journalctl --user -u llama-swap -f          # model load/swap detail
 
@@ -62,15 +104,10 @@ cd ~/Documents/Coding/Llamacracy && uv sync
 systemctl --user restart llamacracy
 
 # restart after NetBird reconnected / changed address
-systemctl --user restart llamacracy-auth
+systemctl --user restart llamacracy-dex llamacracy-auth
 
 # stop everything
-systemctl --user stop llamacracy-auth llamacracy llama-swap
-( cd ~/Documents/Coding/Llamacracy/deploy/dex && docker compose stop )
-
-# dex logs / restart
-docker logs -f llamacracy-dex
-( cd ~/Documents/Coding/Llamacracy/deploy/dex && docker compose restart )
+systemctl --user stop llamacracy-auth llamacracy llama-swap llamacracy-dex
 ```
 
 ## Adding / removing a user
@@ -84,7 +121,7 @@ Users live in `deploy/dex/config.yaml` under `staticPasswords`. One block each:
     hash: "$2a$10$..."          # deploy/dex/gen-hash.sh 'their-password'
 ```
 
-Then `cd deploy/dex && docker compose restart dex`. Llamacracy creates the
+Then `systemctl --user restart llamacracy-dex`. Llamacracy creates the
 user row (and their `/usage` page, credit counters) on first sign-in. To cut
 someone off for good, remove their block and restart; to pause them, use the
 admin dashboard → Controls → disable (no restart, keeps their history).
