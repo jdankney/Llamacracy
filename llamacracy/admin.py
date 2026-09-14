@@ -260,6 +260,30 @@ async def export_csv(period_days: int = 30, db: Database = Depends(get_db)):
 
 
 # --------------------------------------------------------------------------- #
+# API keys -- every user's, so a leaked/misused key can be killed without
+# waiting for the owner to notice or disabling their whole account.
+# --------------------------------------------------------------------------- #
+@router.get("/api-keys")
+async def all_api_keys(db: Database = Depends(get_db)):
+    rows = await db.fetch_all(
+        "SELECT k.id, k.label, k.created_at, k.last_used_at, "
+        "  u.id AS user_id, u.email, u.display_name "
+        "FROM api_keys k JOIN users u ON u.id = k.user_id "
+        "ORDER BY k.id DESC",
+    )
+    return {"keys": [dict(r) for r in rows]}
+
+
+@router.delete("/api-keys/{key_id}")
+async def revoke_any_api_key(key_id: int, db: Database = Depends(get_db)):
+    row = await db.fetch_one("SELECT id FROM api_keys WHERE id = ?", (key_id,))
+    if row is None:
+        raise HTTPException(404, "no such key")
+    await db.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+    return {"revoked": key_id}
+
+
+# --------------------------------------------------------------------------- #
 # Controls
 # --------------------------------------------------------------------------- #
 @router.post("/users/{user_id}/limits")

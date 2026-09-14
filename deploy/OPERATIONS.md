@@ -206,7 +206,12 @@ contend with everyone else's chats on the same single-GPU FIFO queue; a fast
 lane would be needed first).
 
 A revoked/deleted key stops authenticating immediately (`/api/keys/{id}`,
-DELETE, self-service from the same page).
+DELETE, self-service from the same page). If someone leaks a key or you spot
+misuse, you don't have to wait for them: **Admin → API keys** lists every key
+issued across all users (owner, label, created, last used) with its own
+revoke button — kills that one key immediately without touching the rest of
+their account. For a wholesale problem, Admin → Users → disable still blocks
+the account entirely (all keys + web login).
 
 ## Mobile access (PWA)
 

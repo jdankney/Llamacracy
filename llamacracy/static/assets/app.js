@@ -805,7 +805,7 @@ async function cancelActive() {
 }
 
 /* ------------------------------------------------------------------ admin */
-S.admin = { tab: 'live', live: null, users: null, usage: null, impact: null, billing: null };
+S.admin = { tab: 'live', live: null, users: null, usage: null, impact: null, billing: null, apiKeys: null };
 async function loadAdmin() {
   const t = S.admin.tab;
   try {
@@ -814,11 +814,12 @@ async function loadAdmin() {
     if (t === 'usage') S.admin.usage = await api.get('/api/admin/usage');
     if (t === 'impact') S.admin.impact = (await api.get('/api/admin/queue-impact')).impact;
     if (t === 'billing') S.admin.billing = await api.get('/api/admin/billing');
+    if (t === 'api-keys') S.admin.apiKeys = (await api.get('/api/admin/api-keys')).keys;
   } catch (e) { flashError(e.message); }
   render();
 }
 function adminView() {
-  const tabs = [['live', 'Live'], ['users', 'Users'], ['usage', 'Usage'], ['impact', 'Queue impact'], ['billing', 'Billing'], ['controls', 'Controls']];
+  const tabs = [['live', 'Live'], ['users', 'Users'], ['usage', 'Usage'], ['impact', 'Queue impact'], ['billing', 'Billing'], ['api-keys', 'API keys'], ['controls', 'Controls']];
   return h('main', { class: 'flex-1 overflow-y-auto' },
     h('div', { class: 'flex gap-1 border-b border-line px-4 sticky top-0 bg-ink z-10' },
       tabs.map(([k, l]) => h('button', {
@@ -835,6 +836,7 @@ function adminBody() {
   if (a.tab === 'usage') return adminUsage(a.usage);
   if (a.tab === 'impact') return adminImpact(a.impact);
   if (a.tab === 'billing') return adminBilling(a.billing);
+  if (a.tab === 'api-keys') return adminApiKeys(a.apiKeys);
 }
 function card(title, ...kids) {
   return h('div', { class: 'bg-panel border border-line rounded-lg p-4' },
@@ -958,6 +960,27 @@ function adminBilling(d) {
          ['sent', 'paid'].map(s => h('button', { class: 'text-xs text-accent mr-2', onclick: () => setInvoice(r.id, s) }, 'mark ' + s))) }],
       d.invoices) : h('div', { class: 'text-zinc-600 text-sm' }, 'none yet')));
 }
+function adminApiKeys(rows) {
+  if (!rows) return 'loading…';
+  if (!rows.length) return h('div', { class: 'text-zinc-600 text-sm' }, 'no API keys issued yet');
+  return h('div', { class: 'space-y-3' },
+    h('p', { class: 'text-xs text-zinc-500' }, 'Every Continue.dev / OpenAI-compatible key across all users. Revoking kills it immediately -- the holder just gets 401s and has to generate a new one from their own Usage page.'),
+    table([
+      { label: 'User', get: r => r.email },
+      { label: 'Label', get: r => r.label || h('span', { class: 'text-zinc-600' }, '(unlabeled)') },
+      { label: 'Created', get: r => new Date(r.created_at * 1000).toLocaleDateString() },
+      { label: 'Last used', get: r => r.last_used_at ? untilStr(r.last_used_at) + ' ago' : 'never' },
+      { label: '', get: r => h('button', {
+        class: 'text-danger text-xs',
+        onclick: () => revokeAnyApiKey(r.id),
+      }, 'revoke') },
+    ], rows));
+}
+async function revokeAnyApiKey(id) {
+  try { await api.del('/api/admin/api-keys/' + id); flashInfo('key revoked'); loadAdmin(); }
+  catch (e) { flashError(e.message); }
+}
+
 async function makeInvoice(user_id, period) {
   await adminPost('/api/admin/billing/invoice', { user_id, period_start: period.start, period_end: period.end });
   loadAdmin();

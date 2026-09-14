@@ -3,6 +3,27 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Admin: API keys panel (2026-09-13)
+
+Owner's concern: a friend leaks their Continue.dev key, or misuses it, and
+the only fix available was the blunt one (disable their whole account).
+
+- New `GET /api/admin/api-keys` (every key across every user, joined to
+  owner email/label/created/last-used) + `DELETE /api/admin/api-keys/{id}`
+  (revoke any one, not just your own) in `admin.py` — same
+  `require_admin`-gated router as everything else there, no new auth path.
+- New **Admin → API keys** tab: one table, one "revoke" button per row. Uses
+  the same `table()`/`card()` helpers as the rest of the dashboard.
+- Deliberately per-**key**, not per-user: `/api/keys` (self-service,
+  Phase 8.2) already lets a user revoke their own; this just extends that
+  same DELETE to every key so a leaked one can be killed surgically without
+  disabling the account it belongs to. The existing per-user "disable"
+  control (Admin → Users) is still there for the wholesale case.
+- Verified live: created a key, confirmed it authenticated through the real
+  edge (`/v1/models`, 200), revoked it from the new admin endpoint, confirmed
+  an immediate 401 on the next call with the same key, confirmed it dropped
+  out of the admin list. Also confirmed a non-admin identity gets 403.
+
 ## Mobile: installable PWA, not a native iOS app (2026-09-13)
 
 Owner's first instinct was a non-App-Store iOS app; reconsidered before
