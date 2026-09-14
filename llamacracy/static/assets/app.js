@@ -486,7 +486,7 @@ function composer() {
     h('div', { class: 'max-w-[48rem] mx-auto' },
       h('div', { class: 'flex items-center gap-2 mb-2 flex-wrap' },
         h('select', {
-          class: 'bg-panel2 border border-line rounded px-2 py-1 text-sm',
+          class: 'bg-panel2 border border-line rounded px-2 py-1 text-sm min-w-0 max-w-[55vw] sm:max-w-sm truncate',
           onchange: e => {
             S.pickerModel = e.target.value;
             const nm = S.models.find(x => x.id === S.pickerModel);
