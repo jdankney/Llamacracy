@@ -72,6 +72,7 @@ async function copyText(btn, text) {
   if (!ok) {
     const ta = document.createElement('textarea');
     ta.value = text;
+    ta.setAttribute('readonly', '');   // a readonly field doesn't summon the mobile keyboard on focus
     ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
     document.body.appendChild(ta);
     ta.focus(); ta.select();
@@ -171,7 +172,23 @@ function render() {
   $app.replaceChildren(topbar(), h('div', { class: 'flex-1 flex min-h-0' },
     S.view === 'admin' ? null : sidebar(), main,
   ), queuePanel());
-  if (S.view === 'chat') { const ta = $app.querySelector('#composer'); if (ta) ta.focus(); scrollThread(); }
+  if (S.view === 'chat') scrollThread();
+}
+// true only on a real mouse/trackpad ("fine" pointer + actual hover) -- false
+// on touch, so the composer auto-focus below never summons the on-screen
+// keyboard on a phone. render() used to focus() unconditionally on every
+// call (dozens of times per message: sidebar toggle, search toggle, every
+// SSE event...), which on mobile meant the keyboard popped up on basically
+// any tap anywhere. Now it's only called explicitly, at moments where
+// re-focusing is actually wanted (new chat, opening a conversation, right
+// after hitting send) -- never from inside render() itself.
+function hasFinePointer() {
+  try { return matchMedia('(hover: hover) and (pointer: fine)').matches; } catch { return false; }
+}
+function focusComposer() {
+  if (!hasFinePointer()) return;
+  const ta = document.getElementById('composer');
+  if (ta) ta.focus();
 }
 
 /* topbar */
@@ -534,7 +551,10 @@ function composer() {
       h('form', { class: 'flex gap-2 items-end', onsubmit: sendMessage },
         h('textarea', {
           id: 'composer', rows: 1, placeholder: 'Message…',
-          class: 'flex-1 bg-panel2 border border-line rounded px-3 py-2 text-sm resize-none max-h-40',
+          // text-base (16px) below sm: iOS Safari auto-zooms the page on
+          // focus for any input/textarea under 16px -- this is the field
+          // that gets focused on every message, so it's the one that matters.
+          class: 'flex-1 bg-panel2 border border-line rounded px-3 py-2 text-base sm:text-sm resize-none max-h-40',
           oninput: e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; refreshCtx(); },
           onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(e); } },
         }),
@@ -644,7 +664,7 @@ function apiKeysCard() {
     h('div', { class: 'flex items-center gap-2 mb-3' },
       h('input', {
         type: 'text', placeholder: 'label (e.g. laptop)', value: S.apiKeyLabel,
-        class: 'flex-1 bg-panel2 border border-line rounded px-2 py-1 text-sm',
+        class: 'flex-1 bg-panel2 border border-line rounded px-2 py-1 text-base sm:text-sm',
         oninput: e => { S.apiKeyLabel = e.target.value; },
       }),
       h('button', {
@@ -698,6 +718,7 @@ async function boot() {
   const pickable = S.models.filter(m => m.in_picker);
   S.pickerModel = pickable.find(m => m.tier === 'daily')?.id || pickable[0]?.id;
   render();                       // paint the shell as soon as we can
+  focusComposer();
   try { S.conversations = (await api.get('/api/conversations')).conversations; } catch {}
   await loadUsage();
   connectQueue();
@@ -708,7 +729,7 @@ async function loadUsage() {
   try { S.usage = await api.get('/api/usage'); renderTopbar(); if (S.view === 'usage') render(); } catch {}
 }
 
-function newChat() { S.conv = null; S.messages = []; S.view = 'chat'; S.sidebarOpen = false; render(); }
+function newChat() { S.conv = null; S.messages = []; S.view = 'chat'; S.sidebarOpen = false; render(); focusComposer(); }
 async function openConv(id) {
   const d = await api.get('/api/conversations/' + id);
   d.messages.forEach(m => {
@@ -719,6 +740,7 @@ async function openConv(id) {
   if (d.conversation.model_id && S.models.some(m => m.id === d.conversation.model_id))
     S.pickerModel = d.conversation.model_id;
   render();
+  focusComposer();
 }
 async function delConv(id) {
   await api.del('/api/conversations/' + id);
@@ -755,6 +777,7 @@ async function sendMessage(e) {
   S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined });
   S.active = { state: 'queued', position: '?', model: S.pickerModel, text: '' };
   render();
+  focusComposer();
 
   aborter = new AbortController();
   const body = { model: S.pickerModel, message: text, search: S.searchOn };
@@ -885,8 +908,8 @@ function adminUsers(rows, controls) {
   ];
   if (controls) cols.push(
     { label: 'Overrides', get: r => h('span', {},
-      h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-xs', placeholder: 'sess', value: r.session_override ?? '', id: `so-${r.id}` }),
-      h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-xs ml-1', placeholder: 'week', value: r.weekly_override ?? '', id: `wo-${r.id}` }),
+      h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-base sm:text-xs', placeholder: 'sess', value: r.session_override ?? '', id: `so-${r.id}` }),
+      h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-base sm:text-xs ml-1', placeholder: 'week', value: r.weekly_override ?? '', id: `wo-${r.id}` }),
       h('button', { class: 'text-accent text-xs ml-1', onclick: () => saveLimits(r.id) }, 'set')) },
     { label: 'Uncapped', get: r => h('button', {
       class: 'text-xs ' + (r.uncapped ? 'text-accent' : 'text-zinc-500'),
