@@ -1,4 +1,5 @@
 // Llamacracy SPA -- vanilla JS, no build step. Served by FastAPI at /.
+// Styling lives in styles.css (hand-written; no CSS framework).
 const $app = document.getElementById('app');
 
 /* ------------------------------------------------------------------ api */
@@ -45,15 +46,50 @@ async function err(r) {
 const h = (tag, attrs = {}, ...kids) => {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
     if (k === 'class') e.className = v;
     else if (k === 'html') e.innerHTML = v;
+    else if (k === 'value') e.value = v;          // property, not attribute (textarea/select)
     else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
-    else if (v != null) e.setAttribute(k, v);
+    else e.setAttribute(k, v === true ? '' : v);
   }
-  for (const kid of kids.flat()) if (kid != null) e.append(kid.nodeType ? kid : String(kid));
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) e.append(kid.nodeType ? kid : String(kid));
   return e;
 };
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Inline SVG icons (stroke-based, 24-unit grid). Emoji render differently on
+// every platform; these don't.
+const ICONS = {
+  menu: 'M4 6h16M4 12h16M4 18h16',
+  plus: 'M12 5v14M5 12h14',
+  x: 'M18 6L6 18M6 6l12 12',
+  check: 'M20 6L9 17l-5-5',
+  copy: 'M9 9h11a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H11a2 2 0 0 1-2-2V11a2 2 0 0 1 2-2zM5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
+  search: 'M21 21l-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0z',
+  clip: 'M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48',
+  send: 'M12 19V5M5 12l7-7 7 7',
+  stop: 'M7 7h10v10H7z',
+  chevron: 'M6 9l6 6 6-6',
+  down: 'M12 5v14M19 12l-7 7-7-7',
+  trash: 'M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6',
+  compress: 'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7',
+  globe: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z',
+  eye: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7zM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z',
+  key: 'M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4',
+  alert: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01',
+  info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01',
+  pen: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z',
+  zap: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
+};
+const icon = (name, cls = '') => {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('aria-hidden', 'true');
+  s.setAttribute('class', 'icon ' + cls);
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', ICONS[name]); s.append(p);
+  return s;
+};
 
 // Copy the raw source (markdown/LaTeX as typed/generated, not rendered HTML)
 // to the clipboard. The async Clipboard API needs a secure context, and this
@@ -79,16 +115,21 @@ async function copyText(btn, text) {
     try { ok = document.execCommand('copy'); } catch { ok = false; }
     document.body.removeChild(ta);
   }
-  const orig = btn.textContent;
-  btn.textContent = ok ? '✓ Copied' : '✗ failed';
-  setTimeout(() => { btn.textContent = orig; }, 1200);
+  const orig = [...btn.childNodes];
+  btn.replaceChildren(icon(ok ? 'check' : 'x', 'icon-sm'), ok ? 'Copied' : 'Failed');
+  setTimeout(() => btn.replaceChildren(...orig), 1200);
 }
+const copyBtn = (text, label = 'Copy') => h('button', {
+  type: 'button', class: 'btn btn-ghost btn-sm', title: 'Copy the raw markdown/LaTeX source',
+  onclick: e => copyText(e.currentTarget, text),
+}, icon('copy', 'icon-sm'), label);
 
 // LaTeX -> KaTeX HTML, done BEFORE marked so markdown doesn't eat the
 // backslashes in \(...\) and \[...\]. Each math span is pulled out, rendered,
 // and swapped back in after marked via a placeholder markdown ignores.
 // Handles $$…$$, \[…\], \(…\) and a guarded $…$ (skips currency-looking text).
-const _KA = '', _KB = '';
+// private-use code points: never appear in real text, survive marked untouched
+const _KA = '\uE000', _KB = '\uE001';
 function extractMath(src) {
   if (!window.katex) return { src, spans: [] };
   const spans = [];
@@ -99,20 +140,20 @@ function extractMath(src) {
     } catch { return orig; }
   };
   const code = [];                        // shield code so we don't scan $ inside it
-  src = src.replace(/```[\s\S]*?```|`[^`\n]+`/g, m => (code.push(m), `${code.length - 1}`));
+  src = src.replace(/```[\s\S]*?```|`[^`\n]+`/g, m => (code.push(m), `\uE002${code.length - 1}\uE003`));
   src = src.replace(/\$\$([\s\S]+?)\$\$/g, (m, t) => stash(t, true, m));
   src = src.replace(/\\\[([\s\S]+?)\\\]/g, (m, t) => stash(t, true, m));
   src = src.replace(/\\\(([\s\S]+?)\\\)/g, (m, t) => stash(t, false, m));
   src = src.replace(/(^|[^\\$\d])\$(?!\s)((?:\\.|[^\\$\n])+?)\$(?!\d)/g,
     (m, pre, t) => (/\s$/.test(t) || /^[\s\d.,]*$/.test(t)) ? m : pre + stash(t, false, '$' + t + '$'));
-  src = src.replace(/(\d+)/g, (_, i) => code[+i]);
+  src = src.replace(/\uE002(\d+)\uE003/g, (_, i) => code[+i]);
   return { src, spans };
 }
 
 if (window.marked) marked.setOptions({ gfm: true, breaks: true });
 // Markdown (+ math) -> sanitised HTML. marked + DOMPurify + KaTeX come from the
-// CDN (like Tailwind); if they didn't load we fall back to escaped text with
-// fenced code blocks so a message is never unreadable.
+// CDN; if they didn't load we fall back to escaped text with fenced code
+// blocks so a message is never unreadable.
 function renderMD(src, math = true) {
   src = src || '';
   if (!src) return '';
@@ -130,7 +171,7 @@ function renderMD(src, math = true) {
 // render markdown into a live element; the heavy passes (highlight, math) run
 // only once the text has stopped streaming
 function mdInto(el, src, finalize = true) {
-  el.innerHTML = renderMD(src, finalize) || '<span class="text-zinc-600">…</span>';
+  el.innerHTML = renderMD(src, finalize) || '<span class="faint">…</span>';
   if (finalize && window.hljs) {
     el.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch { /* unknown language */ } });
   }
@@ -139,8 +180,11 @@ function mdInto(el, src, finalize = true) {
 const mdBlock = (src, attrs = {}, finalize = true) => { const el = h('div', { class: 'prose-chat', ...attrs }); mdInto(el, src, finalize); return el; };
 const fmtDur = s => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 const untilStr = ts => { const d = ts * 1000 - Date.now(); return d <= 0 ? 'now' : fmtDur(d / 1000); };
+const agoStr = ts => { const d = (Date.now() - ts * 1000) / 1000; return d < 60 ? 'just now' : fmtDur(d) + ' ago'; };
 const credits = n => n < 10 ? n.toFixed(1) : Math.round(n).toLocaleString();
 const money = n => n >= 0.01 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) : '$0';
+const fmtDate = ts => new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 /* ----------------------------------------------------------------- state */
 const S = {
@@ -150,6 +194,8 @@ const S = {
   searchOn: false, pendingImage: null,
   apiKeys: [], newApiKey: null, apiKeyLabel: '',
   compacting: false,
+  draft: '',            // composer text survives re-renders (model switch, stream end, ...)
+  stick: true,          // thread is scrolled to the bottom -> keep following new tokens
 };
 
 /* ------------------------------------------------------------- SSE: queue */
@@ -159,9 +205,8 @@ function connectQueue() {
     const d = JSON.parse(ev.data);
     if (d.type !== 'queue') return;
     S.queue = d; S.loadedModel = d.loaded_model;
-    renderTopbar(); renderQueuePanel();
-    // reflect model residentness in picker
     S.models.forEach(m => m.resident = m.id === d.loaded_model);
+    renderTopbar(); renderQueuePanel(); renderHint();
   };
   es.onerror = () => { /* browser auto-reconnects */ };
 }
@@ -169,19 +214,21 @@ function connectQueue() {
 /* --------------------------------------------------------------- rendering */
 function render() {
   const main = S.view === 'usage' ? usageView() : S.view === 'admin' ? adminView() : chatView();
-  $app.replaceChildren(topbar(), h('div', { class: 'flex-1 flex min-h-0' },
-    S.view === 'admin' ? null : sidebar(), main,
-  ), queuePanel());
-  if (S.view === 'chat') scrollThread();
+  $app.replaceChildren(
+    topbar(),
+    h('div', { class: 'app-body' }, S.view === 'admin' ? null : sidebar(), main),
+    queuePanel(),
+  );
+  if (S.view === 'chat') {
+    autosize(document.getElementById('composer'));
+    if (S.stick) scrollThread(true);
+  }
 }
 // true only on a real mouse/trackpad ("fine" pointer + actual hover) -- false
-// on touch, so the composer auto-focus below never summons the on-screen
-// keyboard on a phone. render() used to focus() unconditionally on every
-// call (dozens of times per message: sidebar toggle, search toggle, every
-// SSE event...), which on mobile meant the keyboard popped up on basically
-// any tap anywhere. Now it's only called explicitly, at moments where
-// re-focusing is actually wanted (new chat, opening a conversation, right
-// after hitting send) -- never from inside render() itself.
+// on touch, so the composer auto-focus never summons the on-screen keyboard
+// on a phone. Only called at moments where re-focusing is actually wanted
+// (new chat, opening a conversation, right after hitting send) -- never from
+// inside render() itself.
 function hasFinePointer() {
   try { return matchMedia('(hover: hover) and (pointer: fine)').matches; } catch { return false; }
 }
@@ -190,95 +237,164 @@ function focusComposer() {
   const ta = document.getElementById('composer');
   if (ta) ta.focus();
 }
+function autosize(ta) {
+  if (!ta) return;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + 'px';
+}
+function setView(v) {
+  if (S.view === v) return;
+  S.view = v; S.sidebarOpen = false;
+  if (v === 'usage') { loadUsage(); loadApiKeys(); }
+  if (v === 'admin') loadAdmin();
+  render();
+}
 
 /* topbar */
 function topbar() {
-  return h('header', { id: 'topbar', class: 'shrink-0 h-12 border-b border-line flex items-center gap-2 sm:gap-3 px-2 sm:px-3 bg-panel min-w-0' },
-    h('button', { class: 'md:hidden text-zinc-400 shrink-0', onclick: () => { S.sidebarOpen = !S.sidebarOpen; render(); } }, '☰'),
-    h('img', { src: '/assets/llamacracy-favicon.svg', alt: '', width: 24, height: 24, class: 'shrink-0' }),
-    h('span', { class: 'font-semibold tracking-tight shrink-0 hidden sm:inline' }, 'Llamacracy'),
-    h('span', { id: 'loaded-badge', class: 'min-w-0 truncate hidden sm:block' }, loadedBadge()),
-    h('div', { class: 'flex-1' }),
-    gauge('session', S.usage?.session), gauge('week', S.usage?.weekly),
+  const nav = [['chat', 'Chat'], ['usage', 'Usage']];
+  if (S.me?.is_admin) nav.push(['admin', 'Admin']);
+  return h('header', { id: 'topbar', class: 'topbar' },
     h('button', {
-      class: 'text-sm px-2 py-1 rounded ' + (S.view === 'usage' ? 'bg-panel2 text-accent' : 'text-zinc-400 hover:text-zinc-200'),
-      onclick: () => { S.view = S.view === 'usage' ? 'chat' : 'usage'; if (S.view === 'usage') { loadUsage(); loadApiKeys(); } render(); },
-    }, 'Usage'),
-    S.me?.is_admin ? h('button', {
-      class: 'text-sm px-2 py-1 rounded ' + (S.view === 'admin' ? 'bg-panel2 text-accent' : 'text-zinc-400 hover:text-zinc-200'),
-      onclick: () => { S.view = S.view === 'admin' ? 'chat' : 'admin'; if (S.view === 'admin') loadAdmin(); render(); },
-    }, 'Admin') : null,
-    h('span', { class: 'text-sm text-zinc-500 hidden sm:block' }, S.me?.display_name || ''),
+      class: 'btn btn-ghost btn-icon menu-btn', 'aria-label': 'Menu', title: 'Conversations',
+      onclick: () => { S.sidebarOpen = !S.sidebarOpen; render(); },
+    }, icon('menu')),
+    h('a', { class: 'brand', href: '#', onclick: e => { e.preventDefault(); setView('chat'); } },
+      h('img', { src: '/assets/llamacracy-favicon.svg', alt: '' }),
+      h('span', { class: 'wordmark' }, 'Llamacracy')),
+    h('span', { id: 'loaded-badge', class: 'loaded-badge' }, loadedBadge()),
+    h('div', { class: 'spacer' }),
+    h('div', { class: 'gauges' },
+      gauge('session', S.usage?.session, 'gauge-full'),
+      gauge('week', S.usage?.weekly, 'gauge-full'),
+      compactGauge()),
+    h('nav', { class: 'nav', 'aria-label': 'Sections' },
+      nav.map(([k, l]) => h('button', {
+        class: S.view === k ? 'is-active' : '', 'aria-current': S.view === k ? 'page' : null,
+        onclick: () => setView(k),
+      }, l))),
+    h('span', { class: 'who', title: S.me?.email || '' }, S.me?.display_name || ''),
   );
 }
-function renderTopbar() { const t = document.getElementById('loaded-badge'); if (t) t.replaceChildren(loadedBadge()); }
-function loadedBadge() {
-  const m = S.models.find(x => x.id === S.loadedModel);
-  return S.loadedModel
-    ? h('span', { class: 'text-xs px-2 py-0.5 rounded-full bg-panel2 border border-line text-good' }, '● ' + (m?.display || S.loadedModel))
-    : h('span', { class: 'text-xs px-2 py-0.5 rounded-full bg-panel2 border border-line text-zinc-500' }, '○ idle');
+function renderTopbar() {
+  const t = document.getElementById('loaded-badge'); if (t) t.replaceChildren(loadedBadge());
+  const g = document.querySelector('.gauges');
+  if (g) g.replaceChildren(gauge('session', S.usage?.session, 'gauge-full'),
+                           gauge('week', S.usage?.weekly, 'gauge-full'), compactGauge());
+  const f = document.getElementById('sidebar-foot'); if (f) f.replaceChildren(...sidebarFootKids());
 }
-function gauge(label, g) {
+function loadedBadge() {
+  const busy = S.queue.jobs?.some(j => j.position === 0);
+  if (!S.loadedModel) return h('span', { class: 'badge', title: 'No model resident in VRAM' }, h('i', { class: 'dot' }), 'idle');
+  return h('span', { class: 'badge is-on' + (busy ? ' is-busy' : ''), title: busy ? 'Generating' : 'Resident in VRAM' },
+    h('i', { class: 'dot' }), modelName(S.loadedModel));
+}
+function gaugeTone(g) {
+  return g.uncapped ? 'uncapped' : g.pct >= 90 ? 'danger' : g.pct >= 75 ? 'warn' : '';
+}
+function gauge(label, g, cls) {
   if (!g) return h('span');
-  const col = g.uncapped ? 'text-accent'
-    : g.pct >= 90 ? 'text-danger' : g.pct >= 75 ? 'text-warn' : 'text-zinc-400';
-  return h('div', { class: 'text-xs ' + col, title: `${credits(g.used)} / ${credits(g.cap)} credits` +
-      (g.uncapped ? ' · uncapped (never blocked)' : g.reset_at ? ` · resets in ${untilStr(g.reset_at)}` : '') },
-    h('span', { class: 'hidden sm:inline' }, label + ' '),
-    h('span', { class: 'font-mono' }, Math.round(g.pct) + '%' + (g.uncapped ? ' ∞' : '')));
+  const title = `${credits(g.used)} / ${credits(g.cap)} credits` +
+    (g.uncapped ? ' · uncapped (never blocked)' : g.reset_at ? ` · resets in ${untilStr(g.reset_at)}` : '');
+  return h('button', { class: `gauge ${gaugeTone(g)} ${cls}`, title, onclick: () => setView('usage') },
+    h('span', { class: 'lbl' }, label),
+    h('span', { class: 'bar' }, h('i', { style: `width:${Math.min(100, g.pct)}%` })),
+    h('span', { class: 'val' }, Math.round(g.pct) + '%' + (g.uncapped ? ' ∞' : '')));
+}
+// phones: one pill showing whichever limit is closer
+function compactGauge() {
+  const s = S.usage?.session, w = S.usage?.weekly;
+  if (!s || !w) return h('span');
+  const g = s.pct >= w.pct ? s : w;
+  return h('button', { class: `gauge gauge-compact ${gaugeTone(g)}`, title: 'Usage', onclick: () => setView('usage') },
+    h('span', { class: 'bar' }, h('i', { style: `width:${Math.min(100, g.pct)}%` })),
+    h('span', { class: 'val' }, Math.round(g.pct) + '%'));
 }
 
 /* sidebar */
+function convGroups() {
+  const now = Date.now() / 1000, day = 86400;
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+  const t0 = startOfToday.getTime() / 1000;
+  const groups = [['Today', []], ['Yesterday', []], ['Previous 7 days', []], ['Older', []]];
+  for (const c of S.conversations) {
+    const ts = c.updated_at || c.created_at || now;
+    const g = ts >= t0 ? 0 : ts >= t0 - day ? 1 : ts >= t0 - 7 * day ? 2 : 3;
+    groups[g][1].push(c);
+  }
+  return groups.filter(([, cs]) => cs.length);
+}
+function sidebarFootKids() {
+  const n = S.queue.depth || 0;
+  return [
+    h('div', { class: 'row', style: 'gap:8px' }, icon('zap', 'icon-sm'), n ? `${plural(n, 'job')} in queue` : 'Queue is empty',
+      h('div', { class: 'spacer' }),
+      S.loadedModel ? h('span', { class: 'faint', title: 'Resident model' }, modelName(S.loadedModel)) : null),
+    n ? h('div', { class: 'qcard qcard-inline' }, queueRows()) : null,
+  ].filter(Boolean);
+}
 function sidebar() {
-  // `contents` keeps this a no-op wrapper for the flex row in render() -- the
-  // <aside> below still sizes/participates exactly as if it were the direct
-  // child, while the mobile-only backdrop renders alongside it, not inside it.
-  return h('div', { class: 'contents' },
-    S.sidebarOpen ? h('div', {
-      class: 'fixed inset-0 z-10 bg-black/50 md:hidden',
-      onclick: () => { S.sidebarOpen = false; render(); },
-    }) : null,
-    h('aside', {
-      class: 'w-64 shrink-0 border-r border-line bg-panel flex flex-col ' +
-        (S.sidebarOpen ? 'absolute z-20 h-full' : 'hidden') + ' md:flex md:static',
-    },
-      h('div', { class: 'p-2' },
-        h('button', {
-          class: 'w-full text-sm rounded bg-panel2 hover:bg-line border border-line py-2',
-          onclick: newChat,
-        }, '+ New chat')),
-      h('div', { class: 'flex-1 overflow-y-auto px-1' },
-        S.conversations.map(c => h('div', {
-          class: 'group flex items-center rounded px-2 py-1.5 text-sm cursor-pointer ' +
-            (S.conv?.id === c.id ? 'bg-panel2 text-zinc-100' : 'text-zinc-400 hover:bg-panel2'),
-          onclick: () => openConv(c.id),
-        },
-          h('span', { class: 'truncate flex-1' }, c.title || 'untitled'),
-          h('button', {
-            // group-hover alone is unreachable on touch (no :hover) -- keep it
-            // faintly visible by default and let hover still sharpen it up on
-            // pointer devices.
-            class: 'opacity-60 md:opacity-0 md:group-hover:opacity-100 text-zinc-600 hover:text-danger px-1',
-            onclick: e => { e.stopPropagation(); delConv(c.id); },
-          }, '×')))),
-      h('div', { class: 'p-2 text-xs text-zinc-600 border-t border-line' },
-        `${S.queue.depth} in queue`),
+  return [
+    S.sidebarOpen ? h('div', { class: 'backdrop', onclick: () => { S.sidebarOpen = false; render(); } }) : null,
+    h('aside', { class: 'sidebar' + (S.sidebarOpen ? ' is-open' : ''), 'aria-label': 'Conversations' },
+      h('div', { class: 'sidebar-top' },
+        h('button', { class: 'btn', onclick: newChat }, icon('plus'), 'New chat')),
+      h('div', { class: 'convs' },
+        S.conversations.length ? convGroups().map(([label, cs]) => [
+          h('div', { class: 'group' }, label),
+          cs.map(c => h('div', {
+            class: 'conv' + (S.conv?.id === c.id ? ' is-active' : ''),
+            role: 'button', tabindex: 0, title: c.title || 'untitled',
+            onclick: () => openConv(c.id),
+            onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openConv(c.id); } },
+          },
+            h('span', { class: 'title' }, c.title || 'untitled'),
+            h('button', {
+              class: 'del', 'aria-label': 'Delete conversation', title: 'Delete',
+              onclick: e => { e.stopPropagation(); delConv(c.id); },
+            }, icon('trash', 'icon-sm')))),
+        ]) : h('div', { class: 'empty-note', style: 'padding:12px 10px' }, 'No conversations yet.')),
+      h('div', { id: 'sidebar-foot', class: 'sidebar-foot' }, ...sidebarFootKids()),
     ),
-  );
+  ];
 }
 
 /* chat view */
 function chatView() {
-  return h('main', { class: 'flex-1 flex flex-col min-w-0' },
-    h('div', { id: 'thread', class: 'flex-1 overflow-y-auto px-4 py-4 space-y-4' },
-      S.messages.length ? threadItems()
-        : h('div', { class: 'text-center text-zinc-600 mt-16 text-sm flex flex-col items-center gap-3' },
-            h('img', { src: '/assets/llamacracy-logo.svg', alt: 'Llamacracy', width: 128, height: 128, class: 'opacity-90' }),
-            h('div', {}, 'Pick a model and say something.')),
-      S.active ? activeBubble() : null),
+  const thread = h('div', {
+    id: 'thread', class: 'thread',
+    onscroll: e => {
+      const t = e.target;
+      const stick = t.scrollHeight - t.scrollTop - t.clientHeight < 80;
+      if (stick !== S.stick) { S.stick = stick; renderJump(); }
+    },
+  },
+    h('div', { class: 'thread-inner' },
+      S.messages.length ? threadItems() : emptyState(),
+      S.active ? activeBubble() : null));
+  return h('main', { class: 'main' },
+    h('div', { class: 'main', style: 'position:relative' }, thread, h('div', { id: 'jump-slot' }, jumpPill())),
     composer(),
   );
 }
+function emptyState() {
+  const m = S.models.find(x => x.id === S.pickerModel);
+  return h('div', { class: 'empty' },
+    h('img', { src: '/assets/llamacracy-logo.svg', alt: '' }),
+    h('h2', {}, 'What are we working on?'),
+    h('p', {}, m ? `${m.display} is selected. Pick another model below, or just start typing.` : 'Pick a model below and say something.'),
+    h('div', { class: 'hints' },
+      h('span', { class: 'hint' }, icon('globe', 'icon-sm'), 'Search adds live web results to a message'),
+      h('span', { class: 'hint' }, icon('eye', 'icon-sm'), 'Vision models can read an attached image'),
+      h('span', { class: 'hint' }, h('kbd', {}, 'Enter'), 'send', h('kbd', {}, 'Shift+Enter'), 'newline')));
+}
+function jumpPill() {
+  if (S.stick || !S.messages.length) return null;
+  return h('button', { class: 'jump', onclick: () => { S.stick = true; scrollThread(true); renderJump(); } },
+    icon('down', 'icon-sm'), 'Jump to latest');
+}
+function renderJump() { const s = document.getElementById('jump-slot'); if (s) s.replaceChildren(jumpPill() || ''); }
+
 // message bubbles, with a divider dropped in exactly where compaction cut
 // history off. Nothing is hidden -- every original message still renders;
 // the divider just marks the line the model no longer sees verbatim.
@@ -297,65 +413,58 @@ function threadItems() {
 function compactDivider() {
   const summary = S.conv?.context_summary;
   if (!summary) return null;
-  return h('div', { class: 'flex justify-center' },
-    h('details', {
-      class: 'max-w-[46rem] w-full text-[11px] text-zinc-500 bg-panel2/60 border border-line rounded-lg px-3 py-1.5',
-    },
-      h('summary', { class: 'cursor-pointer hover:text-zinc-300 select-none' },
-        '🗜 earlier conversation compacted into a summary'),
-      h('div', { class: 'mt-2 text-zinc-400' }, mdBlock(summary))));
+  return h('div', { class: 'divider' },
+    h('details', {},
+      h('summary', {}, icon('compress', 'icon-sm'), 'Earlier conversation compacted into a summary', icon('chevron', 'icon-sm')),
+      h('div', { class: 'summary-body' }, mdBlock(summary))));
+}
+function tokenMeta(m) {
+  if (m.completion_tokens == null) return '';
+  return `${(m.prompt_tokens || 0).toLocaleString()} in · ${m.completion_tokens.toLocaleString()} out` +
+    (m.usage_estimated ? ' (est.)' : '');
 }
 function msgBubble(m) {
-  const mine = m.role === 'user';
-  const meta = m.completion_tokens != null
-    ? `${m.model_id || ''} · ${m.prompt_tokens || 0}+${m.completion_tokens} tok` +
-      (m.usage_estimated ? ' (est)' : '')
-    : '';
-  return h('div', { class: 'flex ' + (mine ? 'justify-end' : 'justify-start') },
-    h('div', { class: 'max-w-[46rem] rounded-lg px-3 py-2 text-sm ' +
-        (mine ? 'bg-accent/15 border border-accent/30' : 'bg-panel border border-line') },
-      mine && m.image ? h('img', {
-        src: m.image.url, class: 'max-w-[12rem] max-h-48 rounded-lg border border-line mb-2 block',
-      }) : null,
-      mdBlock(m.content),
-      mine ? searchChip(m.search) : null,
-      h('div', { class: 'mt-1 flex items-center gap-2 text-[11px] text-zinc-600' },
-        h('span', { class: 'flex-1 truncate' }, meta),
-        h('button', {
-          type: 'button', title: 'Copy the raw markdown/LaTeX source',
-          class: 'shrink-0 px-1.5 py-0.5 rounded border border-transparent ' +
-            'text-zinc-500 hover:text-zinc-200 hover:border-line hover:bg-panel2',
-          onclick: e => copyText(e.currentTarget, m.content),
-        }, '⧉ Copy')),
-    ));
+  if (m.role === 'user') {
+    return h('div', { class: 'msg msg-user' },
+      h('div', { class: 'bubble' },
+        m.image ? h('img', { class: 'attach', src: m.image.url, alt: 'Attached image' }) : null,
+        mdBlock(m.content)),
+      searchChip(m.search),
+      h('div', { class: 'msg-foot' }, copyBtn(m.content)));
+  }
+  return h('div', { class: 'msg msg-assistant' },
+    h('div', { class: 'head' },
+      h('img', { src: '/assets/llamacracy-favicon.svg', alt: '' }),
+      h('span', { class: 'name' }, modelName(m.model_id) || 'Assistant'),
+      m.created_at ? h('span', { title: new Date(m.created_at * 1000).toLocaleString() },
+        new Date(m.created_at * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : null),
+    mdBlock(m.content, { class: 'prose-chat body' }),
+    h('div', { class: 'msg-foot' },
+      h('span', { class: 'meta' }, tokenMeta(m)),
+      copyBtn(m.content)));
 }
 function searchChip(sr) {
   if (!sr) return null;
-  if (!sr.ok) return h('div', { class: 'mt-1 text-[11px] text-zinc-600' },
-    `🔍 search unavailable — answered without it`);
-  if (!sr.results.length) return h('div', { class: 'mt-1 text-[11px] text-zinc-600' },
-    `🔍 no results for "${sr.query}"`);
-  return h('details', { class: 'mt-1 text-[11px] text-zinc-500' },
-    h('summary', { class: 'cursor-pointer hover:text-zinc-300 select-none' },
-      `🔍 ${sr.results.length} source${sr.results.length > 1 ? 's' : ''} for "${sr.query}"`),
-    h('ul', { class: 'mt-1 space-y-0.5 pl-4 list-disc marker:text-zinc-700' },
-      sr.results.map(r => h('li', {},
-        h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer',
-                class: 'text-accent hover:underline' }, r.title || r.url)))));
+  if (!sr.ok) return h('div', { class: 'sources' }, icon('globe', 'icon-sm'), ' search unavailable — answered without it');
+  if (!sr.results.length) return h('div', { class: 'sources' }, icon('globe', 'icon-sm'), ` no results for "${sr.query}"`);
+  return h('details', { class: 'sources' },
+    h('summary', {}, icon('globe', 'icon-sm'), `${plural(sr.results.length, 'source')} for "${sr.query}"`, icon('chevron', 'icon-sm')),
+    h('ol', {}, sr.results.map(r => h('li', {},
+      h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.title || r.url)))));
 }
 function activeBubble() {
   const a = S.active;
-  const status = a.state === 'queued' ? `queued · position ${a.position}`
-    : a.state === 'loading_model' ? `loading ${modelName(a.model)}${a.eta ? ` · ~${Math.round(a.eta)}s` : ''}`
-    : a.state === 'generating' ? 'generating…' : a.state;
-  return h('div', { class: 'flex justify-start' },
-    h('div', { class: 'max-w-[46rem] rounded-lg px-3 py-2 text-sm bg-panel border border-line w-full' },
-      h('div', { class: 'flex items-center gap-2 text-[11px] text-zinc-500 mb-1' },
-        h('span', { class: 'inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse' }),
-        status,
-        h('div', { class: 'flex-1' }),
-        h('button', { class: 'text-zinc-500 hover:text-danger', onclick: cancelActive }, 'cancel')),
-      mdBlock(a.text, { id: 'active-body' }, false)));
+  const status = a.state === 'queued' ? (a.position > 0 ? `Queued · position ${a.position}` : 'Queued')
+    : a.state === 'loading_model' ? `Loading ${modelName(a.model)}${a.eta ? ` · ~${Math.round(a.eta)}s` : ''}`
+    : a.state === 'generating' ? 'Generating' : a.state;
+  return h('div', { class: 'msg msg-assistant', id: 'active-msg' },
+    h('div', { class: 'head' },
+      h('img', { src: '/assets/llamacracy-favicon.svg', alt: '' }),
+      h('span', { class: 'name' }, modelName(a.model)),
+      h('span', { class: 'status' }, h('i', { class: 'pulse' }), status),
+      h('div', { class: 'spacer' }),
+      h('button', { class: 'btn btn-ghost btn-sm btn-danger', onclick: cancelActive }, icon('stop', 'icon-sm'), 'Stop')),
+    mdBlock(a.text, { id: 'active-body', class: 'prose-chat body' }, false));
 }
 const modelName = id => S.models.find(m => m.id === id)?.display || id;
 
@@ -405,8 +514,7 @@ function contextInfo() {
   }
   const estimated = (!foundExact && S.messages.length > 0) || (!exact && S.messages.length > 0) || tail > 0;
 
-  const el = document.getElementById('composer');
-  const draftTok = (el && el.value ? estTok(el.value) + 4 : 0) + (S.pendingImage ? IMG_TOK_ESTIMATE : 0);
+  const draftTok = (S.draft ? estTok(S.draft) + 4 : 0) + (S.pendingImage ? IMG_TOK_ESTIMATE : 0);
 
   const used = base + tail;
   const projected = used + draftTok;          // the prompt the next send will build
@@ -422,59 +530,60 @@ function contextInfo() {
   };
 }
 
+const RING = { used: '#8ab4ff', draft: '#f2c14e', reply: '#3a4256', free: '#232b3b' };
 function contextRing(ci) {
   if (!ci) return h('span');
   const pctNum = Math.round(100 * ci.projected / ci.limit);
   const u = Math.min(100, 100 * ci.used / ci.limit);
   const d = Math.min(100 - u, 100 * ci.draftTok / ci.limit);
   const r = Math.min(Math.max(0, 100 - u - d), 100 * ci.reply / ci.limit);
-  const main = ci.over ? '#ef6f6f' : ci.tight ? '#f2c14e' : '#7c9cff';
-  const bg = `conic-gradient(${main} 0 ${u}%, #f2c14e ${u}% ${u + d}%, ` +
-            `#3a3f4b ${u + d}% ${u + d + r}%, #23262e ${u + d + r}% 100%)`;
+  const main = ci.over ? '#f27878' : ci.tight ? '#f2c14e' : RING.used;
+  const bg = `conic-gradient(${main} 0 ${u}%, ${RING.draft} ${u}% ${u + d}%, ` +
+            `${RING.reply} ${u + d}% ${u + d + r}%, ${RING.free} ${u + d + r}% 100%)`;
   return h('button', {
-    id: 'ctx-ring', type: 'button', class: 'ctx-ring',
-    style: `background:${bg}`,
+    id: 'ctx-ring', type: 'button', class: 'ctx-ring' + (S.ctxOpen ? ' is-open' : ''),
+    style: `background:${bg}`, 'aria-expanded': S.ctxOpen ? 'true' : 'false',
+    'aria-label': 'Context window usage',
     title: `${modelName(ci.m.id)} context: ~${fmtTok(ci.projected)} / ${fmtCtx(ci.limit)}` +
            (ci.estimated ? ' (partly estimated)' : ''),
-    onclick: () => { S.ctxOpen = !S.ctxOpen; refreshCtx(); },
+    onclick: () => { S.ctxOpen = !S.ctxOpen; refreshCtx(0); },
   }, h('span', {}, (pctNum > 999 ? '999' : pctNum) + '%'));
 }
 
 function contextBreakdown(ci) {
   if (!ci || !S.ctxOpen) return null;
-  const row = (dot, label, tok) => h('div', { class: 'flex items-center gap-2 py-0.5' },
-    h('span', { class: 'inline-block w-2 h-2 rounded-sm', style: `background:${dot}` }),
-    h('span', { class: 'flex-1' }, label),
-    h('span', { class: 'font-mono text-zinc-400' }, fmtTok(tok)),
-    h('span', { class: 'font-mono text-zinc-600 w-9 text-right' }, Math.round(100 * tok / ci.limit) + '%'));
+  const row = (color, label, tok) => h('div', { class: 'ctx-row' },
+    h('i', { class: 'sw', style: `background:${color}` }),
+    h('span', {}, label),
+    h('span', { class: 'n' }, fmtTok(tok)),
+    h('span', { class: 'p' }, Math.round(100 * tok / ci.limit) + '%'));
   const free = Math.max(0, ci.limit - ci.projected - ci.reply);
-  return h('div', { class: 'mb-2 rounded border border-line bg-panel2 p-2 text-[11px] text-zinc-400' },
-    h('div', { class: 'flex justify-between mb-1 text-zinc-500' },
-      h('span', {}, `${modelName(ci.m.id)} · ${fmtTok(ci.limit)} context` +
+  return h('div', { class: 'ctx-panel' },
+    h('div', { class: 'ctx-head' },
+      h('span', {}, h('strong', {}, modelName(ci.m.id)), ` · ${fmtTok(ci.limit)} context` +
         (ci.estimated ? ' · ~estimate' : '')),
-      h('span', { class: 'font-mono' }, `${fmtTok(ci.projected)} used`)),
-    row('#7c9cff', 'Conversation', ci.used),
-    ci.draftTok ? row('#f2c14e', 'Your draft', ci.draftTok) : null,
-    row('#3a3f4b', 'Reserved for reply', ci.reply),
-    row('#23262e', 'Free', free),
-    ci.over ? h('div', { class: 'mt-1 text-danger' },
-      'Over the window — compact it, trim the chat, start a new one, or pick a bigger-context model.')
-      : ci.tight ? h('div', { class: 'mt-1 text-warn' },
+      h('span', { class: 'mono' }, `${fmtTok(ci.projected)} used`)),
+    row(RING.used, 'Conversation', ci.used),
+    ci.draftTok ? row(RING.draft, 'Your draft', ci.draftTok) : null,
+    row(RING.reply, 'Reserved for reply', ci.reply),
+    row(RING.free, 'Free', free),
+    ci.over ? h('div', { class: 'ctx-note danger' },
+      'Over the window — compact the history, trim the chat, start a new one, or pick a bigger-context model.')
+      : ci.tight ? h('div', { class: 'ctx-note warn' },
         'Close to full — the reply may be cut short. Compacting frees room, or a bigger-context model has more.')
       : null,
-    ci.compactable ? h('div', { class: 'mt-2 pt-2 border-t border-line' },
+    ci.compactable ? h('div', { class: 'ctx-compact' },
       h('button', {
-        type: 'button', disabled: S.compacting ? 'true' : null,
-        class: 'text-xs px-2 py-1 rounded border border-line text-zinc-300 hover:bg-panel2 disabled:opacity-50',
+        type: 'button', disabled: S.compacting, class: 'btn btn-sm',
         onclick: compactConversation,
-      }, S.compacting ? 'Compacting…' : '🗜 Compact history'),
-      h('div', { class: 'mt-1 text-zinc-600' },
+      }, icon('compress', 'icon-sm'), S.compacting ? 'Compacting…' : 'Compact history'),
+      h('div', { class: 'hint' },
         `Summarizes everything except the last ${S.me?.limits?.compact_keep_recent ?? 6} messages ` +
         'using this model. One real inference — billed like any other reply.')) : null);
 }
 
 let _ctxTimer = null;
-function refreshCtx() {
+function refreshCtx(delay = 120) {
   clearTimeout(_ctxTimer);
   _ctxTimer = setTimeout(() => {
     const ci = contextInfo();
@@ -482,14 +591,15 @@ function refreshCtx() {
     if (slot) slot.replaceChildren(contextRing(ci));
     const bd = document.getElementById('ctx-breakdown');
     if (bd) bd.replaceChildren(contextBreakdown(ci) || '');
-  }, 120);
+  }, delay);
 }
+function renderHint() { const el = document.getElementById('compose-hint'); if (el) el.replaceChildren(...composeHintKids()); }
 
 async function onPickImage(e) {
   const file = e.target.files[0]; e.target.value = '';
   if (!file) return;
   const maxMb = S.me?.limits?.upload_max_mb || 8;
-  if (file.size > maxMb * 1024 * 1024) { flashError(`image too large (max ${maxMb} MB)`); return; }
+  if (file.size > maxMb * 1024 * 1024) { flashError(`Image too large (max ${maxMb} MB)`); return; }
   try {
     const up = await api.upload(file);
     S.pendingImage = { id: up.id, url: URL.createObjectURL(file) };
@@ -497,197 +607,214 @@ async function onPickImage(e) {
   } catch (e2) { flashError(e2.message); }
 }
 
+function composeHintKids() {
+  const m = S.pickerModel && S.models.find(x => x.id === S.pickerModel);
+  if (!m) return [];
+  const kids = [
+    h('span', { class: m.resident ? 'good' : '', style: m.resident ? 'color:var(--good)' : '' },
+      m.resident ? '● loaded' : `cold start ~${fmtDur(m.cold_load_s)}`),
+    h('span', { class: 'sep' }, '·'),
+    h('span', {}, `~${Math.round(m.tok_s)} tok/s`),
+  ];
+  if (m.blurb) kids.push(h('span', { class: 'sep' }, '·'), h('span', {}, m.blurb));
+  kids.push(h('span', { class: 'kbd' }, 'Enter to send · Shift+Enter for a new line'));
+  return kids;
+}
+
 function composer() {
   const m = S.pickerModel && S.models.find(x => x.id === S.pickerModel);
-  return h('div', { class: 'shrink-0 border-t border-line bg-panel p-3' },
-    h('div', { class: 'max-w-[48rem] mx-auto' },
-      h('div', { class: 'flex items-center gap-2 mb-2 flex-wrap' },
-        h('select', {
-          class: 'bg-panel2 border border-line rounded px-2 py-1 text-sm min-w-0 max-w-[55vw] sm:max-w-sm truncate',
-          onchange: e => {
-            S.pickerModel = e.target.value;
-            const nm = S.models.find(x => x.id === S.pickerModel);
-            if (!nm?.vision) S.pendingImage = null;   // no longer attachable on this model
-            render();
-          },
-        }, S.models.filter(md => md.in_picker).map(md => h('option',
-          { value: md.id, selected: md.id === S.pickerModel || null },
-          `${md.display}${md.vision ? ' 👁' : ''}${md.tier ? `  [${md.tier}]` : ''}`))),
-        m ? h('span', { class: 'text-xs text-zinc-500' },
-          m.resident ? '● loaded' : `cold start ~${fmtDur(m.cold_load_s)}`,
-          ` · ~${Math.round(m.tok_s)} tok/s`) : null,
-        h('button', {
-          type: 'button', title: 'Search the web before answering (one query, injected as context)',
-          class: 'text-xs px-2 py-1 rounded border ' + (S.searchOn
-            ? 'bg-accent/20 border-accent/40 text-accent'
-            : 'border-line text-zinc-500 hover:text-zinc-300'),
-          onclick: () => { S.searchOn = !S.searchOn; render(); },
-        }, '🔍 Search' + (S.searchOn ? ': on' : '')),
-        h('input', {
-          type: 'file', id: 'img-input', class: 'hidden',
-          accept: 'image/png,image/jpeg,image/webp', onchange: onPickImage,
-        }),
-        h('button', {
-          type: 'button',
-          title: m?.vision ? 'Attach an image' : 'Switch to a 👁 model to attach images',
-          disabled: m?.vision ? null : 'true',
-          class: 'text-xs px-2 py-1 rounded border disabled:opacity-30 ' + (S.pendingImage
-            ? 'bg-accent/20 border-accent/40 text-accent'
-            : 'border-line text-zinc-500 hover:text-zinc-300'),
-          onclick: () => document.getElementById('img-input').click(),
-        }, '📎' + (S.pendingImage ? ' 1' : '')),
-        h('div', { class: 'flex-1' }),
-        h('span', { id: 'ctx-slot' }, contextRing(contextInfo()))),
-      m?.blurb ? h('div', { class: 'text-[11px] text-zinc-600 mb-2' }, m.blurb) : null,
+  const tierLabel = t => t === 'daily' ? 'daily driver' : t;
+  return h('div', { class: 'composer' },
+    h('div', { class: 'composer-inner' },
       h('div', { id: 'ctx-breakdown' }, contextBreakdown(contextInfo())),
-      S.pendingImage ? h('div', { class: 'flex items-center gap-2 mb-2' },
-        h('img', { src: S.pendingImage.url, class: 'h-14 w-14 object-cover rounded border border-line' }),
-        h('span', { class: 'text-[11px] text-zinc-500 flex-1' },
-          'Image attached — sent with your next message (routes to the vision variant)'),
-        h('button', {
-          type: 'button', class: 'text-xs text-zinc-500 hover:text-danger',
-          onclick: () => { S.pendingImage = null; render(); },
-        }, '✕')) : null,
-      h('form', { class: 'flex gap-2 items-end', onsubmit: sendMessage },
+      h('form', { class: 'compose-card', onsubmit: sendMessage },
+        S.pendingImage ? h('div', { class: 'attach-preview' },
+          h('img', { src: S.pendingImage.url, alt: 'Pending attachment' }),
+          h('span', { style: 'flex:1' }, 'Image attached — sent with your next message (routes to the vision variant).'),
+          h('button', {
+            type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Remove image',
+            onclick: () => { S.pendingImage = null; render(); },
+          }, icon('x', 'icon-sm'))) : null,
         h('textarea', {
-          id: 'composer', rows: 1, placeholder: 'Message…',
-          // text-base (16px) below sm: iOS Safari auto-zooms the page on
-          // focus for any input/textarea under 16px -- this is the field
-          // that gets focused on every message, so it's the one that matters.
-          class: 'flex-1 bg-panel2 border border-line rounded px-3 py-2 text-base sm:text-sm resize-none max-h-40',
-          oninput: e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; refreshCtx(); },
-          onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(e); } },
+          id: 'composer', rows: 1, placeholder: 'Message Llamacracy…', value: S.draft,
+          'aria-label': 'Message',
+          oninput: e => { S.draft = e.target.value; autosize(e.target); refreshCtx(); },
+          onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(e); } },
         }),
-        h('button', {
-          class: 'bg-accent/20 border border-accent/40 text-accent rounded px-4 py-2 text-sm disabled:opacity-40',
-          disabled: S.active ? 'true' : null,
-        }, 'Send'))),
+        h('div', { class: 'compose-tools' },
+          h('span', { class: 'select-wrap' },
+            h('select', {
+              class: 'select', 'aria-label': 'Model',
+              onchange: e => {
+                S.pickerModel = e.target.value;
+                const nm = S.models.find(x => x.id === S.pickerModel);
+                if (!nm?.vision) S.pendingImage = null;   // no longer attachable on this model
+                render();
+              },
+            }, S.models.filter(md => md.in_picker).map(md => h('option',
+              { value: md.id, selected: md.id === S.pickerModel },
+              `${md.display}${md.tier ? ` · ${tierLabel(md.tier)}` : ''}${md.vision ? ' · vision' : ''}`))),
+            icon('chevron', 'icon-sm')),
+          h('button', {
+            type: 'button', title: 'Search the web before answering (one query, injected as context)',
+            class: 'btn btn-sm' + (S.searchOn ? ' is-on' : ''), 'aria-pressed': S.searchOn ? 'true' : 'false',
+            onclick: () => { S.searchOn = !S.searchOn; render(); },
+          }, icon('globe', 'icon-sm'), h('span', { class: 'tool-label' }, 'Search')),
+          h('input', {
+            type: 'file', id: 'img-input', hidden: true,
+            accept: 'image/png,image/jpeg,image/webp', onchange: onPickImage,
+          }),
+          h('button', {
+            type: 'button',
+            title: m?.vision ? 'Attach an image' : 'Switch to a vision model to attach images',
+            'aria-label': 'Attach image', disabled: !m?.vision,
+            class: 'btn btn-sm btn-icon' + (S.pendingImage ? ' is-on' : ''),
+            onclick: () => document.getElementById('img-input').click(),
+          }, icon('clip', 'icon-sm')),
+          h('div', { class: 'spacer' }),
+          h('span', { id: 'ctx-slot' }, contextRing(contextInfo())),
+          S.active
+            ? h('button', { type: 'button', class: 'btn btn-icon btn-danger', 'aria-label': 'Stop generating', title: 'Stop', onclick: cancelActive }, icon('stop'))
+            : h('button', { type: 'submit', class: 'btn btn-primary btn-icon', 'aria-label': 'Send', title: 'Send (Enter)' }, icon('send')))),
+      h('div', { id: 'compose-hint', class: 'compose-hint' }, ...composeHintKids())),
   );
 }
 
 /* queue panel (bottom-right, collapsible) */
 function queuePanel() {
-  return h('div', { id: 'qpanel', class: 'fixed bottom-3 right-3 z-30' }, queuePanelInner());
+  return h('div', { id: 'qpanel', class: 'qpanel' }, queuePanelInner());
 }
-function renderQueuePanel() { const p = document.getElementById('qpanel'); if (p) p.replaceChildren(queuePanelInner()); }
+function renderQueuePanel() {
+  const p = document.getElementById('qpanel'); if (p) p.replaceChildren(queuePanelInner());
+  const f = document.getElementById('sidebar-foot'); if (f) f.replaceChildren(...sidebarFootKids());
+}
+function queueRows() {
+  const jobs = S.queue.jobs || [];
+  const st = j => j.state === 'generating' ? 'generating' : j.state === 'loading_model' ? 'loading' : j.cold_start ? 'cold' : 'waiting';
+  return h('div', { class: 'qlist' },
+    jobs.map(j => h('div', { class: 'qrow' + (j.owner === S.me?.display_name ? ' is-mine' : '') },
+      h('span', { class: 'pos' + (j.position === 0 ? ' is-active' : '') }, j.position === 0 ? '▶' : j.position),
+      h('span', { class: 'qwho' }, `${j.owner} · ${modelName(j.model)}`),
+      h('span', { class: 'state' }, st(j)))));
+}
+// floating card -- phones only (the sidebar footer shows the same list on desktop)
 function queuePanelInner() {
   const jobs = S.queue.jobs || [];
   if (!jobs.length) return h('span');
-  return h('div', { class: 'w-72 bg-panel border border-line rounded-lg shadow-xl text-xs overflow-hidden' },
-    h('div', { class: 'px-3 py-1.5 border-b border-line text-zinc-400 flex' },
-      h('span', { class: 'flex-1' }, `Queue · ${jobs.length}`),
-      S.loadedModel ? h('span', { class: 'text-good' }, '● ' + modelName(S.loadedModel)) : null),
-    h('div', { class: 'max-h-52 overflow-y-auto' },
-      jobs.map(j => h('div', {
-        class: 'px-3 py-1.5 flex items-center gap-2 border-b border-line/50 ' +
-          (j.owner === S.me?.display_name ? 'bg-accent/5' : ''),
-      },
-        h('span', { class: 'font-mono ' + (j.position === 0 ? 'text-accent' : 'text-zinc-600') },
-          j.position === 0 ? '▶' : j.position),
-        h('span', { class: 'flex-1 truncate' }, `${j.owner} · ${modelName(j.model)}`),
-        h('span', { class: 'text-zinc-500' }, j.state === 'generating' ? 'gen' : j.state === 'loading_model' ? 'load' : j.cold_start ? 'cold' : 'wait')))));
+  return h('div', { class: 'qcard', role: 'status', 'aria-live': 'polite' },
+    h('div', { class: 'qhead' },
+      icon('zap', 'icon-sm'), h('strong', {}, 'Queue'), `· ${jobs.length}`,
+      h('div', { class: 'spacer' }),
+      S.loadedModel ? h('span', { style: 'color:var(--good)' }, modelName(S.loadedModel)) : null),
+    queueRows());
 }
 
 /* usage view */
 function usageView() {
   const u = S.usage;
-  if (!u) return h('main', { class: 'flex-1 p-8 text-zinc-600' }, 'loading…');
-  const bars = u.daily || [];
-  const max = Math.max(1, ...bars.map(b => b.credits));
-  return h('main', { class: 'flex-1 overflow-y-auto p-6 max-w-3xl' },
-    h('h1', { class: 'text-lg font-semibold mb-4' }, 'Your usage'),
-    h('div', { class: 'grid sm:grid-cols-2 gap-3 mb-6' },
-      usageCard('Session', u.session, '5-hour window'),
+  if (!u) return h('main', { class: 'main' }, h('div', { class: 'page muted' }, 'Loading…'));
+  return h('main', { class: 'main' }, h('div', { class: 'page page-narrow' },
+    h('h1', {}, 'Your usage'),
+    h('div', { class: 'grid grid-2' },
+      usageCard('Session', u.session, `${S.me?.limits?.session_window_hours ?? 5}-hour window`),
       usageCard('This week', u.weekly, 'rolling 7 days')),
-    h('div', { class: 'bg-panel border border-line rounded-lg p-4 mb-6' },
-      h('div', { class: 'text-sm text-zinc-400 mb-2' }, 'Last 30 days (credits/day)'),
-      h('div', { class: 'flex items-end gap-1 h-28' },
-        bars.length ? bars.map(b => h('div', {
-          class: 'flex-1 max-w-[24px] bg-accent/40 rounded-t', style: `height:${Math.max(2, 100 * b.credits / max)}%`,
-          title: `${credits(b.credits)} credits · ${money(b.cost_usd)}`,
-        })) : h('div', { class: 'text-xs text-zinc-600 self-center' }, 'no activity yet'))),
-    h('div', { class: 'bg-panel border border-line rounded-lg overflow-x-auto' },
-      h('table', { class: 'w-full text-sm' },
-        h('thead', { class: 'text-zinc-500 text-xs' }, h('tr', {},
-          ...['Model', 'Requests', 'Credits', 'Tokens', 'Cost'].map(t =>
-            h('th', { class: 'text-left font-normal px-3 py-2' }, t)))),
-        h('tbody', {}, (u.per_model || []).map(r => h('tr', { class: 'border-t border-line' },
-          h('td', { class: 'px-3 py-2' }, modelName(r.model_id)),
-          h('td', { class: 'px-3 py-2' }, r.requests),
-          h('td', { class: 'px-3 py-2 font-mono' }, credits(r.credits)),
-          h('td', { class: 'px-3 py-2' }, (r.completion_tokens || 0).toLocaleString()),
-          h('td', { class: 'px-3 py-2' }, money(r.cost_usd))))))),
-    u.estimated_fraction > 0.03 ? h('div', { class: 'mt-3 text-xs text-warn' },
+    h('div', { class: 'card', style: 'margin-top:14px' },
+      h('div', { class: 'card-title' }, 'Last 30 days · credits per day' +
+        ((u.daily || []).length ? ` · peak ${credits(Math.max(...u.daily.map(r => r.credits)))}` : '')),
+      dailyChart(u.daily || [])),
+    h('div', { class: 'table-wrap', style: 'margin-top:14px' },
+      h('table', {},
+        h('thead', {}, h('tr', {},
+          ...['Model', 'Requests', 'Credits', 'Tokens out', 'Cost'].map(t => h('th', {}, t)))),
+        h('tbody', {}, (u.per_model || []).length ? (u.per_model || []).map(r => h('tr', {},
+          h('td', {}, modelName(r.model_id)),
+          h('td', { class: 'mono' }, r.requests),
+          h('td', { class: 'mono' }, credits(r.credits)),
+          h('td', { class: 'mono' }, (r.completion_tokens || 0).toLocaleString()),
+          h('td', { class: 'mono' }, money(r.cost_usd))))
+          : h('tr', {}, h('td', { class: 'muted', colspan: 5 }, 'No requests yet.'))))),
+    u.estimated_fraction > 0.03 ? h('div', { class: 'small', style: 'margin-top:10px;color:var(--warn)' },
       `${(u.estimated_fraction * 100).toFixed(1)}% of recent credits are from estimated token counts.`) : null,
     apiKeysCard(),
-  );
+  ));
 }
 function usageCard(title, g, sub) {
-  const col = g.pct >= 90 ? 'bg-danger' : g.pct >= 75 ? 'bg-warn' : 'bg-accent';
-  return h('div', { class: 'bg-panel border border-line rounded-lg p-4' },
-    h('div', { class: 'flex justify-between text-sm' }, h('span', {}, title),
-      h('span', { class: 'text-zinc-500 text-xs' }, sub)),
-    h('div', { class: 'text-2xl font-mono mt-1' }, credits(g.used),
-      h('span', { class: 'text-sm text-zinc-600' }, ' / ' + credits(g.cap))),
-    h('div', { class: 'h-1.5 bg-panel2 rounded mt-2 overflow-hidden' },
-      h('div', { class: col + ' h-full', style: `width:${Math.min(100, g.pct)}%` })),
-    g.reset_at ? h('div', { class: 'text-xs text-zinc-600 mt-1' }, 'resets in ' + untilStr(g.reset_at)) : null);
+  const tone = gaugeTone(g);
+  return h('div', { class: 'card stat ' + tone },
+    h('div', { class: 'head' }, h('span', { class: 'lbl' }, title), h('span', { class: 'sub muted small' }, sub)),
+    h('div', { class: 'big' }, credits(g.used), h('small', {}, `/ ${credits(g.cap)} credits`)),
+    h('div', { class: 'meter' }, h('i', { style: `width:${Math.min(100, g.pct)}%` })),
+    h('div', { class: 'foot' },
+      h('span', {}, Math.round(g.pct) + '% used' + (g.uncapped ? ' · uncapped' : '')),
+      g.reset_at ? h('span', {}, 'resets in ' + untilStr(g.reset_at)) : null));
+}
+// One series, one hue. Fills the full 30-day range so gaps read as zero days.
+function dailyChart(rows) {
+  const day = 86400, today = Math.floor(Date.now() / 1000 / day) * day;
+  const byDay = Object.fromEntries(rows.map(r => [r.day, r]));
+  const days = Array.from({ length: 30 }, (_, i) => today - (29 - i) * day);
+  const max = Math.max(1, ...rows.map(r => r.credits));
+  if (!rows.length) return h('div', { class: 'empty-note' }, 'No activity in the last 30 days.');
+  const chart = h('div', { class: 'chart' });
+  let tip = null;
+  const showTip = (bar, d, r) => {
+    hideTip();
+    tip = h('div', { class: 'tip' }, h('b', {}, credits(r?.credits || 0)), ' credits ',
+      h('span', {}, `· ${money(r?.cost_usd || 0)} · ${fmtDate(d)}`));
+    chart.append(tip);
+    const cb = chart.getBoundingClientRect(), bb = bar.getBoundingClientRect();
+    tip.style.left = (bb.left - cb.left + bb.width / 2) + 'px';
+    tip.style.top = (bb.bottom - cb.top - (r ? bb.height * Math.max(0.02, r.credits / max) : 2)) + 'px';
+  };
+  const hideTip = () => { if (tip) { tip.remove(); tip = null; } };
+  chart.append(
+    h('div', { class: 'plot' }, days.map(d => {
+      const r = byDay[d];
+      const bar = h('div', {
+        class: 'bar' + (r ? '' : ' is-empty'), tabindex: 0,
+        'aria-label': `${fmtDate(d)}: ${credits(r?.credits || 0)} credits`,
+        onmouseenter: e => showTip(e.currentTarget, d, r), onmouseleave: hideTip,
+        onfocus: e => showTip(e.currentTarget, d, r), onblur: hideTip,
+      }, h('i', { style: `height:${r ? Math.max(2, 100 * r.credits / max) : 2}%` }));
+      return bar;
+    })),
+    h('div', { class: 'axis' }, h('span', {}, fmtDate(days[0])), h('span', {}, 'today')));
+  return chart;
 }
 
 /* API keys (Phase 8.2) -- for Continue.dev and other OpenAI-compatible tools.
    Same queue + credits as the web chat; the key is just a different door in. */
 function apiKeysCard() {
   const base = window.location.origin + '/v1';
-  return h('div', { class: 'bg-panel border border-line rounded-lg p-4 mt-6' },
-    h('div', { class: 'text-sm font-semibold mb-1' }, 'API access'),
-    h('div', { class: 'text-xs text-zinc-500 mb-3' },
-      'OpenAI-compatible endpoint for tools like Continue.dev -- same queue and ' +
-      'credits as the web chat. Base URL ',
-      h('code', { class: 'text-zinc-300 bg-panel2 rounded px-1' }, base),
-      ', model = any id from the picker (e.g. ',
-      h('code', { class: 'text-zinc-300 bg-panel2 rounded px-1' }, S.pickerModel || 'fast-4b'),
-      ').'),
-    S.newApiKey ? h('div', { class: 'mb-3 p-2 rounded border border-accent/40 bg-accent/10' },
-      h('div', { class: 'text-xs text-zinc-300 mb-1' },
-        'Copy this now — it will not be shown again:'),
-      h('div', { class: 'flex items-center gap-2' },
-        h('code', { class: 'flex-1 min-w-0 break-all text-xs text-accent' }, S.newApiKey),
-        h('button', {
-          type: 'button',
-          class: 'shrink-0 text-xs px-2 py-1 rounded border border-line text-zinc-300 hover:bg-panel2',
-          onclick: e => copyText(e.currentTarget, S.newApiKey),
-        }, '⧉ Copy')),
-      h('button', {
-        type: 'button', class: 'mt-2 text-xs text-zinc-500 hover:text-zinc-300',
-        onclick: () => { S.newApiKey = null; render(); },
-      }, 'Done')) : null,
-    h('div', { class: 'flex items-center gap-2 mb-3' },
+  return h('div', { class: 'card', style: 'margin-top:14px' },
+    h('h3', {}, icon('key', 'icon-sm'), ' API access'),
+    h('p', { class: 'sub' },
+      'OpenAI-compatible endpoint for tools like Continue.dev — same queue and credits as the web chat. Base URL ',
+      h('code', { class: 'inline' }, base),
+      ', model is any id from the picker (e.g. ',
+      h('code', { class: 'inline' }, S.pickerModel || 'fast-4b'), ').'),
+    S.newApiKey ? h('div', { class: 'keyreveal' },
+      h('div', { class: 'small' }, 'Copy this now — it will not be shown again.'),
+      h('code', {}, S.newApiKey),
+      h('div', { class: 'row' },
+        copyBtn(S.newApiKey, 'Copy key'),
+        h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => { S.newApiKey = null; render(); } }, 'Done'))) : null,
+    h('div', { class: 'row', style: 'margin-bottom:12px' },
       h('input', {
-        type: 'text', placeholder: 'label (e.g. laptop)', value: S.apiKeyLabel,
-        class: 'flex-1 bg-panel2 border border-line rounded px-2 py-1 text-base sm:text-sm',
-        oninput: e => { S.apiKeyLabel = e.target.value; },
+        type: 'text', class: 'input', style: 'flex:1;min-width:10rem', placeholder: 'Label (e.g. laptop)', value: S.apiKeyLabel,
+        'aria-label': 'Key label', oninput: e => { S.apiKeyLabel = e.target.value; },
+        onkeydown: e => { if (e.key === 'Enter') genApiKey(); },
       }),
-      h('button', {
-        type: 'button',
-        class: 'text-sm px-3 py-1 rounded border border-accent/40 bg-accent/20 text-accent whitespace-nowrap',
-        onclick: genApiKey,
-      }, '+ Generate key')),
+      h('button', { type: 'button', class: 'btn btn-primary', onclick: genApiKey }, icon('plus', 'icon-sm'), 'Generate key')),
     S.apiKeys.length
-      ? h('div', { class: 'divide-y divide-line' }, S.apiKeys.map(k => h('div', {
-          class: 'flex items-center justify-between py-1.5 text-sm',
-        },
-          h('div', { class: 'min-w-0' },
-            h('div', { class: 'truncate' }, k.label || '(unlabeled)'),
-            h('div', { class: 'text-[11px] text-zinc-600' },
+      ? h('div', { class: 'keylist' }, S.apiKeys.map(k => h('div', { class: 'keyrow' },
+          h('div', { class: 'lbl' },
+            h('div', {}, k.label || h('span', { class: 'muted' }, '(unlabeled)')),
+            h('div', { class: 'small faint' },
               `created ${new Date(k.created_at * 1000).toLocaleDateString()}` +
-              (k.last_used_at
-                ? ` · last used ${new Date(k.last_used_at * 1000).toLocaleDateString()}`
-                : ' · never used'))),
-          h('button', {
-            type: 'button', class: 'shrink-0 text-xs text-zinc-500 hover:text-danger',
-            onclick: () => revokeApiKey(k.id),
-          }, 'revoke'))))
-      : h('div', { class: 'text-xs text-zinc-600' }, 'No API keys yet.'));
+              (k.last_used_at ? ` · last used ${new Date(k.last_used_at * 1000).toLocaleDateString()}` : ' · never used'))),
+          h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-danger', onclick: () => revokeApiKey(k.id) }, 'Revoke'))))
+      : h('div', { class: 'empty-note' }, 'No API keys yet.'));
 }
 async function loadApiKeys() {
   try { S.apiKeys = (await api.get('/api/keys')).keys; if (S.view === 'usage') render(); } catch { /* ignore */ }
@@ -700,6 +827,7 @@ async function genApiKey() {
   } catch (e) { flashError(e.message); }
 }
 async function revokeApiKey(id) {
+  if (!await confirmModal('Revoke this API key?', 'Anything using it will start getting 401s immediately.', 'Revoke')) return;
   try {
     await api.del('/api/keys/' + id);
     S.apiKeys = S.apiKeys.filter(k => k.id !== id);
@@ -708,11 +836,19 @@ async function revokeApiKey(id) {
 }
 
 /* ---------------------------------------------------------------- actions */
-function scrollThread() { const t = document.getElementById('thread'); if (t) t.scrollTop = t.scrollHeight; }
+function scrollThread(force = false) {
+  const t = document.getElementById('thread'); if (!t) return;
+  if (force || S.stick) t.scrollTop = t.scrollHeight;
+}
 
 async function boot() {
   try { S.me = await api.get('/api/me'); }
-  catch (e) { $app.replaceChildren(h('div', { class: 'p-8 text-danger' }, 'Auth error: ' + e.message)); return; }
+  catch (e) {
+    $app.replaceChildren(h('div', { class: 'page' }, h('div', { class: 'card', style: 'max-width:28rem;margin:10vh auto' },
+      h('h3', { style: 'color:var(--danger)' }, 'Sign-in problem'),
+      h('p', { class: 'sub' }, e.message))));
+    return;
+  }
   const mods = await api.get('/api/models');
   S.models = mods.models; S.loadedModel = mods.loaded_model;
   const pickable = S.models.filter(m => m.in_picker);
@@ -729,22 +865,28 @@ async function loadUsage() {
   try { S.usage = await api.get('/api/usage'); renderTopbar(); if (S.view === 'usage') render(); } catch {}
 }
 
-function newChat() { S.conv = null; S.messages = []; S.view = 'chat'; S.sidebarOpen = false; render(); focusComposer(); }
+function newChat() {
+  S.conv = null; S.messages = []; S.view = 'chat'; S.sidebarOpen = false; S.ctxOpen = false; S.stick = true;
+  render(); focusComposer();
+}
 async function openConv(id) {
-  const d = await api.get('/api/conversations/' + id);
+  let d;
+  try { d = await api.get('/api/conversations/' + id); } catch (e) { flashError(e.message); return; }
   d.messages.forEach(m => {
     if (m.search_json) { try { m.search = JSON.parse(m.search_json); } catch { /* ignore */ } }
     if (m.image_upload_id) m.image = { url: '/api/uploads/' + m.image_upload_id };
   });
-  S.conv = d.conversation; S.messages = d.messages; S.view = 'chat'; S.sidebarOpen = false;
+  S.conv = d.conversation; S.messages = d.messages; S.view = 'chat'; S.sidebarOpen = false; S.stick = true;
   if (d.conversation.model_id && S.models.some(m => m.id === d.conversation.model_id))
     S.pickerModel = d.conversation.model_id;
   render();
   focusComposer();
 }
 async function delConv(id) {
-  await api.del('/api/conversations/' + id);
-  S.conversations = S.conversations.filter(c => c.id !== id);
+  const c = S.conversations.find(x => x.id === id);
+  if (!await confirmModal('Delete this conversation?', `"${c?.title || 'untitled'}" and any attached images will be removed. This can't be undone.`, 'Delete')) return;
+  try { await api.del('/api/conversations/' + id); } catch (e) { flashError(e.message); return; }
+  S.conversations = S.conversations.filter(x => x.id !== id);
   if (S.conv?.id === id) newChat(); else render();
 }
 async function compactConversation() {
@@ -757,12 +899,12 @@ async function compactConversation() {
     // own boundary/summary move, so no reload is needed.
     S.conv.compact_boundary_id = r.compact_boundary_id;
     S.conv.context_summary = r.context_summary;
-    flashInfo(`Compacted ${r.compacted_count} messages into a summary (${credits(r.credits)} credits).`);
+    flashInfo(`Compacted ${plural(r.compacted_count, 'message')} into a summary (${credits(r.credits)} credits).`);
   } catch (e) {
     flashError(e.message);
   } finally {
     S.compacting = false;
-    refreshCtx(); render();
+    render(); refreshCtx(0);
   }
 }
 
@@ -770,12 +912,12 @@ let aborter = null;
 async function sendMessage(e) {
   e.preventDefault();
   if (S.active) return;
-  const ta = document.getElementById('composer');
-  const text = ta.value.trim(); if (!text) return;
-  ta.value = ''; ta.style.height = 'auto';
+  const text = S.draft.trim(); if (!text) return;
+  S.draft = '';
   const img = S.pendingImage; S.pendingImage = null;
   S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined });
   S.active = { state: 'queued', position: '?', model: S.pickerModel, text: '' };
+  S.stick = true;
   render();
   focusComposer();
 
@@ -783,11 +925,18 @@ async function sendMessage(e) {
   const body = { model: S.pickerModel, message: text, search: S.searchOn };
   if (img) body.image_id = img.id;
   if (S.conv) body.conversation_id = S.conv.id;
+  let accepted = false;
   try {
     for await (const ev of api.chatStream(body, aborter.signal)) {
       if (ev.type === 'accepted') {
+        accepted = true;
         S.active.jobId = ev.job_id; S.active.position = ev.position;
-        if (!S.conv) { S.conv = { id: ev.conversation_id, model_id: S.pickerModel, title: text.slice(0, 50) }; S.conversations.unshift(S.conv); }
+        if (!S.conv) {
+          S.conv = { id: ev.conversation_id, model_id: S.pickerModel, title: text.slice(0, 50), updated_at: Date.now() / 1000 };
+          S.conversations.unshift(S.conv);
+        } else {
+          S.conv.updated_at = Date.now() / 1000;
+        }
         render();
       } else if (ev.type === 'search') {
         const u = S.messages[S.messages.length - 1];
@@ -808,16 +957,23 @@ async function sendMessage(e) {
           // picker's selection -- matches what's persisted server-side.
           role: 'assistant', content: S.active.text, model_id: ev.model || S.active.model,
           prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens,
-          usage_estimated: ev.usage_estimated,
+          usage_estimated: ev.usage_estimated, created_at: Date.now() / 1000,
         });
         S.active = null; loadUsage(); render();
-      } else if (ev.type === 'error') { flashError(ev.detail || 'generation error'); S.active = null; render(); }
+      } else if (ev.type === 'error') { flashError(ev.detail || 'Generation error'); S.active = null; render(); }
       else if (ev.type === 'cancelled') { S.active = null; render(); }
     }
   } catch (e2) {
     S.active = null;
-    if (e2.status === 429) limitModal(e2.detail);
-    else flashError(e2.message);
+    if (e2.name !== 'AbortError') {
+      // the send never made it into the queue: hand the text back so it
+      // isn't lost, and drop the optimistic bubble
+      if (!accepted) {
+        S.messages.pop(); S.draft = text; S.pendingImage = img;
+      }
+      if (e2.status === 429) limitModal(e2.detail);
+      else flashError(e2.message);
+    }
   }
   S.active = S.active || null; render();
 }
@@ -843,13 +999,14 @@ async function loadAdmin() {
 }
 function adminView() {
   const tabs = [['live', 'Live'], ['users', 'Users'], ['usage', 'Usage'], ['impact', 'Queue impact'], ['billing', 'Billing'], ['api-keys', 'API keys'], ['controls', 'Controls']];
-  return h('main', { class: 'flex-1 overflow-y-auto' },
-    h('div', { class: 'flex gap-1 border-b border-line px-4 sticky top-0 bg-ink z-10' },
+  return h('main', { class: 'main' }, h('div', { class: 'page', style: 'padding:0' },
+    h('div', { class: 'tabs', role: 'tablist' },
       tabs.map(([k, l]) => h('button', {
-        class: 'px-3 py-2 text-sm border-b-2 ' + (S.admin.tab === k ? 'border-accent text-accent' : 'border-transparent text-zinc-400'),
+        role: 'tab', 'aria-selected': S.admin.tab === k ? 'true' : 'false',
+        class: S.admin.tab === k ? 'is-active' : '',
         onclick: () => { S.admin.tab = k; loadAdmin(); },
       }, l))),
-    h('div', { class: 'p-4' }, adminBody()));
+    h('div', { class: 'admin-body' }, adminBody())));
 }
 function adminBody() {
   const a = S.admin;
@@ -861,64 +1018,70 @@ function adminBody() {
   if (a.tab === 'billing') return adminBilling(a.billing);
   if (a.tab === 'api-keys') return adminApiKeys(a.apiKeys);
 }
+const loading = () => h('div', { class: 'muted' }, 'Loading…');
 function card(title, ...kids) {
-  return h('div', { class: 'bg-panel border border-line rounded-lg p-4' },
-    h('div', { class: 'text-xs text-zinc-500 mb-2' }, title), ...kids);
+  return h('div', { class: 'card' }, h('div', { class: 'card-title' }, title), ...kids);
 }
 function table(cols, rows) {
-  return h('div', { class: 'bg-panel border border-line rounded-lg overflow-x-auto' },
-    h('table', { class: 'w-full text-sm' },
-      h('thead', { class: 'text-zinc-500 text-xs' }, h('tr', {},
-        cols.map(c => h('th', { class: 'text-left font-normal px-3 py-2' }, c.label)))),
-      h('tbody', {}, rows.map(r => h('tr', { class: 'border-t border-line ' + (r._hl ? 'bg-danger/10' : '') },
-        cols.map(c => h('td', { class: 'px-3 py-2 ' + (c.mono ? 'font-mono' : '') }, c.get(r))))))));
+  return h('div', { class: 'table-wrap' },
+    h('table', {},
+      h('thead', {}, h('tr', {},
+        cols.map(c => h('th', { class: c.mono ? 'mono' : '' }, c.label)))),
+      h('tbody', {}, rows.map(r => h('tr', { class: r._hl ? 'is-hl' : '' },
+        cols.map(c => h('td', { class: c.mono ? 'mono' : '' }, c.get(r))))))));
 }
 
 function adminLive(d) {
-  if (!d) return 'loading…';
+  if (!d) return loading();
   const g = d.gpu;
-  return h('div', { class: 'space-y-4' },
-    h('div', { class: 'grid sm:grid-cols-4 gap-3' },
-      card('Loaded model', h('div', { class: 'text-lg' }, d.loaded_model || 'idle')),
-      card('VRAM', g.available ? h('div', { class: 'text-lg font-mono' }, `${(g.vram_used_mib / 1024).toFixed(1)} / ${(g.vram_total_mib / 1024).toFixed(1)} GB`) : 'n/a'),
-      card('GPU temp / power', g.available ? h('div', { class: 'text-lg font-mono' }, `${g.temp_c}°C · ${g.power_w}W`) : 'n/a'),
-      card('GPU util', g.available ? h('div', { class: 'text-lg font-mono' }, `${g.util_pct}%`) : 'n/a')),
-    card('Queue (' + d.queue.depth + ')', d.queue.jobs.length ? table(
+  return h('div', { class: 'stack' },
+    h('div', { class: 'grid grid-4' },
+      card('Loaded model', h('div', { class: 'big' }, d.loaded_model ? modelName(d.loaded_model) : h('span', { class: 'muted' }, 'idle'))),
+      card('VRAM', g.available ? h('div', { class: 'big' }, `${(g.vram_used_mib / 1024).toFixed(1)} / ${(g.vram_total_mib / 1024).toFixed(1)} GB`) : h('span', { class: 'muted' }, 'n/a')),
+      card('GPU temp · power', g.available ? h('div', { class: 'big' }, `${g.temp_c}°C · ${g.power_w}W`) : h('span', { class: 'muted' }, 'n/a')),
+      card('GPU util', g.available ? h('div', { class: 'big' }, `${g.util_pct}%`) : h('span', { class: 'muted' }, 'n/a'))),
+    card('Queue · ' + d.queue.depth, d.queue.jobs.length ? table(
       [{ label: '#', get: r => r.position, mono: 1 }, { label: 'Owner', get: r => r.owner },
        { label: 'Model', get: r => modelName(r.model) }, { label: 'State', get: r => r.state },
-       { label: '', get: r => h('button', { class: 'text-danger text-xs', onclick: () => adminPost(`/api/admin/jobs/${r.id}/kill`) }, 'kill') }],
-      d.queue.jobs) : h('div', { class: 'text-zinc-600 text-sm' }, 'empty')),
-    card('Active sessions', table(
+       { label: '', get: r => h('button', { class: 'btn btn-ghost btn-sm btn-danger', onclick: () => adminPost(`/api/admin/jobs/${r.id}/kill`) }, 'Kill') }],
+      d.queue.jobs) : h('div', { class: 'empty-note' }, 'Empty')),
+    card('Active sessions', d.active_sessions.length ? table(
       [{ label: 'User', get: r => r.email }, { label: 'Credits', get: r => credits(r.credits_used), mono: 1 },
        { label: 'Started', get: r => new Date(r.started_at * 1000).toLocaleTimeString() },
-       { label: 'Expires', get: r => untilStr(r.expires_at) }],
-      d.active_sessions)),
-    h('button', { class: 'text-sm bg-panel2 border border-line rounded px-3 py-1.5 text-warn', onclick: () => adminPost('/api/admin/unload') }, 'Force-unload current model'));
+       { label: 'Expires', get: r => 'in ' + untilStr(r.expires_at) }],
+      d.active_sessions) : h('div', { class: 'empty-note' }, 'None')),
+    h('div', {}, h('button', { class: 'btn btn-warn', onclick: async () => {
+      if (await confirmModal('Force-unload the current model?', 'Frees VRAM now. The next request pays a cold start.', 'Unload'))
+        adminPost('/api/admin/unload');
+    } }, 'Force-unload current model')));
 }
 
 function adminUsers(rows, controls) {
-  if (!rows) return 'loading…';
+  if (!rows) return loading();
   const cols = [
-    { label: 'User', get: r => r.email + (r.is_admin ? ' ★' : '') + (r.uncapped ? ' ∞' : '') },
-    { label: 'Session %', mono: 1, get: r => r.session.pct + '%' },
-    { label: 'Week %', mono: 1, get: r => r.weekly.pct + '%' },
-    { label: 'All-time tok', mono: 1, get: r => r.all_time.tokens.toLocaleString() },
-    { label: 'All-time $', mono: 1, get: r => money(r.all_time.cost_usd) },
-    { label: 'Last active', get: r => r.last_active_at ? untilStr(r.last_active_at) + ' ago' : '—' },
+    { label: 'User', get: r => h('span', {}, r.email,
+        r.is_admin ? h('span', { class: 'tag gold' }, 'admin') : null,
+        r.uncapped ? h('span', { class: 'tag accent' }, 'uncapped') : null,
+        r.disabled ? h('span', { class: 'tag' }, 'disabled') : null) },
+    { label: 'Session', mono: 1, get: r => r.session.pct + '%' },
+    { label: 'Week', mono: 1, get: r => r.weekly.pct + '%' },
+    { label: 'All-time tokens', mono: 1, get: r => r.all_time.tokens.toLocaleString() },
+    { label: 'All-time cost', mono: 1, get: r => money(r.all_time.cost_usd) },
+    { label: 'Last active', get: r => r.last_active_at ? agoStr(r.last_active_at) : '—' },
   ];
   if (controls) cols.push(
-    { label: 'Overrides', get: r => h('span', {},
-      h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-base sm:text-xs', placeholder: 'sess', value: r.session_override ?? '', id: `so-${r.id}` }),
-      h('input', { class: 'w-20 bg-panel2 border border-line rounded px-1 text-base sm:text-xs ml-1', placeholder: 'week', value: r.weekly_override ?? '', id: `wo-${r.id}` }),
-      h('button', { class: 'text-accent text-xs ml-1', onclick: () => saveLimits(r.id) }, 'set')) },
+    { label: 'Limit overrides', get: r => h('span', { class: 'controls-cell' },
+      h('input', { class: 'input', placeholder: 'session', 'aria-label': 'Session override', value: r.session_override ?? '', id: `so-${r.id}` }),
+      h('input', { class: 'input', placeholder: 'week', 'aria-label': 'Weekly override', value: r.weekly_override ?? '', id: `wo-${r.id}` }),
+      h('button', { class: 'btn btn-sm', onclick: () => saveLimits(r.id) }, 'Set')) },
     { label: 'Uncapped', get: r => h('button', {
-      class: 'text-xs ' + (r.uncapped ? 'text-accent' : 'text-zinc-500'),
+      class: 'btn btn-sm' + (r.uncapped ? ' is-on' : ''),
       onclick: () => adminPost(`/api/admin/users/${r.id}/uncapped`, { uncapped: !r.uncapped }),
-    }, r.uncapped ? '∞ on' : 'off') },
+    }, r.uncapped ? 'On' : 'Off') },
     { label: '', get: r => h('button', {
-      class: 'text-xs ' + (r.disabled ? 'text-good' : 'text-danger'),
+      class: 'btn btn-ghost btn-sm ' + (r.disabled ? '' : 'btn-danger'),
       onclick: () => adminPost(`/api/admin/users/${r.id}/disabled`, { disabled: !r.disabled }),
-    }, r.disabled ? 'enable' : 'disable') });
+    }, r.disabled ? 'Enable' : 'Disable') });
   rows.forEach(r => r._hl = r.session.pct >= 90 || r.weekly.pct >= 90);
   return table(cols, rows);
 }
@@ -928,14 +1091,17 @@ async function saveLimits(id) {
       session_override: document.getElementById(`so-${id}`).value || null,
       weekly_override: document.getElementById(`wo-${id}`).value || null,
     });
+    flashInfo('Limits saved.');
     loadAdmin();
   } catch (e) { flashError(e.message); }
 }
 
 function adminUsage(d) {
-  if (!d) return 'loading…';
-  return h('div', { class: 'space-y-4' },
-    card('Per-model (30 days)', table(
+  if (!d) return loading();
+  const perUser = Object.entries(d.by_day_user.reduce((m, r) => (m[r.email] = (m[r.email] || 0) + r.credits, m), {}))
+    .sort((a, b) => b[1] - a[1]);
+  return h('div', { class: 'stack' },
+    card('Per model · 30 days', table(
       [{ label: 'Model', get: r => modelName(r.model_id) },
        { label: 'Requests', mono: 1, get: r => r.requests },
        { label: 'Occupancy', mono: 1, get: r => fmtDur(r.occupancy_seconds) },
@@ -945,93 +1111,125 @@ function adminUsage(d) {
        { label: 'Credits', mono: 1, get: r => credits(r.credits) },
        { label: 'Cost', mono: 1, get: r => money(r.cost_usd) }],
       d.by_model)),
-    card('Credits by user × day', h('div', { class: 'text-xs text-zinc-500' },
-      d.by_day_user.length + ' data points · ' +
-      Object.entries(d.by_day_user.reduce((m, r) => (m[r.email] = (m[r.email] || 0) + r.credits, m), {}))
-        .map(([e, c]) => `${e}: ${credits(c)}`).join('  ·  '))));
+    card('Credits by user · 30 days', perUser.length ? table(
+      [{ label: 'User', get: r => r[0] }, { label: 'Credits', mono: 1, get: r => credits(r[1]) }], perUser)
+      : h('div', { class: 'empty-note' }, 'No activity yet.')));
 }
 
 function adminImpact(rows) {
-  if (!rows) return 'loading…';
-  return h('div', {},
-    h('p', { class: 'text-xs text-zinc-500 mb-3' }, 'Seconds of wait each person inflicted on others while their jobs held the box (strict-FIFO fairness).'),
-    table([{ label: 'User', get: r => r.email },
+  if (!rows) return loading();
+  return h('div', { class: 'stack' },
+    h('p', { class: 'sub' }, 'Seconds of wait each person inflicted on others while their jobs held the box (strict-FIFO fairness).'),
+    rows.length ? table([{ label: 'User', get: r => r.email },
            { label: 'Wait inflicted', mono: 1, get: r => fmtDur(r.wait_inflicted_s) },
-           { label: 'Jobs delayed', mono: 1, get: r => r.jobs_delayed }], rows));
+           { label: 'Jobs delayed', mono: 1, get: r => r.jobs_delayed }], rows)
+      : h('div', { class: 'empty-note' }, 'Nobody has had to wait on anyone yet.'));
 }
 
 function adminBilling(d) {
-  if (!d) return 'loading…';
-  return h('div', { class: 'space-y-4' },
-    h('div', { class: 'flex items-center gap-2' },
-      h('a', { href: '/api/admin/billing/export.csv', class: 'text-sm bg-panel2 border border-line rounded px-3 py-1.5' }, 'Export CSV'),
-      h('span', { class: 'text-xs text-zinc-500' }, `period: last 30 days`)),
-    card('Cost per user (this period)', table(
+  if (!d) return loading();
+  return h('div', { class: 'stack' },
+    h('div', { class: 'row' },
+      h('a', { href: '/api/admin/billing/export.csv', class: 'btn' }, 'Export CSV'),
+      h('span', { class: 'small muted' }, 'Period: last 30 days')),
+    card('Cost per user · this period', table(
       [{ label: 'User', get: r => r.email },
        { label: 'Jobs', mono: 1, get: r => r.jobs },
        { label: 'Credits', mono: 1, get: r => credits(r.credits) },
        { label: 'Cost', mono: 1, get: r => money(r.cost) },
-       { label: '', get: r => h('button', { class: 'text-accent text-xs', onclick: () => makeInvoice(r.user_id, d.period) }, 'draft invoice') }],
+       { label: '', get: r => h('button', { class: 'btn btn-ghost btn-sm', onclick: () => makeInvoice(r.user_id, d.period) }, 'Draft invoice') }],
       d.per_user)),
     card('Invoices', d.invoices.length ? table(
       [{ label: 'User', get: r => r.email },
-       { label: 'Period', get: r => new Date(r.period_start * 1000).toLocaleDateString() + '–' + new Date(r.period_end * 1000).toLocaleDateString() },
+       { label: 'Period', get: r => new Date(r.period_start * 1000).toLocaleDateString() + ' – ' + new Date(r.period_end * 1000).toLocaleDateString() },
        { label: 'Credits', mono: 1, get: r => credits(r.total_credits) },
        { label: 'Cost', mono: 1, get: r => money(r.total_cost_usd) },
-       { label: 'Status', get: r => r.status },
-       { label: '', get: r => h('span', {},
-         ['sent', 'paid'].map(s => h('button', { class: 'text-xs text-accent mr-2', onclick: () => setInvoice(r.id, s) }, 'mark ' + s))) }],
-      d.invoices) : h('div', { class: 'text-zinc-600 text-sm' }, 'none yet')));
+       { label: 'Status', get: r => h('span', { class: 'tag' + (r.status === 'paid' ? ' accent' : ''), style: 'margin:0' }, r.status) },
+       { label: '', get: r => h('span', { class: 'row' },
+         ['sent', 'paid'].filter(s => s !== r.status).map(s => h('button', { class: 'btn btn-ghost btn-sm', onclick: () => setInvoice(r.id, s) }, 'Mark ' + s))) }],
+      d.invoices) : h('div', { class: 'empty-note' }, 'None yet.')));
 }
 function adminApiKeys(rows) {
-  if (!rows) return 'loading…';
-  if (!rows.length) return h('div', { class: 'text-zinc-600 text-sm' }, 'no API keys issued yet');
-  return h('div', { class: 'space-y-3' },
-    h('p', { class: 'text-xs text-zinc-500' }, 'Every Continue.dev / OpenAI-compatible key across all users. Revoking kills it immediately -- the holder just gets 401s and has to generate a new one from their own Usage page.'),
-    table([
+  if (!rows) return loading();
+  return h('div', { class: 'stack' },
+    h('p', { class: 'sub' }, 'Every Continue.dev / OpenAI-compatible key across all users. Revoking kills it immediately — the holder gets 401s and has to generate a new one from their own Usage page.'),
+    rows.length ? table([
       { label: 'User', get: r => r.email },
-      { label: 'Label', get: r => r.label || h('span', { class: 'text-zinc-600' }, '(unlabeled)') },
+      { label: 'Label', get: r => r.label || h('span', { class: 'muted' }, '(unlabeled)') },
       { label: 'Created', get: r => new Date(r.created_at * 1000).toLocaleDateString() },
-      { label: 'Last used', get: r => r.last_used_at ? untilStr(r.last_used_at) + ' ago' : 'never' },
-      { label: '', get: r => h('button', {
-        class: 'text-danger text-xs',
-        onclick: () => revokeAnyApiKey(r.id),
-      }, 'revoke') },
-    ], rows));
+      { label: 'Last used', get: r => r.last_used_at ? agoStr(r.last_used_at) : 'never' },
+      { label: '', get: r => h('button', { class: 'btn btn-ghost btn-sm btn-danger', onclick: () => revokeAnyApiKey(r.id) }, 'Revoke') },
+    ], rows) : h('div', { class: 'empty-note' }, 'No API keys issued yet.'));
 }
 async function revokeAnyApiKey(id) {
-  try { await api.del('/api/admin/api-keys/' + id); flashInfo('key revoked'); loadAdmin(); }
+  if (!await confirmModal('Revoke this API key?', 'The holder will get 401s immediately.', 'Revoke')) return;
+  try { await api.del('/api/admin/api-keys/' + id); flashInfo('Key revoked.'); loadAdmin(); }
   catch (e) { flashError(e.message); }
 }
 
 async function makeInvoice(user_id, period) {
   await adminPost('/api/admin/billing/invoice', { user_id, period_start: period.start, period_end: period.end });
-  loadAdmin();
 }
-async function setInvoice(id, status) { await adminPost(`/api/admin/billing/invoice/${id}/status`, { status }); loadAdmin(); }
+async function setInvoice(id, status) { await adminPost(`/api/admin/billing/invoice/${id}/status`, { status }); }
 
 async function adminPost(path, body) {
   try { await api.post(path, body || {}); loadAdmin(); }
   catch (e) { flashError(e.message); }
 }
 
-function flashError(msg) {
-  const t = h('div', { class: 'fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-danger/20 border border-danger/50 text-danger text-sm px-3 py-2 rounded' }, msg);
-  document.body.append(t); setTimeout(() => t.remove(), 4000);
+/* ---------------------------------------------------------- toasts, modals */
+function toastRoot() {
+  let r = document.getElementById('toasts');
+  if (!r) { r = h('div', { id: 'toasts', class: 'toasts', 'aria-live': 'polite' }); document.body.append(r); }
+  return r;
 }
-function flashInfo(msg) {
-  const t = h('div', { class: 'fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-good/20 border border-good/50 text-good text-sm px-3 py-2 rounded' }, msg);
-  document.body.append(t); setTimeout(() => t.remove(), 4000);
+function toast(kind, msg) {
+  const t = h('div', { class: 'toast ' + kind, role: kind === 'error' ? 'alert' : 'status' },
+    icon(kind === 'error' ? 'alert' : 'check', 'icon-sm'), h('span', {}, msg));
+  toastRoot().append(t);
+  setTimeout(() => t.remove(), kind === 'error' ? 5000 : 3500);
+}
+const flashError = msg => toast('error', msg);
+const flashInfo = msg => toast('info', msg);
+
+function modal(kids, onClose) {
+  const overlay = h('div', { class: 'overlay', onclick: e => { if (e.target === overlay) close(); } },
+    h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, ...kids));
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); onClose?.(); };
+  document.addEventListener('keydown', onKey);
+  document.body.append(overlay);
+  (overlay.querySelector('[autofocus]') || overlay.querySelector('button'))?.focus();
+  return close;
+}
+function confirmModal(title, text, okLabel = 'OK') {
+  return new Promise(resolve => {
+    let result = false;
+    const close = modal([
+      h('h3', {}, title),
+      h('p', {}, text),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-ghost', autofocus: true, onclick: () => close() }, 'Cancel'),
+        h('button', { class: 'btn btn-danger', onclick: () => { result = true; close(); } }, okLabel)),
+    ], () => resolve(result));
+  });
 }
 function limitModal(detail) {
   const d = typeof detail === 'object' ? detail : {};
-  const overlay = h('div', { class: 'fixed inset-0 z-50 bg-black/60 flex items-center justify-center', onclick: e => { if (e.target === overlay) overlay.remove(); } },
-    h('div', { class: 'bg-panel border border-line rounded-lg p-5 max-w-sm text-sm' },
-      h('div', { class: 'text-warn font-semibold mb-2' }, `${d.limit === 'weekly' ? 'Weekly' : 'Session'} limit reached`),
-      h('p', { class: 'text-zinc-400' }, `You've used ${credits(d.used)} of ${credits(d.cap)} credits.`),
-      d.reset_at ? h('p', { class: 'text-zinc-400 mt-1' }, `Resets in ${untilStr(d.reset_at)} (${new Date(d.reset_at * 1000).toLocaleString()}).`) : null,
-      h('button', { class: 'mt-3 text-accent', onclick: () => overlay.remove() }, 'OK')));
-  document.body.append(overlay);
+  const close = modal([
+    h('h3', { style: 'color:var(--warn)' }, icon('alert'), `${d.limit === 'weekly' ? 'Weekly' : 'Session'} limit reached`),
+    h('p', {}, `You've used ${credits(d.used)} of ${credits(d.cap)} credits.`),
+    d.reset_at ? h('p', {}, `Resets in ${untilStr(d.reset_at)} (${new Date(d.reset_at * 1000).toLocaleString()}).`) : null,
+    h('p', { class: 'small faint' }, 'Your message is still in the composer.'),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => close() }, 'OK')),
+  ]);
 }
+
+// global keys: Escape closes the drawer / context panel
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (S.sidebarOpen) { S.sidebarOpen = false; render(); }
+  else if (S.ctxOpen) { S.ctxOpen = false; refreshCtx(0); }
+});
 
 boot();

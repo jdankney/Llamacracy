@@ -64,7 +64,7 @@ netbird up                          # if not already connected
 
 # 2. add yourself (and friends) to dex before anyone can actually log in
 cd deploy/dex
-./gen-hash.sh 'your-password'        # paste into the j4mes staticPasswords hash:
+./gen-hash.sh 'your-password'        # paste into your staticPasswords hash:
 #   ...repeat gen-hash.sh + add a staticPasswords block per friend...
 cd ../..
 systemctl --user restart llamacracy-dex   # picks up the password you just added

@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="en" class="h-full">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Llamacracy</title>
+<meta name="description" content="Self-hosted multi-model LLM chat hub.">
 <link rel="icon" href="/assets/llamacracy-favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/assets/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
@@ -17,13 +18,14 @@
      just silently fail here, and there's no meaningful offline mode for a
      live-inference chat anyway. -->
 <link rel="manifest" href="/assets/manifest.webmanifest">
-<meta name="theme-color" content="#0c0d10">
+<meta name="theme-color" content="#151a23">
+<meta name="color-scheme" content="dark">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Llamacracy">
-<script src="https://cdn.tailwindcss.com"></script>
-<!-- markdown rendering: parser + HTML sanitiser + code highlighting.
+<link rel="stylesheet" href="/assets/styles.css">
+<!-- markdown rendering: parser + HTML sanitiser + code highlighting + math.
      Classic scripts, so they're ready before the deferred module app.js. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.7/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js"></script>
@@ -31,54 +33,9 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.21/katex.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.21/katex.min.css">
-<script>
-tailwind.config = {
-  theme: { extend: { colors: {
-    ink: '#0c0d10', panel: '#15171c', panel2: '#1c1f26', line: '#2a2e37',
-    accent: '#7c9cff', warn: '#f2c14e', danger: '#ef6f6f', good: '#66c98a',
-  }, fontFamily: { mono: ['ui-monospace','SFMono-Regular','Menlo','monospace'] } } }
-}
-</script>
-<style>
-  html,body{background:#0c0d10;color:#d7dae0;overflow-x:hidden}
-  ::-webkit-scrollbar{width:10px;height:10px}
-  ::-webkit-scrollbar-thumb{background:#2a2e37;border-radius:5px}
-  .prose-chat{line-height:1.55}
-  .prose-chat>*:first-child{margin-top:0}
-  .prose-chat>*:last-child{margin-bottom:0}
-  .prose-chat p{margin:.4rem 0}
-  .prose-chat h1,.prose-chat h2,.prose-chat h3,.prose-chat h4{font-weight:600;line-height:1.3;margin:1rem 0 .5rem;color:#e8eaee}
-  .prose-chat h1{font-size:1.3em}
-  .prose-chat h2{font-size:1.18em}
-  .prose-chat h3{font-size:1.05em}
-  .prose-chat h4{font-size:1em}
-  .prose-chat ul,.prose-chat ol{margin:.4rem 0;padding-left:1.4rem}
-  .prose-chat ul{list-style:disc}
-  .prose-chat ol{list-style:decimal}
-  .prose-chat li{margin:.15rem 0}
-  .prose-chat li>ul,.prose-chat li>ol{margin:.15rem 0}
-  .prose-chat blockquote{border-left:3px solid #2a2e37;padding-left:.75rem;margin:.5rem 0;color:#9aa0ab}
-  .prose-chat a{color:#7c9cff;text-decoration:underline}
-  .prose-chat strong{font-weight:600;color:#e8eaee}
-  .prose-chat hr{border:0;border-top:1px solid #2a2e37;margin:1rem 0}
-  .prose-chat table{display:block;overflow-x:auto;border-collapse:collapse;margin:.5rem 0;font-size:.9em}
-  .prose-chat th,.prose-chat td{border:1px solid #2a2e37;padding:.3rem .5rem;text-align:left}
-  .prose-chat th{background:#1c1f26}
-  .prose-chat img{max-width:100%;border-radius:.3rem}
-  .prose-chat pre{background:#0c0d10;border:1px solid #2a2e37;border-radius:.4rem;padding:.6rem;overflow-x:auto;font-size:.85em;margin:.5rem 0}
-  .prose-chat code{background:#0c0d10;padding:.1rem .3rem;border-radius:.25rem;font-size:.9em}
-  .prose-chat pre code{background:none;padding:0}
-  .prose-chat pre code.hljs{background:none;color:inherit}
-  .prose-chat .katex{font-size:1.05em}
-  .prose-chat .katex-display{margin:.6rem 0;padding:.2rem 0;overflow-x:auto;overflow-y:hidden}
-  .ctx-ring{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;position:relative;flex:none;border:0;padding:0;cursor:pointer}
-  .ctx-ring::after{content:'';position:absolute;inset:5px;border-radius:50%;background:#15171c}
-  .ctx-ring>span{position:relative;z-index:1;font-size:9px;font-family:ui-monospace,monospace;color:#d7dae0;letter-spacing:-.02em}
-  .ctx-ring:hover::after{background:#1c1f26}
-</style>
 </head>
-<body class="h-full">
-<div id="app" class="h-full flex flex-col"></div>
+<body>
+<div id="app"></div>
 <script type="module" src="/assets/app.js"></script>
 </body>
 </html>

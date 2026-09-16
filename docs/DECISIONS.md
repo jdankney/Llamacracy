@@ -3,6 +3,48 @@
 Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
 Newest first.
 
+## Frontend: framework-free restyle for release (2026-09-15)
+
+Prep for publishing the repo. The UI worked but read as a dev tool: full-width
+thread (user bubbles pinned to the far right, replies to the far left), emoji
+as icons, and the Tailwind Play CDN -- which is a runtime JIT compiler that
+prints "should not be used in production" in every console.
+
+- **Tailwind CDN removed.** Replaced by `static/assets/styles.css`: tokens
+  (colours, radii, type), a handful of components, one responsive breakpoint.
+  Still no build step, one fewer external script, and no flash of unstyled
+  content while the JIT ran. marked / DOMPurify / highlight.js / KaTeX stay on
+  cdnjs as before.
+- **Layout**: thread and composer share one centred 50rem column; assistant
+  replies render as plain text with a small avatar + model name + time,
+  user messages as a tinted bubble. Sidebar groups conversations by day.
+  Nav is a Chat / Usage / Admin segment (the old toggle buttons had no way
+  back from Admin except clicking Admin again).
+- **Composer** is one card: textarea on top, tools below (model select,
+  search, attach, context ring, send). Send turns into Stop while a job is
+  active. Hint line under it carries loaded/cold-start, tok/s, blurb.
+- **Icons** are inline SVG paths (emoji render differently per platform).
+- **Bugs fixed on the way**: the composer draft was wiped by every re-render
+  (model switch, search toggle, and the end of every streamed reply);
+  auto-scroll yanked the reader to the bottom on every token even after they
+  had scrolled up (now only follows when already at the bottom, with a
+  "jump to latest" pill otherwise); multiple toasts stacked on top of each
+  other; conversation delete had no confirmation; a send rejected before
+  it was accepted (429 limit, network error) lost the text -- it now goes
+  back into the composer.
+- **Accessibility**: aria-labels on icon buttons, focus-visible rings,
+  Escape closes the drawer / context panel / modals, `prefers-reduced-motion`
+  respected, dialogs are `role=dialog`.
+- **Chart** on the usage page fills all 30 days (gaps read as zero), 4px
+  rounded bars, hover/focus tooltip, first/last date labels, peak in the
+  title. One series, one hue, no legend.
+- Phone layout re-checked at 390px (Playwright, real chat round-trip against
+  a fake llama-swap): the floating queue card only shows on phones -- on
+  desktop the same list lives in the sidebar footer, so nothing floats over
+  the thread.
+- `static/index.html` also got `color-scheme: dark` and `viewport-fit=cover`.
+  The `theme-color` now matches the topbar surface.
+
 ## Admin: API keys panel (2026-09-13)
 
 Owner's concern: a friend leaks their Continue.dev key, or misuses it, and

@@ -42,8 +42,8 @@ staticClients:
 enablePasswordDB: true
 staticPasswords:
   - email: you@example.com
-    username: j4mes
-    userID: "u-j4mes"
+    username: you
+    userID: "u-you"
     hash: "REPLACE_WITH_BCRYPT_HASH"
   # - email: friend@example.com
   #   username: friend
