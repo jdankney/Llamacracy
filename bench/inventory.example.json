@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+
+  "llama_server": "~/.local/bin/llama-server",
+  "llama_cpp_dir": "~/llama.cpp",
+  "models_dir": "~/models",
+  "threads": 6,
+  "vram_total_mib": 11264,
+  "ttl_backstop_s": 1200,
+  "health_timeout_s": 480,
+
+  "models": {
+    "mistral-7b": {
+      "display": "Mistral 7B Instruct v0.3 (Q4_K_M)",
+      "path": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "kind": "chat",
+      "tier": "fast",
+      "in_picker": true,
+      "blurb": "Quick answers, summaries, reformatting.",
+      "reasoning": "none",
+      "sampling": { "temperature": 0.7, "top_p": 0.95 },
+      "serve": { "ctx": 32768, "kv_type": "q8_0", "no_mmap": false,
+                 "args": ["--temp", "0.7", "--top-p", "0.95", "-b", "2048", "-ub", "512"] },
+      "group": "standard",
+      "seed": { "cold_load_s": 3.0, "tg_tok_s": 45.0, "pp_tok_s": 900.0,
+                "vram_used_mib": 5500, "gpu_gen_w_mean": 200.0 }
+    },
+
+    "llama31-8b": {
+      "display": "Llama 3.1 8B Instruct (Q5_K_M)",
+      "path": "Llama-3.1-8B-Instruct/Llama-3.1-8B-Instruct-Q5_K_M.gguf",
+      "kind": "chat",
+      "tier": "daily",
+      "in_picker": true,
+      "blurb": "Daily driver. Fully on GPU.",
+      "reasoning": "none",
+      "sampling": { "temperature": 0.6, "top_p": 0.9 },
+      "serve": { "ctx": 65536, "kv_type": "q8_0", "no_mmap": false,
+                 "args": ["--temp", "0.6", "--top-p", "0.9", "-b", "2048", "-ub", "512"] },
+      "bench": { "ctx_ladder": [[32768, "q8_0", null], [65536, "q8_0", null], [98304, "q8_0", null]] },
+      "group": "standard",
+      "seed": { "cold_load_s": 4.0, "tg_tok_s": 32.0, "pp_tok_s": 700.0,
+                "vram_used_mib": 7800, "gpu_gen_w_mean": 240.0 }
+    },
+
+    "gemma3-4b": {
+      "display": "Gemma 3 4B (Q8_0)",
+      "path": "gemma-3-4b-it/gemma-3-4b-it-Q8_0.gguf",
+      "kind": "chat",
+      "tier": "fast",
+      "in_picker": true,
+      "blurb": "Small and quick. Can read images.",
+      "reasoning": "none",
+      "sampling": {},
+      "serve": { "ctx": 32768, "kv_type": "q8_0", "no_mmap": false, "args": ["-b", "2048", "-ub", "512"] },
+      "group": "standard",
+      "vision": { "mmproj": "gemma-3-4b-it/mmproj-model-f16.gguf",
+                  "display": "Gemma 3 4B (Q8_0) -- vision" },
+      "seed": { "cold_load_s": 3.0, "tg_tok_s": 40.0, "pp_tok_s": 1000.0,
+                "vram_used_mib": 5200, "gpu_gen_w_mean": 200.0 }
+    },
+
+    "mixtral-8x7b": {
+      "display": "Mixtral 8x7B Instruct (Q4_K_M, MoE)",
+      "path": "Mixtral-8x7B-Instruct-v0.1/Mixtral-8x7B-Instruct-v0.1-Q4_K_M.gguf",
+      "kind": "chat",
+      "tier": "heavy",
+      "in_picker": true,
+      "blurb": "MoE with experts on CPU. Stronger, slower to load.",
+      "reasoning": "none",
+      "sampling": { "temperature": 0.6, "top_p": 0.95 },
+      "serve": { "ctx": 16384, "kv_type": "q8_0", "n_cpu_moe": 24, "no_mmap": true,
+                 "args": ["--temp", "0.6", "--top-p", "0.95"] },
+      "bench": { "ctx_ladder": [[16384, "q8_0", 24], [24576, "q8_0", 26], [32768, "q8_0", 28]] },
+      "group": "heavyweights",
+      "seed": { "cold_load_s": 20.0, "tg_tok_s": 18.0, "pp_tok_s": 250.0,
+                "vram_used_mib": 9000, "gpu_gen_w_mean": 150.0 }
+    }
+  }
+}

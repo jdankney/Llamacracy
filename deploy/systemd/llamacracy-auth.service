@@ -1,10 +1,11 @@
-# ~/.config/systemd/user/llamacracy-auth.service
+# ~/.config/systemd/user/llamacracy-auth.service  (installed by deploy/install.sh,
+# which replaces @REPO@ with the absolute path of this checkout)
 # oauth2-proxy: the auth edge. Binds the NetBird interface (wt0, a 100.x
 # address, discovered at start), authenticates against Llamacracy's own Dex
 # (deploy/dex/, also on wt0), and forwards X-Forwarded-{Email,User,
-# Preferred-Username} to the app on 127.0.0.1:8000. The redirect_url and Dex
-# issuer are fixed to the NetBird FQDN in oauth2-proxy.cfg, so only the bind
-# address is host-specific.
+# Preferred-Username} to the app on 127.0.0.1:8000. The Dex issuer and the
+# redirect URL are pinned to the NetBird FQDN in deploy/oauth2-proxy.env, so
+# only the bind address is discovered here.
 [Unit]
 Description=Llamacracy auth edge (oauth2-proxy on wt0)
 After=llamacracy.service llamacracy-dex.service
@@ -14,14 +15,14 @@ ConditionPathExists=/sys/class/net/wt0
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Documents/Coding/Llamacracy
+WorkingDirectory=@REPO@
 # discover the wt0 address and write it where oauth2-proxy will read it
 ExecStartPre=/bin/sh -c 'a=$(ip -4 -o addr show wt0 | awk "{print \\$4}" | cut -d/ -f1); \
   echo "OAUTH2_PROXY_HTTP_ADDRESS=$a:4180" > %t/llamacracy-auth.env'
 # written by ExecStartPre above; `-` so a missing file isn't fatal before it runs
 EnvironmentFile=-%t/llamacracy-auth.env
-EnvironmentFile=%h/Documents/Coding/Llamacracy/deploy/oauth2-proxy.env
-ExecStart=%h/.local/bin/oauth2-proxy --config %h/Documents/Coding/Llamacracy/deploy/oauth2-proxy.cfg
+EnvironmentFile=@REPO@/deploy/oauth2-proxy.env
+ExecStart=%h/.local/bin/oauth2-proxy --config @REPO@/deploy/oauth2-proxy.cfg
 Restart=on-failure
 RestartSec=5
 

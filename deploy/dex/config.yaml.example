@@ -1,7 +1,9 @@
-# deploy/dex/config.yaml  --  copy to config.yaml (gitignored) and fill in.
+# deploy/dex/config.yaml.example -- deploy/install.sh copies this to
+# config.yaml (gitignored), fills in REPLACE_FQDN and generates the client
+# secret. You add the users.
 #
-# Dex is Llamacracy's identity provider. It runs in Docker on myhost and is
-# published on the NetBird interface ONLY (see docker-compose.yml), so every
+# Dex is Llamacracy's identity provider. It runs in Docker on the same box and
+# is published on the NetBird interface ONLY (see docker-compose.yml), so every
 # hop -- friend's browser -> Dex -> oauth2-proxy -> app -- stays inside the
 # WireGuard tunnel. Nothing new is exposed to the public internet.
 #
@@ -9,10 +11,10 @@
 # dashboard + CLI clients and has no supported way to add a third one
 # (netbirdio/netbird#5335), hence this second, separate instance.
 
-# Must exactly match `oidc_issuer_url` in deploy/oauth2-proxy.cfg and the URL
-# oauth2-proxy resolves. myhost.netbird.selfhosted is this peer's NetBird
-# FQDN -- stable unless the peer is re-enrolled.
-issuer: http://myhost.netbird.selfhosted:5556
+# Must exactly match OAUTH2_PROXY_OIDC_ISSUER_URL in deploy/oauth2-proxy.env.
+# REPLACE_FQDN is this peer's NetBird FQDN (`netbird status`), which is
+# stable unless the peer is re-enrolled.
+issuer: http://REPLACE_FQDN:5556
 
 storage:
   type: sqlite3
@@ -33,7 +35,7 @@ staticClients:
     # The SAME value goes in deploy/oauth2-proxy.env as OAUTH2_PROXY_CLIENT_SECRET.
     secret: "REPLACE_WITH_openssl_rand_hex_32"
     redirectURIs:
-      - http://myhost.netbird.selfhosted:4180/oauth2/callback
+      - http://REPLACE_FQDN:4180/oauth2/callback
 
 # Email + password login from the list below. bcrypt each password with
 #   deploy/dex/gen-hash.sh 'their-password'

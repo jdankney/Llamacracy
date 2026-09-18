@@ -1,7 +1,7 @@
 # Llamacracy operations
 
-Four systemd **user** units on `myhost` (one of them, `llamacracy-dex`,
-just wraps a Docker container):
+Four systemd **user** units on the box (one of them, `llamacracy-dex`, just
+wraps a Docker container):
 
 | Process | What | Binds |
 |---|---|---|
@@ -17,11 +17,10 @@ so Llamacracy runs its own Dex.
 
 Both `llamacracy-dex` and `llamacracy-auth` discover the current `wt0` address
 themselves at every start (`ExecStartPre`), so they survive NetBird reconnects
-and peer re-enrols — no more hand-editing an IP into `docker-compose.yml`.
-Just restart the affected unit (`systemctl --user restart llamacracy-dex` /
-`llamacracy-auth`), or use `llamacracy restart` for both at once. The Dex
-issuer + oauth2-proxy redirect are pinned to the NetBird **FQDN**
-(`myhost.netbird.selfhosted`), which never changes.
+and peer re-enrols. Just restart the affected unit, or use `llamacracy restart`
+for everything at once. The Dex issuer + oauth2-proxy redirect are pinned to
+the NetBird **FQDN** (`<peer>.netbird.selfhosted`, see `netbird status`),
+which never changes.
 
 ## The `llamacracy` command
 
@@ -30,66 +29,58 @@ symlinked to `deploy/llamacracy-cli.sh` so `git pull` always gives you the
 latest version) that drives all four units together:
 
 ```bash
-llamacracy up        # start everything, in the right order
-llamacracy down       # stop everything
-llamacracy restart    # down then up
-llamacracy status     # one line per unit + a quick /healthz check
+llamacracy up          # start everything, in the right order
+llamacracy down        # stop everything
+llamacracy restart     # down then up
+llamacracy status      # one line per unit + a quick /healthz check
 llamacracy logs        # follow all four units' logs, interleaved
 llamacracy logs app    # or just one: swap|dex|app|auth
 ```
 
 It just calls `systemctl --user {start,stop,restart}` with all four unit
-names — systemd itself resolves the actual dependency order from each unit's
-own `After=`/`Wants=` (see `deploy/systemd/*.service`), regardless of the
-order given. Nothing here bypasses systemd; it's a shortcut, not a separate
-supervisor.
+names — systemd resolves the actual dependency order from each unit's own
+`After=`/`Wants=`. Nothing here bypasses systemd; it's a shortcut, not a
+separate supervisor.
 
 Note: on `down`, `llamacracy-auth` (oauth2-proxy) occasionally reports
 `failed (Result: timeout)` rather than a clean stop if a browser still has the
 live queue view open (an SSE connection oauth2-proxy waits to drain before
 exiting). Harmless — it's stateless, gets SIGKILLed a few seconds later
-either way, and `up` clears the failed state on the next start. `llamacracy.service`
-itself is not affected (`--timeout-graceful-shutdown 5` on uvicorn bounds its
-own drain wait so it always exits cleanly within systemd's stop timeout).
+either way, and `up` clears the failed state on the next start.
 
 ## First install
 
 ```bash
 netbird up                          # if not already connected
 
-# 1. app + auth edge + dex, all scaffolded and installed in one pass
-./deploy/install.sh                 # idempotent; creates deploy/dex/config.yaml
-                                    # with a fresh secret if missing, installs
-                                    # all four units + the `llamacracy` CLI
+./deploy/install.sh                 # idempotent. Scaffolds .env, bench/inventory.json,
+                                    # deploy/oauth2-proxy.env and deploy/dex/config.yaml
+                                    # from their examples (FQDN + secrets filled in),
+                                    # generates config/, installs all four units + the CLI
 
-# 2. add yourself (and friends) to dex before anyone can actually log in
+$EDITOR bench/inventory.json        # your models (bench/README.md)
+python3 bench/gen_llamaswap_config.py
+$EDITOR .env                        # ADMIN_EMAILS, electricity rate
+
 cd deploy/dex
-./gen-hash.sh 'your-password'        # paste into your staticPasswords hash:
-#   ...repeat gen-hash.sh + add a staticPasswords block per friend...
+./gen-hash.sh 'your-password'       # one staticPasswords entry per person in config.yaml
 cd ../..
-systemctl --user restart llamacracy-dex   # picks up the password you just added
-
-# 3. bring the auth edge up now that dex is answering (install.sh usually
-# already did this -- rerun if it warned the secret wasn't matched yet)
-llamacracy up
-curl -sf http://myhost.netbird.selfhosted:5556/.well-known/openid-configuration >/dev/null && echo "dex ok"
+llamacracy restart
+llamacracy status
 ```
 
-Friends reach it at **`http://myhost.netbird.selfhosted:4180`** while on the
-NetBird network. They must use that FQDN, not the raw `100.x` address — the
-login redirect is pinned to the FQDN and the bare IP will bounce-loop.
+Friends reach it at **`http://<your-fqdn>:4180`** while on the NetBird
+network. They must use that FQDN, not the raw `100.x` address — the login
+redirect is pinned to the FQDN and the bare IP will bounce-loop.
 
 ## Everyday commands
 
-The whole stack at once (see "The `llamacracy` command" above):
+The whole stack at once (see above):
 
 ```bash
-llamacracy status      # one line per unit + a quick /healthz check
-llamacracy up            # start everything
-llamacracy down           # stop everything
+llamacracy status
 llamacracy restart        # e.g. after NetBird reconnected / changed address
-llamacracy logs            # follow all four, interleaved
-llamacracy logs swap       # or just one: swap|dex|app|auth
+llamacracy logs swap      # model load/swap detail
 ```
 
 By hand, one unit at a time (what `llamacracy` is calling under the hood):
@@ -97,17 +88,12 @@ By hand, one unit at a time (what `llamacracy` is calling under the hood):
 ```bash
 systemctl --user status llama-swap llamacracy llamacracy-dex llamacracy-auth
 journalctl --user -u llamacracy -f
-journalctl --user -u llama-swap -f          # model load/swap detail
 
-# restart after a code change (git pull)
-cd ~/Documents/Coding/Llamacracy && uv sync
-systemctl --user restart llamacracy
+# after a code change (git pull)
+uv sync && ./deploy/install.sh && systemctl --user restart llamacracy
 
-# restart after NetBird reconnected / changed address
+# after NetBird reconnected / changed address
 systemctl --user restart llamacracy-dex llamacracy-auth
-
-# stop everything
-systemctl --user stop llamacracy-auth llamacracy llama-swap llamacracy-dex
 ```
 
 ## Adding / removing a user
@@ -122,32 +108,36 @@ Users live in `deploy/dex/config.yaml` under `staticPasswords`. One block each:
 ```
 
 Then `systemctl --user restart llamacracy-dex`. Llamacracy creates the
-user row (and their `/usage` page, credit counters) on first sign-in. To cut
+user row (and their usage page, credit counters) on first sign-in. To cut
 someone off for good, remove their block and restart; to pause them, use the
 admin dashboard → Controls → disable (no restart, keeps their history).
 
 Changing a `userID` orphans that person's history (new `sub` = new user row),
 so don't.
 
-## Adding a model
+## Adding, changing or removing a model
 
-1. Drop the GGUF under `~/models/<Name>/<file>.gguf`.
-2. Benchmark it so the config and the UI estimates are real:
-   ```bash
-   python3 bench/phase0_bench.py --only <key>      # after adding it to bench/phase0_bench.py inventory()
-   ```
-   or, for a quick add without a full sweep, edit `bench/bench-results.json` by
-   hand with rough numbers.
-3. Regenerate the inference config + registry:
-   ```bash
-   python3 bench/gen_llamaswap_config.py
-   ~/.local/bin/llama-swap -config config/llama-swap.yaml -validate
-   ```
-   (Add human metadata for it in `REGISTRY_META` in the generator first.)
-4. `systemctl --user restart llama-swap llamacracy`
+All model definitions live in `bench/inventory.json` (gitignored). Full
+schema and workflow: [bench/README.md](../bench/README.md). The short version:
 
-To **hide** a model from the chat picker: set `in_picker: false` in
-`config/models.json` (or `kind: "fim"`), restart `llamacracy`.
+```bash
+$EDITOR bench/inventory.json                 # add an entry (with a `seed` block) or delete one
+python3 bench/gen_llamaswap_config.py        # rewrites config/llama-swap.yaml + models.json
+llama-swap -config config/llama-swap.yaml -validate
+systemctl --user restart llama-swap llamacracy
+```
+
+Benchmark when convenient so the queue's estimates and the cost model use
+measured numbers instead of your seeds:
+
+```bash
+python3 bench/phase0_bench.py --only <key>
+python3 bench/gen_llamaswap_config.py
+systemctl --user restart llama-swap llamacracy
+```
+
+To **hide** a model from the chat picker without removing it: set
+`"in_picker": false` in its inventory entry and regenerate.
 
 ## Adjusting limits and rates
 
@@ -163,20 +153,20 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 | `NON_GPU_LOAD_WATTS` | added to measured GPU watts for the cost model. Default 110. |
 | `MARKUP` | multiplier on `cost_usd`. Default 1.0 -- raise to 2-3x for non-trivial invoices. |
 | `IDLE_TTL_MINUTES` | unload the resident model after this long idle. Default 15. |
-| `IDLE_TTL_SECONDS` | seconds-granularity idle unload; wins over `IDLE_TTL_MINUTES` when set. `.env` ships 60. Short = frees VRAM fast but quick follow-ups re-pay the cold load. |
-| `SEARXNG_URL` / `SEARCH_MAX_RESULTS` | local SearXNG instance + how many snippets get prepended when a user flips the search toggle on. Not metered (a local HTTP call, not GPU time). |
-| `UPLOAD_DIR` / `UPLOAD_MAX_MB` | where attached images land on disk (never base64 in the DB) and the per-file size cap. Default `./data/uploads`, 8 MB. |
-| `COMPACT_KEEP_RECENT` | messages always left verbatim when a user compacts a conversation; everything older gets folded into the running summary. Default 6. |
+| `IDLE_TTL_SECONDS` | seconds-granularity idle unload; wins over `IDLE_TTL_MINUTES` when set. Short = frees VRAM fast but quick follow-ups re-pay the cold load. |
+| `SEARXNG_URL` / `SEARCH_MAX_RESULTS` | local SearXNG instance + how many snippets get prepended when a user flips the search toggle on. Not metered. |
+| `UPLOAD_DIR` / `UPLOAD_MAX_MB` | where attached images land on disk and the per-file size cap. Default `./data/uploads`, 8 MB. |
+| `COMPACT_KEEP_RECENT` | messages always left verbatim when a user compacts a conversation. Default 6. |
 | `COMPACT_SUMMARY_MAX_TOKENS` | cap on the length of the generated summary itself. Default 600. |
 
-**Per-user**, in the admin dashboard → Admin → Users tab (no restart):
-- **Overrides** — type a number in the `sess` / `week` box and hit *set* to give
-  someone a different cap (blank = fall back to the global default). Good for a
-  boosted allowance for a specific project.
-- **Uncapped** — toggle `∞ on`: that user is never blocked at enqueue. Their
-  usage % is still tracked and shown (and will climb past 100%); the 75/90%
-  warnings are silenced for them.
-- **disable / enable** — hard-stop an account, keeping its history.
+**Per-user**, in the admin dashboard → Admin → Controls tab (no restart):
+- **Limit overrides** — type a number in the `session` / `week` box and hit
+  *Set* to give someone a different cap (blank = fall back to the global
+  default). Good for a boosted allowance for a specific project.
+- **Uncapped** — that user is never blocked at enqueue. Their usage % is still
+  tracked and shown (and will climb past 100%); the 75/90% warnings are
+  silenced for them.
+- **Disable / Enable** — hard-stop an account, keeping its history.
 
 Changing a rate only affects **future** jobs -- `rate_used` and `cost_usd` are
 frozen on each job row when it finishes.
@@ -193,25 +183,21 @@ OpenAI API).
 Continue.dev `config.yaml` (`~/.continue/config.yaml`):
 ```yaml
 models:
-  - name: Llamacracy - FamilyA 4B
+  - name: Llamacracy
     provider: openai
-    model: fast-4b                                       # any id from /v1/models
-    apiBase: http://myhost.netbird.selfhosted:4180/v1
+    model: <model-id>                                      # any id from /v1/models
+    apiBase: http://<your-fqdn>:4180/v1
     apiKey: llk_...                                        # from Usage -> API access
     roles: [chat, edit]
 ```
-`GET /v1/models` lists the current picker models (same ids as `config/models.json`).
-No `/v1/completions` in v1 — editor autocomplete isn't wired up (it would
-contend with everyone else's chats on the same single-GPU FIFO queue; a fast
-lane would be needed first).
+`GET /v1/models` lists the current picker models (the keys in your
+inventory). No `/v1/completions` — editor autocomplete isn't wired up (it
+would contend with everyone else's chats on the same single-GPU FIFO queue).
 
-A revoked/deleted key stops authenticating immediately (`/api/keys/{id}`,
-DELETE, self-service from the same page). If someone leaks a key or you spot
-misuse, you don't have to wait for them: **Admin → API keys** lists every key
-issued across all users (owner, label, created, last used) with its own
-revoke button — kills that one key immediately without touching the rest of
-their account. For a wholesale problem, Admin → Users → disable still blocks
-the account entirely (all keys + web login).
+A revoked key stops authenticating immediately. **Admin → API keys** lists
+every key issued across all users (owner, label, created, last used) with its
+own revoke button, so a leaked key can be killed without touching the rest of
+that account. Admin → Users → disable blocks the account entirely.
 
 ## Mobile access (PWA)
 
@@ -219,19 +205,19 @@ Nothing to run — it's static files (`manifest.webmanifest` + meta tags in
 `static/index.html`), served by the same app. Users install it themselves:
 NetBird connected, open the site in Safari (iOS) or Chrome (Android), then
 "Add to Home Screen" / "Install app". See [docs/WELCOME.md](../docs/WELCOME.md)
-for the exact steps sent to users, and
-[docs/DECISIONS.md](../docs/DECISIONS.md) for why there's deliberately no
-service worker (needs a secure context; this app is plain HTTP by design).
+for the steps to send to users, and [docs/DECISIONS.md](../docs/DECISIONS.md)
+for why there's deliberately no service worker.
 
 ## Backup
 
-Everything that matters is `data/llamacracy.db` (SQLite WAL). Snapshot it:
+Everything that matters is `data/llamacracy.db` (SQLite WAL) plus
+`data/uploads/`. Snapshot the database:
 ```bash
 sqlite3 data/llamacracy.db ".backup '/path/to/backup/llamacracy-$(date +%F).db'"
 ```
 
-## Winter electricity rates
+## Seasonal electricity rates
 
-`TOU_SCHEDULE` is seeded with the utility **summer** rates. When the first
-Nov–May bill arrives, update the off-peak / super-off-peak generation numbers
-(delivery is flat year-round) and restart `llamacracy`.
+If your tariff changes with the season, update `ELECTRICITY_RATE` /
+`TOU_SCHEDULE` when the new bill arrives and restart `llamacracy`. Past jobs
+keep the rate they were billed at.

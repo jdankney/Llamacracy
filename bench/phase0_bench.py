@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Phase 0 -- measure reality.
 
-The owner already has a tuned `llama-server` invocation for every model (see
-their ~/.bashrc). So Phase 0 is not a config search: it validates each
-known-good config under our actual serving mode (`-np 1`, strict FIFO, one
-model at a time) and records what it costs and how fast it runs.
+Every model in bench/inventory.json already carries a serving config you
+believe in. This is not a config search: it validates each one under the
+actual serving mode (`-np 1`, strict FIFO, one model at a time) and records
+what it costs and how fast it runs.
 
 Per model we measure:
   - cold load time from disk (page cache evicted first)
   - resident VRAM (nvidia-smi delta over the desktop baseline)
   - prompt-processing tok/s and generation tok/s (llama-server's own timings)
   - GPU power draw (nvidia-smi) at idle and during generation
-  - fa=on (owner's setting) vs fa=off, since Pascal FA is not a given
+  - fa=on vs fa=off, since flash attention isn't a given on every GPU
 
 Output feeds the llama-swap config (Phase 1), the queue's load-time estimates
 (Phase 2), and the credit-limit arithmetic (Phase 3).
@@ -19,14 +19,14 @@ Output feeds the llama-swap config (Phase 1), the queue's load-time estimates
 Stdlib only. Drives the real `llama-server` over HTTP.
 
     python3 bench/phase0_bench.py --dry-run
-    python3 bench/phase0_bench.py --only daily-9b
+    python3 bench/phase0_bench.py --only llama31-8b
     python3 bench/phase0_bench.py                 # every model, resumable
     python3 bench/phase0_bench.py --no-fa-off     # skip the fa=off comparison
 
-Phase 8 -- push context as far as VRAM allows:
+Context sweep -- push context as far as VRAM allows:
 
     python3 bench/phase0_bench.py --ctx-sweep                 # all models
-    python3 bench/phase0_bench.py --ctx-sweep --only moe-30b
+    python3 bench/phase0_bench.py --ctx-sweep --only mixtral-8x7b
 
   Per model it walks a ladder of (ctx, kv_type, n_cpu_moe) low->high, stops at
   the first that doesn't fit with headroom, and records the largest that did as
@@ -56,20 +56,21 @@ from pathlib import Path
 from gguf_meta import summarize as gguf_summarize
 
 REPO = Path(__file__).resolve().parent.parent
-M = Path(os.path.expanduser("~/models"))
-LLAMA_SERVER = Path(os.path.expanduser("~/.local/bin/llama-server"))
-LLAMA_CPP_DIR = Path(os.path.expanduser("~/llama.cpp"))
+INVENTORY_PATH = REPO / "bench" / "inventory.json"
 OUT_PATH = REPO / "bench" / "bench-results.json"
 LOG_DIR = REPO / "bench" / "raw"
 
-# 1080 Ti reports ~11264 MiB; desktop (Xorg + kwin) holds ~1.2 GB.
-VRAM_TOTAL_MIB = 11264
+# Filled from bench/inventory.json by load_inventory() (see bench/README.md).
+M = Path(os.path.expanduser("~/models"))
+LLAMA_SERVER = Path(os.path.expanduser("~/.local/bin/llama-server"))
+LLAMA_CPP_DIR = Path(os.path.expanduser("~/llama.cpp"))
+THREADS = 6
+
 VRAM_HEADROOM_MIB = 400          # keep this much unused or we call it "does not fit"
 
 GEN_TOKENS = 320
 BENCH_REPS = 3
 HEALTH_TIMEOUT_S = 420           # --no-mmap heavyweights load ~20 GB from disk
-THREADS = 6
 
 _PARA = (
     "The quick brown fox jumps over the lazy dog while the committee debates "
@@ -82,8 +83,7 @@ BENCH_PROMPT = (_PARA * 12).strip()   # ~1000 tokens
 
 
 # --------------------------------------------------------------------------- #
-# model inventory -- the owner's tuned configs, minus their personal
-# web-UI / MCP flags (we proxy the OpenAI endpoint, no tool use in v1).
+# model inventory -- read from bench/inventory.json (gitignored; see README.md)
 # --------------------------------------------------------------------------- #
 @dataclass
 class ModelSpec:
@@ -97,6 +97,7 @@ class ModelSpec:
     kv_type: str = "f16"
     no_mmap: bool = False
     reasoning_budget: int | None = None
+    ctx_ladder: list[tuple[int, str, int | None]] = field(default_factory=list)
     note: str = ""
 
     def base_cmd(self, fa: str, ctx: int, n_cpu_moe: int | None) -> list[str]:
@@ -123,59 +124,41 @@ class ModelSpec:
         return cmd
 
 
-def inventory() -> list[ModelSpec]:
-    qwen_sampling = ["--jinja", "--temp", "0.6", "--top-p", "0.95",
-                     "--top-k", "20", "--min-p", "0", "-b", "2048", "-ub", "512"]
-    gemma_batch = ["-b", "2048", "-ub", "512"]
-    specs = [
-        ModelSpec(
-            "coder-1.5b-fim", "Coder Coder 1.5B (FIM / infill only)",
-            M / "coder-1.5b-fim" / "coder-1.5b-fim.gguf",
-            kind="fim", serve_ctx=8192,
-            note="FIM/infill endpoint only. MUST NOT appear in the chat picker."),
-        ModelSpec(
-            "fast-4b", "FamilyA 4B (Q8_0)",
-            M / "FamilyA" / "fast-4b" / "fast-4b.gguf",
-            kind="chat", serve_ctx=131072, kv_type="q8_0", no_mmap=True,
-            reasoning_budget=0, extra=list(qwen_sampling),
-            note="Tier 3. Reasoning disabled. Phase 8: 128K (fully GPU, free)."),
-        ModelSpec(
-            "daily-9b", "FamilyA 9B (Q6_K)",
-            M / "FamilyA" / "daily-9b" / "daily-9b.gguf",
-            kind="chat", serve_ctx=98304, kv_type="q8_0", no_mmap=True,
-            extra=list(qwen_sampling),
-            note="Tier 2 daily driver. Fully in VRAM. Phase 8: 96K."),
-        ModelSpec(
-            "alt-4b",
-            "FamilyB 4B (alt finetune, Q8_0)",
-            M / "FamilyB" / "alt-4b"
-            / "alt-4b.gguf",
-            kind="chat", serve_ctx=65536, kv_type="q8_0",
-            extra=["--chat-template-file",
-                   str(M / "FamilyB" / "alt-4b" / "chat_template.jinja")],
-            note="Not stock Gemma. Owner runs c=225280; we serve less. "
-                 "Phase 8: q8_0 KV works fine here, 64K."),
-        ModelSpec(
-            "moe-26b", "FamilyB 26B QAT (Q4_0, MoE)",
-            M / "FamilyB" / "moe-26b" / "moe-26b.gguf",
-            kind="chat", serve_ctx=24576, kv_type="q8_0", n_cpu_moe=20, no_mmap=True,
-            extra=list(gemma_batch),
-            note="MoE, expert offload. Phase 8: q8_0 KV + nc20 @ 24K (faster than nc18/f16/16K)."),
-        ModelSpec(
-            "moe-30b", "FamilyC Flash (Q4_K_M, MoE)",
-            M / "moe-30b" / "moe-30b.gguf",
-            kind="chat", serve_ctx=24576, kv_type="q8_0", n_cpu_moe=32, no_mmap=True,
-            extra=["--jinja", "--temp", "1.0", "--top-p", "0.95"],
-            note="MoE (deepseek2 arch). Phase 8: q8_0 KV + nc32 @ 24K. "
-                 "32K rung added +1.5 GB swap -- not worth it."),
-        ModelSpec(
-            "moe-35b", "FamilyA 35B (Q4_K_M, MoE)",
-            M / "moe-35b" / "moe-35b.gguf",
-            kind="chat", serve_ctx=49152, kv_type="q8_0", n_cpu_moe=32, no_mmap=True,
-            extra=list(qwen_sampling),
-            note="MoE, expert offload. Tightest on RAM (~22 GB weights, --no-mmap). "
-                 "Phase 8: q8_0 KV + nc32 @ 48K, ~+1 GB swap (owner's call, long docs)."),
-    ]
+def _expand(p: str) -> Path:
+    p = os.path.expanduser(p)
+    return Path(p) if os.path.isabs(p) else M / p
+
+
+def load_inventory(path: Path) -> list[ModelSpec]:
+    """Reads the inventory file, sets the module-level paths/threads from its
+    top-level keys, and returns the ModelSpecs whose GGUF exists on disk."""
+    global M, LLAMA_SERVER, LLAMA_CPP_DIR, THREADS
+    if not path.exists():
+        print(f"inventory not found: {path}")
+        print(f"  cp {path.parent / 'inventory.example.json'} {path}   # then edit")
+        sys.exit(1)
+    inv = json.loads(path.read_text())
+    M = Path(os.path.expanduser(inv.get("models_dir", "~/models")))
+    LLAMA_SERVER = Path(os.path.expanduser(inv.get("llama_server", "~/.local/bin/llama-server")))
+    LLAMA_CPP_DIR = Path(os.path.expanduser(inv.get("llama_cpp_dir", "~/llama.cpp")))
+    THREADS = int(inv.get("threads", 6))
+
+    specs = []
+    for key, m in inv.get("models", {}).items():
+        serve = m.get("serve", {})
+        bench = m.get("bench", {})
+        args = bench.get("args", serve.get("args", []))
+        args = [str(_expand(a)) if a.startswith("~") else a for a in args]
+        specs.append(ModelSpec(
+            key, m["display"], _expand(m["path"]),
+            kind=m.get("kind", "chat"), serve_ctx=int(serve.get("ctx", 8192)),
+            extra=args, n_cpu_moe=serve.get("n_cpu_moe"),
+            kv_type=serve.get("kv_type", "f16"),
+            no_mmap=bool(bench.get("no_mmap", serve.get("no_mmap", False))),
+            reasoning_budget=bench.get("reasoning_budget"),
+            ctx_ladder=[tuple(r) for r in bench.get("ctx_ladder", [])],
+            note=m.get("note", ""),
+        ))
     missing = [s.key for s in specs if not s.path.exists()]
     if missing:
         print(f"WARNING missing GGUFs: {missing}")
@@ -223,6 +206,15 @@ def nvidia_sample() -> dict:
     return {"mem_used_mib": int(float(used)), "mem_total_mib": int(float(total)),
             "mem_free_mib": int(float(free)), "power_w": float(power),
             "temp_c": float(temp)}
+
+
+def gpu_name() -> str:
+    try:
+        return subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, check=True).stdout.strip().splitlines()[0]
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 def mem_sample() -> dict:
@@ -419,39 +411,20 @@ def _bench(spec: ModelSpec, base_url: str, r: RunResult) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Phase 8 context sweep. Each entry: (ctx, kv_type, n_cpu_moe). Walked low->high;
-# first entry is the current known-good config (baseline), the rest push higher.
-# The MoE heavies also raise n_cpu_moe as ctx grows -- offloading a few more
-# expert layers to CPU frees VRAM for the KV cache, at some tok/s cost.
+# Context sweep: each model's `bench.ctx_ladder` in the inventory is a list of
+# (ctx, kv_type, n_cpu_moe), walked low->high. The first entry should be the
+# current known-good config (baseline); the rest push higher. MoE models
+# usually raise n_cpu_moe as ctx grows -- offloading a few more expert layers
+# to CPU frees VRAM for the KV cache, at some tok/s cost.
 # --------------------------------------------------------------------------- #
-CTX_SWEEP: dict[str, list[tuple[int, str, int | None]]] = {
-    "fast-4b": [
-        (32768, "q8_0", None), (65536, "q8_0", None),
-        (98304, "q8_0", None), (131072, "q8_0", None)],
-    "daily-9b": [
-        (32768, "q8_0", None), (49152, "q8_0", None),
-        (65536, "q8_0", None), (98304, "q8_0", None)],
-    "alt-4b": [
-        (32768, "f16", None), (32768, "q8_0", None),
-        (49152, "q8_0", None), (65536, "q8_0", None)],
-    "moe-26b": [
-        (16384, "f16", 18), (24576, "q8_0", 20), (32768, "q8_0", 24)],
-    "moe-30b": [
-        (16384, "f16", 30), (24576, "q8_0", 32), (32768, "q8_0", 36)],
-    "moe-35b": [
-        (16384, "f16", 28), (32768, "q8_0", 30),
-        (49152, "q8_0", 32), (65536, "q8_0", 34)],
-}
-
-
 # --------------------------------------------------------------------------- #
-# per-model plan: primary (owner config, fa=on) + fa=off + fit fallbacks
+# per-model plan: primary (inventory config, fa=on) + fa=off + fit fallbacks
 # --------------------------------------------------------------------------- #
 def plan(spec: ModelSpec, ctx_sweep: bool = False) -> list[RunResult]:
-    if ctx_sweep and spec.key in CTX_SWEEP:
+    if ctx_sweep and spec.ctx_ladder:
         return [RunResult(label=f"ctx{c}-{kv}", fa="on", ctx=c,
                           n_cpu_moe=ncm, kv_type=kv)
-                for (c, kv, ncm) in CTX_SWEEP[spec.key]]
+                for (c, kv, ncm) in spec.ctx_ladder]
     return [RunResult(label="primary_fa-on", fa="on", ctx=spec.serve_ctx,
                       n_cpu_moe=spec.n_cpu_moe, kv_type=spec.kv_type)]
 
@@ -480,7 +453,7 @@ def bench_model(spec: ModelSpec, vram_base, ram_base, idle_w, do_fa_off,
 
     runs: list[RunResult] = []
 
-    if ctx_sweep and spec.key in CTX_SWEEP:
+    if ctx_sweep and spec.ctx_ladder:
         # walk the ladder low->high; keep the largest that fits, stop on the
         # first miss (bigger will only be worse)
         working = None
@@ -580,6 +553,8 @@ def load_existing() -> dict:
 def main() -> int:
     global VRAM_HEADROOM_MIB
     ap = argparse.ArgumentParser()
+    ap.add_argument("--inventory", type=Path, default=INVENTORY_PATH,
+                    help="model inventory (default bench/inventory.json)")
     ap.add_argument("--only", action="append", default=[])
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--fresh", action="store_true")
@@ -595,11 +570,10 @@ def main() -> int:
     args = ap.parse_args()
     VRAM_HEADROOM_MIB = args.headroom_mib
 
+    specs = load_inventory(args.inventory)
     if not LLAMA_SERVER.exists():
-        print(f"llama-server not found at {LLAMA_SERVER}")
+        print(f"llama-server not found at {LLAMA_SERVER} (set llama_server in the inventory)")
         return 1
-
-    specs = inventory()
     if args.only:
         specs = [s for s in specs if s.key in args.only]
         if not specs:
@@ -608,9 +582,9 @@ def main() -> int:
 
     if args.dry_run:
         for s in specs:
-            if args.ctx_sweep and s.key in CTX_SWEEP:
+            if args.ctx_sweep and s.ctx_ladder:
                 print(f"\n{s.key}  ({s.kind}) -- ctx ladder:")
-                for (c, kv, ncm) in CTX_SWEEP[s.key]:
+                for (c, kv, ncm) in s.ctx_ladder:
                     print(f"  c={c:<7} kv={kv:<5} n_cpu_moe={ncm}")
                 continue
             print(f"\n{s.key}  ({s.kind}, serve_ctx={s.serve_ctx})")
@@ -629,12 +603,12 @@ def main() -> int:
             "host": socket.gethostname(),
             "llama_cpp_commit": git_commit(),
             "force_mmq": True,
-            "gpu": {"name": "NVIDIA GeForce GTX 1080 Ti",
+            "gpu": {"name": gpu_name(),
                     "vram_total_mib": base["mem_total_mib"],
                     "vram_baseline_mib": base["mem_used_mib"],
                     "note": "baseline = desktop before any model load"},
             "system": {"ram_avail_baseline_mib": mbase["mem_avail_mib"],
-                       "note": "measured with the owner's normal desktop apps running"},
+                       "note": "measured with whatever else was running on the box"},
             "bench_params": {"gen_tokens": GEN_TOKENS, "reps": BENCH_REPS,
                              "threads": THREADS, "np": 1},
             "power_note": ("GPU watts are nvidia-smi power.draw only. Whole-system "
@@ -650,7 +624,7 @@ def main() -> int:
 
     for spec in specs:
         done = results["models"].get(spec.key, {})
-        if args.ctx_sweep and spec.key not in CTX_SWEEP:
+        if args.ctx_sweep and not spec.ctx_ladder:
             print(f"skip {spec.key} (no context ladder)")
             continue
         if not args.fresh and not args.ctx_sweep and done.get("runs"):

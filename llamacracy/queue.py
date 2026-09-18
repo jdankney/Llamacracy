@@ -119,6 +119,7 @@ class QueueManager:
         self._idle_since: float = time.time()
         self._load_ewma: dict[str, float] = {}
         self._tasks: list[asyncio.Task] = []
+        self._bg: set[asyncio.Task] = set()   # fire-and-forget persists; kept referenced until done
         self._idle_poll_s = 10.0    # cheap local check; keeps a short IDLE_TTL responsive
         self._running_poll_s = 10.0
         # hook points filled by metering (Phase 3)
@@ -156,7 +157,9 @@ class QueueManager:
         prev = self._load_ewma.get(model_id, observed)
         val = 0.7 * prev + 0.3 * observed
         self._load_ewma[model_id] = val
-        asyncio.create_task(self._persist_load_ewma(model_id, val))
+        t = asyncio.create_task(self._persist_load_ewma(model_id, val))
+        self._bg.add(t)
+        t.add_done_callback(self._bg.discard)
 
     async def _persist_load_ewma(self, model_id: str, val: float) -> None:
         await self.db.execute(

@@ -1,153 +1,112 @@
 #!/usr/bin/env python3
-"""Generate the inference-layer config from bench/bench-results.json (Phase 1).
+"""Generate the inference-layer config from your model inventory.
 
-Emits two files:
+Inputs
+  bench/inventory.json       -- YOUR models: paths, serving config, tiers, blurbs
+                                (gitignored; start from inventory.example.json,
+                                schema in bench/README.md)
+  bench/bench-results.json   -- measurements from phase0_bench.py (optional per
+                                model: an entry with a `seed` block in the
+                                inventory can be served without a benchmark)
 
-  config/llama-swap.yaml  -- llama-swap schema only (one llama-server command
-                             per model, TTL backstop, groups)
-  config/models.json      -- the app's model registry: display name, kind
-                             (chat/fim), tier/group, and the measured
-                             cold-load / throughput / VRAM seeds the queue
-                             uses for its estimates
+Outputs
+  config/llama-swap.yaml     -- one llama-server command per model, TTL backstop,
+                                swap groups
+  config/models.json         -- the app's registry: display name, kind (chat/fim),
+                                tier, sampling defaults, and the cold-load /
+                                throughput / VRAM seeds the queue estimates from
 
-The benchmark already found a VRAM-safe config for every model. Serving choices
-layered on top:
-  - reasoning OFF by default everywhere (owner's "token/energy saver" choice)
+Serving choices baked in:
   - `-np 1` so KV cache = 1 x context (strict FIFO, one inference at a time)
-  - FamilyC nudged to n_cpu_moe=30 (bench left only ~0.8 GB VRAM free at 28)
-  - the FIM model is `unlisted` in llama-swap and kind=fim in the registry, so
-    it can never surface as a chat model
+  - `nothink: true` models get `chat_template_kwargs: {enable_thinking: false}`
+    injected per request via llama-swap's filters.setParams
+  - kind=fim models are `unlisted` in llama-swap and hidden from the picker
+  - a model's `vision` block adds a second, unlisted `<key>-vision` entry:
+    same weights + --mmproj, dispatched to only when a message carries an image
 
     python3 bench/gen_llamaswap_config.py
-    ~/.local/bin/llama-swap -config config/llama-swap.yaml -validate
+    python3 bench/gen_llamaswap_config.py --inventory other.json --out /tmp/cfg
+    llama-swap -config config/llama-swap.yaml -validate
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-BENCH = REPO / "bench" / "bench-results.json"
-OUT_YAML = REPO / "config" / "llama-swap.yaml"
-OUT_REGISTRY = REPO / "config" / "models.json"
+DEFAULT_INVENTORY = REPO / "bench" / "inventory.json"
+DEFAULT_BENCH = REPO / "bench" / "bench-results.json"
+DEFAULT_OUT = REPO / "config"
 
-HOME = str(Path.home())     # llama-swap fork/execs directly -- no ~ or shell expansion
-LLAMA_SERVER = f"{HOME}/.local/bin/llama-server"
-THREADS = 6
-TTL_BACKSTOP_S = 1200        # app enforces the real IDLE_TTL_MINUTES; this is a safety net
-HEALTH_TIMEOUT_S = 480       # cold --no-mmap load of the 22 GB MoE
-
-# serving overrides on top of bench-results "recommended". Empty since the
-# Phase 8 --ctx-sweep bakes the tuned (ctx, kv_type, n_cpu_moe) per model
-# straight into `recommended`.
-OVERRIDES: dict[str, dict] = {}
-
-# Models that emit a <think> block by default. `--reasoning-budget 0` does NOT
-# stop it (verified: 102 completion tokens -> 4 once thinking is off). We
-# disable it with `chat_template_kwargs: {enable_thinking: false}` injected via
-# llama-swap's `filters.setParams` -- cleaner than a CLI arg with JSON quoting.
-# Verified per-model through llama-swap. FamilyB 4B does NOT think; FamilyB 26B
-# QAT does.
-NOTHINK_MODELS = {"fast-4b", "daily-9b", "moe-35b", "moe-30b",
-                  "moe-26b"}
-
-# human-facing metadata + sampling the app should apply as per-model defaults
-REGISTRY_META: dict[str, dict] = {
-    "coder-1.5b-fim": dict(
-        tier="fim", picker=False,
-        blurb="Inline code completion (FIM). Not a chat model."),
-    "fast-4b": dict(
-        tier="fast", picker=True, reasoning="off",
-        sampling=dict(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0),
-        blurb="Fastest chat model. Summaries, reformatting, quick questions."),
-    "daily-9b": dict(
-        tier="daily", picker=True, reasoning="off",
-        sampling=dict(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0),
-        blurb="Daily driver. Fully on GPU, ~30 tok/s."),
-    "alt-4b": dict(
-        tier="fast", picker=True, reasoning="none",
-        sampling=dict(),
-        blurb="FamilyB 4B — alt community finetune, not stock Gemma."),
-    "moe-26b": dict(
-        tier="heavy", picker=True, reasoning="off",
-        sampling=dict(),
-        blurb="MoE, experts on CPU. Strong quality, ~34 tok/s, ~12 s cold start."),
-    "moe-30b": dict(
-        tier="heavy", picker=True, reasoning="off",
-        sampling=dict(temperature=1.0, top_p=0.95),
-        blurb="MoE, accuracy-first general Q&A. ~29 tok/s, ~14 s cold start."),
-    "moe-35b": dict(
-        tier="heavy", picker=True, reasoning="off",
-        sampling=dict(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0),
-        blurb="Biggest model, long documents. ~32 tok/s, ~25 s cold start."),
-}
-
-EXTRA_ARGS: dict[str, list[str]] = {
-    "fast-4b": ["--temp", "0.6", "--top-p", "0.95", "--top-k", "20",
-                  "--min-p", "0", "-b", "2048", "-ub", "512"],
-    "daily-9b": ["--temp", "0.6", "--top-p", "0.95", "--top-k", "20",
-                  "--min-p", "0", "-b", "2048", "-ub", "512"],
-    "moe-35b": ["--temp", "0.6", "--top-p", "0.95", "--top-k", "20",
-                       "--min-p", "0", "-b", "2048", "-ub", "512"],
-    "moe-30b": ["--temp", "1.0", "--top-p", "0.95"],
-    "moe-26b": ["-b", "2048", "-ub", "512"],
-    "alt-4b": [
-        "--chat-template-file",
-        f"{HOME}/models/alt-4b.chat_template.jinja"],
-}
-
-GROUPS = {
-    "heavyweights": ["moe-26b", "moe-30b", "moe-35b",
-                     "moe-26b-vision", "moe-35b-vision"],
-    "standard": ["fast-4b", "daily-9b", "alt-4b"],
-    "fim": ["coder-1.5b-fim"],
-}
-
-# On-demand vision variants (Phase 8.4): the same weights as the paired text
-# model, plus --mmproj, loaded under a second llama-swap key so VRAM for the
-# vision tower is only paid when a message actually carries an image (see
-# app.py's routing). Not separately benchmarked -- reuses the paired model's
-# already-tuned (ctx, kv_type, n_cpu_moe); the mmproj file is the only extra
-# VRAM (~0.9-1.1 GB), verified to still fit at that ctx (docs/DECISIONS.md).
-VISION_VARIANTS: dict[str, dict] = {
-    "moe-35b-vision": dict(
-        of="moe-35b",
-        mmproj=f"{HOME}/models/moe-35b.mmproj.gguf",
-        display="FamilyA 35B (Q4_K_M, MoE) -- vision",
-        blurb="Same model, with image understanding. Loaded only when a message includes an image.",
-    ),
-    "moe-26b-vision": dict(
-        of="moe-26b",
-        mmproj=f"{HOME}/models/moe-26b.mmproj.gguf",
-        display="FamilyB 26B QAT (Q4_0, MoE) -- vision",
-        blurb="Same model, with image understanding. Loaded only when a message includes an image.",
-    ),
-}
+SEED_KEYS = ("cold_load_s", "tg_tok_s", "pp_tok_s", "vram_used_mib")
 
 
-def build_cmd(key: str, m: dict, *, mmproj: str | None = None) -> list[str]:
-    rec = m["recommended"]
-    ov = OVERRIDES.get(key, {})
-    n_cpu_moe = ov.get("n_cpu_moe", rec["n_cpu_moe"])
-    cmd = ["${server}", "-m", m["path"],
+def expand(p: str, models_dir: Path) -> str:
+    """Absolute path: `~` expanded, relative paths resolved under models_dir.
+    llama-swap fork/execs llama-server directly (no shell), so nothing here may
+    rely on later expansion."""
+    p = os.path.expanduser(p)
+    return p if os.path.isabs(p) else str(models_dir / p)
+
+
+def load_inventory(path: Path) -> dict:
+    if not path.exists():
+        sys.exit(f"inventory not found: {path}\n"
+                 f"  cp {path.parent / 'inventory.example.json'} {path}   # then edit")
+    inv = json.loads(path.read_text())
+    inv.setdefault("llama_server", "~/.local/bin/llama-server")
+    inv.setdefault("models_dir", "~/models")
+    inv.setdefault("threads", 6)
+    inv.setdefault("ttl_backstop_s", 1200)
+    inv.setdefault("health_timeout_s", 480)
+    if not inv.get("models"):
+        sys.exit(f"{path}: no models defined")
+    return inv
+
+
+def recommended(key: str, m: dict, bench: dict) -> dict | None:
+    """The (ctx, kv_type, n_cpu_moe, fa) to serve at plus the measured seeds.
+    Bench results win; otherwise the inventory's `serve` + `seed` blocks."""
+    b = bench.get("models", {}).get(key, {})
+    if b.get("recommended"):
+        return b["recommended"]
+    serve = m.get("serve", {})
+    seed = m.get("seed")
+    if not seed or any(k not in seed for k in SEED_KEYS):
+        return None
+    return {
+        "ctx": serve.get("ctx", 8192),
+        "kv_type": serve.get("kv_type", "f16"),
+        "n_cpu_moe": serve.get("n_cpu_moe"),
+        "fa": serve.get("fa", "on"),
+        **seed,
+    }
+
+
+def build_cmd(path: str, rec: dict, serve: dict, threads: int, *,
+              mmproj: str | None = None) -> list[str]:
+    cmd = ["${server}", "-m", path,
            "--host", "127.0.0.1", "--port", "${PORT}",
-           "-c", str(rec["ctx"]), "-ngl", "99", "-fa", rec["fa"],
-           "-t", str(THREADS), "-np", "1", "--no-webui", "--metrics"]
+           "-c", str(rec["ctx"]), "-ngl", "99", "-fa", rec.get("fa", "on"),
+           "-t", str(threads), "-np", "1", "--no-webui", "--metrics"]
     if mmproj:
         cmd += ["--mmproj", mmproj]
-    if n_cpu_moe is not None:
-        cmd += ["--n-cpu-moe", str(n_cpu_moe)]
-    if rec["kv_type"] != "f16":
+    if rec.get("n_cpu_moe") is not None:
+        cmd += ["--n-cpu-moe", str(rec["n_cpu_moe"])]
+    if rec.get("kv_type", "f16") != "f16":
         cmd += ["-ctk", rec["kv_type"], "-ctv", rec["kv_type"]]
-    if m["size_gb"] > 12:
+    if serve.get("no_mmap"):
         cmd += ["--no-mmap"]
-    cmd += EXTRA_ARGS.get(key, [])
+    cmd += list(serve.get("args", []))
     return cmd
 
 
 def emit_yaml_entry(y: list[str], key: str, argv: list[str], comment: str, *,
-                    nothink: bool = False, unlisted: bool = False) -> None:
+                    ttl: int, nothink: bool = False, unlisted: bool = False) -> None:
     y.append(f'  "{key}":')
     y.append(f"    # {comment}")
     # cmd as a literal block: one flag (+ its value) per line for readability
@@ -163,7 +122,7 @@ def emit_yaml_entry(y: list[str], key: str, argv: list[str], comment: str, *,
         y.append("      " + " ".join(cur))
     y.append('    proxy: "http://127.0.0.1:${PORT}"')
     y.append('    checkEndpoint: "/health"')
-    y.append(f"    ttl: {TTL_BACKSTOP_S}")
+    y.append(f"    ttl: {ttl}")
     if nothink:
         y.append("    filters:")
         y.append("      setParams:")
@@ -174,120 +133,147 @@ def emit_yaml_entry(y: list[str], key: str, argv: list[str], comment: str, *,
     y.append("")
 
 
-def main() -> None:
-    data = json.loads(BENCH.read_text())
-    models = data["models"]
-    built: set[str] = set()   # keys that actually got a llama-swap entry (base + vision)
+def registry_entry(m: dict, rec: dict, path: str, *, display: str, blurb: str,
+                   in_picker: bool, vision_key: str | None) -> dict:
+    is_fim = m.get("kind", "chat") == "fim"
+    return {
+        "display": display,
+        "kind": m.get("kind", "chat"),
+        "path": path,
+        "tier": m.get("tier"),
+        "in_picker": in_picker,
+        "blurb": blurb,
+        "reasoning": m.get("reasoning", None if is_fim else "off"),
+        "sampling": m.get("sampling", {}),
+        "ctx": rec["ctx"],
+        "seed_cold_load_s": rec["cold_load_s"],
+        "seed_tg_tok_s": rec["tg_tok_s"],
+        "seed_pp_tok_s": rec["pp_tok_s"],
+        "vram_used_mib": rec["vram_used_mib"],
+        "gpu_gen_watts": rec.get("gpu_gen_w_mean"),   # cost-model fallback if nvidia-smi is unavailable
+        "max_tokens_default": m.get("max_tokens", 2048),
+        "vision_key": vision_key,
+    }
 
+
+def generate(inv: dict, bench: dict) -> tuple[str, dict]:
+    models_dir = Path(os.path.expanduser(inv["models_dir"]))
+    server = os.path.expanduser(inv["llama_server"])
+    threads, ttl = inv["threads"], inv["ttl_backstop_s"]
+    built: set[str] = set()
+    groups: dict[str, list[str]] = {}
+
+    source = "bench/inventory.json"
+    if bench:
+        source += (f" + bench-results.json {bench.get('generated_at', '?')} "
+                   f"(llama.cpp {bench.get('llama_cpp_commit', '?')})")
     y: list[str] = [
         "# GENERATED by bench/gen_llamaswap_config.py -- do not hand-edit.",
-        f"# from bench-results.json {data['generated_at']} "
-        f"(llama.cpp {data['llama_cpp_commit']}, force_mmq={data['force_mmq']})",
+        f"# from {source}",
         "",
-        f"healthCheckTimeout: {HEALTH_TIMEOUT_S}",
+        f"healthCheckTimeout: {inv['health_timeout_s']}",
         "logLevel: info",
         "startPort: 10800",
         "",
         "macros:",
-        f'  server: "{LLAMA_SERVER}"',
+        f'  server: "{server}"',
         "",
         "models:",
     ]
-    registry: dict = {"generated_at": data["generated_at"],
-                      "llama_cpp_commit": data["llama_cpp_commit"], "models": {}}
+    registry: dict = {
+        "generated_at": bench.get("generated_at", ""),
+        "llama_cpp_commit": bench.get("llama_cpp_commit", ""),
+        "models": {},
+    }
 
-    # reverse lookup: base key -> its vision variant key, stamped onto the
-    # base model's registry entry so the app can find it at chat time
-    vision_of_base: dict[str, str] = {v["of"]: k for k, v in VISION_VARIANTS.items()}
+    vision_specs: list[tuple[str, dict, dict, str]] = []   # (vkey, model, rec, path)
 
-    for key, m in models.items():
-        rec = m.get("recommended")
-        if not rec:
-            y.append(f"  # {key}: SKIPPED (no working config)")
+    for key, m in inv["models"].items():
+        rec = recommended(key, m, bench)
+        if rec is None:
+            print(f"  ! {key}: no benchmark result and no `seed` block -- skipped "
+                  f"(run phase0_bench.py --only {key}, or add seed numbers)")
+            y.append(f"  # {key}: SKIPPED (not benchmarked, no seed)")
             continue
-        argv = build_cmd(key, m)
-        meta = REGISTRY_META.get(key, {})
-        is_fim = m["kind"] == "fim"
+        path = expand(m["path"], models_dir)
+        serve = dict(m.get("serve", {}))
+        serve["args"] = [expand(a, models_dir) if a.startswith("~") else a
+                         for a in serve.get("args", [])]
+        is_fim = m.get("kind", "chat") == "fim"
+        vision = m.get("vision")
+        vkey = f"{key}-vision" if vision else None
 
         emit_yaml_entry(
-            y, key, argv,
+            y, key, build_cmd(path, rec, serve, threads),
             f'{m["display"]} | {rec["tg_tok_s"]} tok/s | '
             f'{rec["cold_load_s"]}s cold | {rec["vram_used_mib"]} MiB VRAM',
-            nothink=key in NOTHINK_MODELS, unlisted=is_fim)
+            ttl=ttl, nothink=bool(m.get("nothink")), unlisted=is_fim)
         built.add(key)
+        groups.setdefault(m.get("group", "default"), []).append(key)
+        registry["models"][key] = registry_entry(
+            m, rec, path, display=m["display"], blurb=m.get("blurb", ""),
+            in_picker=m.get("in_picker", not is_fim), vision_key=vkey)
+        if vision:
+            vision_specs.append((vkey, m, rec, path))
 
-        registry["models"][key] = {
-            "display": m["display"],
-            "kind": m["kind"],
-            "path": m["path"],
-            "tier": meta.get("tier"),
-            "in_picker": meta.get("picker", m["kind"] != "fim"),
-            "blurb": meta.get("blurb", ""),
-            "reasoning": meta.get("reasoning", "off" if m["kind"] != "fim" else None),
-            "sampling": meta.get("sampling", {}),
-            "ctx": rec["ctx"],
-            "seed_cold_load_s": rec["cold_load_s"],
-            "seed_tg_tok_s": rec["tg_tok_s"],
-            "seed_pp_tok_s": rec["pp_tok_s"],
-            "vram_used_mib": rec["vram_used_mib"],
-            "gpu_gen_watts": rec.get("gpu_gen_w_mean"),   # bench mean; cost-model fallback
-            "max_tokens_default": 2048,
-            "vision_key": vision_of_base.get(key),
-        }
-
-    # vision variants: same weights + recommended config as their base model,
-    # plus --mmproj. unlisted (like the FIM model) -- never in the picker,
-    # only ever dispatched to internally when a chat turn carries an image.
-    for vkey, spec in VISION_VARIANTS.items():
-        base_key = spec["of"]
-        m = models.get(base_key)
-        if not m or not m.get("recommended"):
-            y.append(f"  # {vkey}: SKIPPED (base model {base_key!r} has no working config)")
-            continue
-        rec = m["recommended"]
-        argv = build_cmd(vkey, m, mmproj=spec["mmproj"])
+    # vision variants: same weights + serving config as the base model, plus
+    # --mmproj. unlisted (like FIM) -- never in the picker, only dispatched to
+    # internally when a chat turn carries an image.
+    for vkey, m, rec, path in vision_specs:
+        key = vkey[: -len("-vision")]
+        v = m["vision"]
+        mmproj = expand(v["mmproj"], models_dir)
+        # same ctx/kv/offload as the base model; extra CLI args only if the
+        # vision block sets its own (sampling defaults are applied app-side
+        # from the registry anyway)
+        serve = dict(m.get("serve", {}))
+        serve["args"] = [expand(a, models_dir) if a.startswith("~") else a
+                         for a in v.get("args", [])]
+        display = v.get("display", f'{m["display"]} -- vision')
         emit_yaml_entry(
-            y, vkey, argv,
-            f'{spec["display"]} | mmproj: {Path(spec["mmproj"]).name}',
-            nothink=base_key in NOTHINK_MODELS, unlisted=True)
+            y, vkey, build_cmd(path, rec, serve, threads, mmproj=mmproj),
+            f"{display} | mmproj: {Path(mmproj).name}",
+            ttl=ttl, nothink=bool(m.get("nothink")), unlisted=True)
         built.add(vkey)
-
-        registry["models"][vkey] = {
-            "display": spec["display"],
-            "kind": "chat",
-            "path": m["path"],
-            "tier": REGISTRY_META.get(base_key, {}).get("tier"),
-            "in_picker": False,     # never a direct pick -- app routes to it
-            "blurb": spec["blurb"],
-            "reasoning": REGISTRY_META.get(base_key, {}).get("reasoning", "off"),
-            "sampling": REGISTRY_META.get(base_key, {}).get("sampling", {}),
-            "ctx": rec["ctx"],
-            "seed_cold_load_s": rec["cold_load_s"],
-            "seed_tg_tok_s": rec["tg_tok_s"],
-            "seed_pp_tok_s": rec["pp_tok_s"],
-            "vram_used_mib": rec["vram_used_mib"],   # not re-measured; base model's figure
-            "gpu_gen_watts": rec.get("gpu_gen_w_mean"),
-            "max_tokens_default": 2048,
-            "vision_key": None,
-        }
+        groups.setdefault(m.get("group", "default"), []).append(vkey)
+        registry["models"][vkey] = registry_entry(
+            m, rec, path, display=display,
+            blurb=v.get("blurb", "Same model, with image understanding. "
+                                 "Loaded only when a message includes an image."),
+            in_picker=False, vision_key=None)
 
     y.append("groups:")
-    y.append("  # v1: SMALL_MODEL_FAST_LANE off -> app serialises everything, one")
-    y.append("  # model loaded at a time. Groups make that explicit + ready the fast lane.")
-    for gname, members in GROUPS.items():
-        members = [k for k in members if k in built]
-        if not members:
-            continue
+    y.append("  # SMALL_MODEL_FAST_LANE is off -> the app serialises everything and one")
+    y.append("  # model is loaded at a time. Groups make that explicit for llama-swap.")
+    for gname, members in groups.items():
         y.append(f'  "{gname}":')
         y.append("    swap: true")
         y.append("    exclusive: true")
         y.append(f"    members: [{', '.join(f'\"{k}\"' for k in members)}]")
 
-    OUT_YAML.parent.mkdir(parents=True, exist_ok=True)
-    OUT_YAML.write_text("\n".join(y) + "\n")
-    OUT_REGISTRY.write_text(json.dumps(registry, indent=2) + "\n")
-    print(f"wrote {OUT_YAML}")
-    print(f"wrote {OUT_REGISTRY}  ({len(registry['models'])} models)")
+    return "\n".join(y) + "\n", registry
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
+    ap.add_argument("--bench", type=Path, default=DEFAULT_BENCH,
+                    help="bench-results.json (missing file = seeds only)")
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT,
+                    help="directory for llama-swap.yaml + models.json")
+    args = ap.parse_args()
+
+    inv = load_inventory(args.inventory)
+    bench = json.loads(args.bench.read_text()) if args.bench.exists() else {}
+    if not bench:
+        print(f"  (no {args.bench.name}; serving from inventory seeds)")
+
+    yaml_text, registry = generate(inv, bench)
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "llama-swap.yaml").write_text(yaml_text)
+    (args.out / "models.json").write_text(json.dumps(registry, indent=2) + "\n")
+    print(f"wrote {args.out / 'llama-swap.yaml'}")
+    print(f"wrote {args.out / 'models.json'}  ({len(registry['models'])} models)")
 
 
 if __name__ == "__main__":

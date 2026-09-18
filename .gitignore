@@ -2,6 +2,19 @@
 .env
 .env.*
 !.env.example
+deploy/oauth2-proxy.env
+deploy/dex/config.yaml
+
+# your models + measurements + the config generated from them
+bench/inventory.json
+bench/bench-results.json
+bench/raw/
+bench/*.tmp.json
+config/llama-swap.yaml
+config/models.json
+
+# personal notes (engineering log, the welcome note you send to friends)
+docs/local/
 
 # python
 .venv/
@@ -16,10 +29,4 @@ __pycache__/
 *.db-shm
 data/
 *.log
-
-# phase 0 output is committed deliberately (see bench/), but scratch runs are not
-bench/raw/
-bench/*.tmp.json
 *.output
-deploy/oauth2-proxy.env
-deploy/dex/config.yaml

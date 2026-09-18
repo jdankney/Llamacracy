@@ -1,745 +1,166 @@
-# Decisions & deviations
+# Design decisions
 
-Running log of choices made against [SPEC.md](SPEC.md), with the reasoning.
-Newest first.
+Why Llamacracy is shaped the way it is: every non-obvious choice, with the
+reasoning, so you can tell which ones to keep when you adapt it. The
+[SPEC.md](SPEC.md) is the brief these were made against.
 
-## Frontend: framework-free restyle for release (2026-09-15)
+## Architecture
 
-Prep for publishing the repo. The UI worked but read as a dev tool: full-width
-thread (user bubbles pinned to the far right, replies to the far left), emoji
-as icons, and the Tailwind Play CDN -- which is a runtime JIT compiler that
-prints "should not be used in production" in every console.
+- **llama-swap owns the models; the app never spawns `llama-server`.** The
+  app talks OpenAI-compatible HTTP to llama-swap, which loads, swaps and
+  unloads. Chosen over `llama-server`'s own router mode for its `groups`
+  (co-residency control), explicit `/running` + unload endpoints the queue
+  needs, and `filters.setParams` for clean server-side request shaping.
+- **FastAPI + one SQLite connection (WAL) behind one asyncio lock.** Writes
+  are tiny (job and message rows) and the queue is serial anyway. Timestamps
+  are epoch floats throughout, so the rolling-weekly query is a plain indexed
+  `SUM ... WHERE finished_at >= ?`.
+- **Vanilla JS front-end, no build step, no framework.** One `app.js`, one
+  hand-written `styles.css`. Markdown, sanitising, code highlighting and
+  math come from cdnjs as classic scripts, with a regex fallback so a blocked
+  CDN degrades to readable text instead of nothing.
+- **Generated config from a declarative inventory.** Your models live in
+  `bench/inventory.json`; the benchmark measures them; the generator writes
+  both the llama-swap config and the app's registry from those two files.
+  Nothing about a specific box is committed.
 
-- **Tailwind CDN removed.** Replaced by `static/assets/styles.css`: tokens
-  (colours, radii, type), a handful of components, one responsive breakpoint.
-  Still no build step, one fewer external script, and no flash of unstyled
-  content while the JIT ran. marked / DOMPurify / highlight.js / KaTeX stay on
-  cdnjs as before.
-- **Layout**: thread and composer share one centred 50rem column; assistant
-  replies render as plain text with a small avatar + model name + time,
-  user messages as a tinted bubble. Sidebar groups conversations by day.
-  Nav is a Chat / Usage / Admin segment (the old toggle buttons had no way
-  back from Admin except clicking Admin again).
-- **Composer** is one card: textarea on top, tools below (model select,
-  search, attach, context ring, send). Send turns into Stop while a job is
-  active. Hint line under it carries loaded/cold-start, tok/s, blurb.
-- **Icons** are inline SVG paths (emoji render differently per platform).
-- **Bugs fixed on the way**: the composer draft was wiped by every re-render
-  (model switch, search toggle, and the end of every streamed reply);
-  auto-scroll yanked the reader to the bottom on every token even after they
-  had scrolled up (now only follows when already at the bottom, with a
-  "jump to latest" pill otherwise); multiple toasts stacked on top of each
-  other; conversation delete had no confirmation; a send rejected before
-  it was accepted (429 limit, network error) lost the text -- it now goes
-  back into the composer.
-- **Accessibility**: aria-labels on icon buttons, focus-visible rings,
-  Escape closes the drawer / context panel / modals, `prefers-reduced-motion`
-  respected, dialogs are `role=dialog`.
-- **Chart** on the usage page fills all 30 days (gaps read as zero), 4px
-  rounded bars, hover/focus tooltip, first/last date labels, peak in the
-  title. One series, one hue, no legend.
-- Phone layout re-checked at 390px (Playwright, real chat round-trip against
-  a fake llama-swap): the floating queue card only shows on phones -- on
-  desktop the same list lives in the sidebar footer, so nothing floats over
-  the thread.
-- `static/index.html` also got `color-scheme: dark` and `viewport-fit=cover`.
-  The `theme-color` now matches the topbar surface.
+## The queue
 
-## Admin: API keys panel (2026-09-13)
+- **Strict global FIFO, one inference at a time. No priority, no reordering,
+  no coalescing.** Deliberate: fairness that everyone can predict, and a VRAM
+  budget that never has to be shared.
+- The resident model is always read from llama-swap's `/running`, never
+  guessed, so the "cold start ~N s" hint and the load-time billing are honest.
+- Per-model load times are learned (EWMA over observed cold starts), seeded
+  from the benchmark.
+- Cancelling a `generating` job really aborts the upstream request: the
+  worker breaks out of the stream and the httpx context manager closes the
+  connection.
+- Idle TTL unloads the resident model after N minutes with an empty queue.
+  llama-swap's own `ttl` is only a backstop.
+- `SMALL_MODEL_FAST_LANE` is wired (jobs carry a `lane`, only exclusive-lane
+  seconds are full price) but not implemented; everything runs exclusive.
 
-Owner's concern: a friend leaks their Continue.dev key, or misuses it, and
-the only fix available was the blunt one (disable their whole account).
+## Metering and cost
 
-- New `GET /api/admin/api-keys` (every key across every user, joined to
-  owner email/label/created/last-used) + `DELETE /api/admin/api-keys/{id}`
-  (revoke any one, not just your own) in `admin.py` — same
-  `require_admin`-gated router as everything else there, no new auth path.
-- New **Admin → API keys** tab: one table, one "revoke" button per row. Uses
-  the same `table()`/`card()` helpers as the rest of the dashboard.
-- Deliberately per-**key**, not per-user: `/api/keys` (self-service,
-  Phase 8.2) already lets a user revoke their own; this just extends that
-  same DELETE to every key so a leaked one can be killed surgically without
-  disabling the account it belongs to. The existing per-user "disable"
-  control (Admin → Users) is still there for the wholesale case.
-- Verified live: created a key, confirmed it authenticated through the real
-  edge (`/v1/models`, 200), revoked it from the new admin endpoint, confirmed
-  an immediate 401 on the next call with the same key, confirmed it dropped
-  out of the admin list. Also confirmed a non-admin identity gets 403.
+- **1 credit = 1 second of exclusive box time**, measured from the app's own
+  timers, never estimated. Only token counts may be estimated, and such rows
+  are flagged.
+- `credits = active_seconds + load_seconds * LOAD_TIME_MULTIPLIER`. Loads
+  are charged to whoever triggered them, at half rate by default. Failed
+  loads and upstream errors cost nothing. Cancelled jobs pay for the seconds
+  actually consumed. Queue waiting is never charged.
+- **Limits are checked at enqueue, not after a queue wait** (rejecting
+  someone after they waited is hostile), and before anything about the
+  request is persisted, so a rejection leaves no orphan rows. Overshoot is
+  allowed: an admitted job runs to completion even past the cap, bounded by
+  `MAX_TOKENS_PER_REQUEST`.
+- Sessions open on a user's first request and run a fixed 5 hours, never
+  extended by activity. The weekly limit is a rolling 7-day sum, not a
+  calendar week. The 429 carries which limit was hit and the exact reset time
+  (for weekly: the moment the rolling sum first drops back under the cap).
+- `cost_usd = credits × watts × rate × MARKUP`, where watts is the measured
+  mean GPU draw during the job plus a fixed `NON_GPU_LOAD_WATTS`, and rate
+  comes from the time-of-use table for the hour the job ran. The rate and the
+  cost are frozen on the job row; historical costs are never recomputed.
+- Vision turns have **no synthetic surcharge**: they are genuinely slower
+  (image prompt-eval, usually a model swap), so the honest extra cost falls
+  out of the measured seconds.
 
-## Mobile: installable PWA, not a native iOS app (2026-09-13)
+## Identity
 
-Owner's first instinct was a non-App-Store iOS app; reconsidered before
-building anything — without a Mac/Xcode, and without a paid Apple Developer
-account, any sideloaded IPA re-signs and expires every 7 days. Genuinely the
-wrong tool here.
-
-- Added `manifest.webmanifest` + `apple-mobile-web-app-*` meta tags so
-  "Add to Home Screen" (iOS Safari) or "Install app" (Android Chrome) gives a
-  chrome-less, icon-launched window — no App Store, no Apple Developer
-  Program, nothing to re-sign. New 192/512 + a maskable-safe-zone icon
-  rendered straight from the existing logo SVG (same navy background the
-  existing apple-touch-icon already used) via `rsvg-convert`.
-- **Deliberately no service worker.** Registering one needs a secure context
-  (HTTPS or literally `localhost`) in every engine that matters, and this app
-  is intentionally plain HTTP (NetBird/WireGuard is the encryption layer, per
-  the Phase 6 decision) — a real hostname like
-  `myhost.netbird.selfhosted` doesn't qualify, so a service worker would
-  just silently fail to register. Also genuinely not needed: iOS's home
-  -screen-webapp mechanism predates and doesn't require the Service Worker /
-  Chrome installability spec, and there's no meaningful offline mode for a
-  tool whose entire job is live GPU inference anyway.
-- Access control doesn't change at all — same NetBird-gated URL as always,
-  just launchable from an icon instead of a bookmark. The phone still needs
-  the NetBird app installed and connected first.
-- Audited the existing layout for phone widths while in there (it was
-  already mobile-aware — collapsible sidebar, wrapping composer row — from
-  earlier phases, just not stress-tested): fixed a table that silently
-  clipped a column instead of scrolling (`overflow-hidden` → `overflow-x-auto`,
-  matching the pattern the admin tables already used), trimmed the topbar
-  (wordmark + resident-model badge hide below `sm:` — the loaded-model state
-  is already visible in the composer) so gauges/Usage/Admin don't get
-  crushed on a narrow phone, and fixed two real touch-usability bugs: the
-  sidebar's conversation-delete button only appeared on CSS `:hover` (which
-  doesn't fire on touch — unreachable on a phone before this), and the
-  mobile drawer had no backdrop / tap-outside-to-close.
-
-## Compact context (2026-09-13)
-
-The last item from the Phase 8 "future upgrades" list. On demand only — never
-automatic (no surprise credit spend, no surprise memory loss):
-
-- A **"🗜 Compact history"** button in the context breakdown panel (appears
-  once there's enough uncompacted history to be worth it). Summarizes
-  everything except the last `COMPACT_KEEP_RECENT` messages (default 6) into
-  one running note, using the **conversation's own model** — no separate
-  "summarizer model," no extra cold-load unless that model isn't already
-  loaded.
-- This is a **real inference**, not a free bookkeeping op like search: it
-  goes through the same FIFO queue, respects the same session/weekly limits,
-  and is billed exactly like a normal reply (`conversation_id=None` on the
-  job, though — the summary isn't a chat turn, so it isn't persisted as a
-  `messages` row and doesn't show up as one).
-- Storage: `conversations.compact_boundary_id` + `context_summary` (two new
-  columns, additive migration). Messages with `id <= boundary` are **never
-  deleted** — full history stays visible and scrollable in the UI forever —
-  they're just excluded from what `_load_history` actually sends to the model
-  from that point on, with the summary spliced in as a leading system
-  message instead. Re-compacting later folds the *old* summary plus the
-  newly-accumulated messages into one updated summary (cumulative, not
-  one-shot).
-- UI transparency: a divider drops into the thread exactly where the cut
-  happened ("🗜 earlier conversation compacted into a summary"), collapsible,
-  showing the actual summary text the model now relies on instead of the
-  original messages — so it's never a black box.
-- The context wheel had to learn about the boundary too: usage recorded
-  *before* a compaction is stale (that prompt no longer reflects reality), so
-  it stops counting as the "exact" baseline once a boundary exists; the tail
-  estimate skips folded-away messages and counts the summary once instead.
-  This matters for the ring reading correctly immediately after compacting,
-  before the next real reply re-establishes a fresh exact baseline.
-- Verified live: built a real 4-exchange conversation, compacted the first
-  exchange, then asked the model to recall all four facts in one reply — it
-  correctly recalled the compacted-away fact (from the summary alone) *and*
-  the three still-verbatim facts, confirming the substitution actually works
-  end-to-end, not just the DB bookkeeping. Also verified the "not enough
-  history yet" rejection path. Test conversations cleaned up after.
-
-## Ops: one `llamacracy` command for the whole stack (2026-09-13)
-
-- `deploy/llamacracy-cli.sh`, symlinked onto `PATH` as `llamacracy` by
-  `install.sh` — `up` / `down` / `restart` / `status` / `logs` across all four
-  units (`llama-swap`, `llamacracy`, `llamacracy-dex`, `llamacracy-auth`). A
-  thin wrapper, not a new supervisor: it just hands all four unit names to one
-  `systemctl --user {start,stop,restart}` call and lets systemd's own
-  `After=`/`Wants=` resolve the real order, whatever order they're listed in.
-- Testing "down" for real (not just individual `restart`s, which is all
-  anyone had done before) surfaced a genuine bug: `llamacracy.service` hung on
-  SIGTERM waiting for a long-lived connection (the queue SSE stream, or an
-  in-flight chat) to drain, then got SIGKILLed by systemd's stop timeout and
-  reported `failed` instead of a clean stop. Fixed with uvicorn's own
-  `--timeout-graceful-shutdown 5`, so it self-bounds the drain wait and always
-  exits cleanly. oauth2-proxy has no equivalent flag and can still show the
-  same `failed (timeout)` on `down` if a browser has the live queue view open
-  — harmless (stateless, no data at risk), documented in OPERATIONS.md rather
-  than worked around.
-
-## Phase 8 — more useful features (2026-09-10, in progress)
-
-Post-launch additions the owner wants, tackled one at a time. Agreed order:
-**(5) max context ✓ → (3) context wheel ✓ → (1) SearXNG ✓ → (4) multimodal ✓ →
-(2) Continue.dev ✓** — all five done. "Compact context" is next, whenever.
-
-### 1 · SearXNG search (done 2026-09-10)
-
-- Composer **toggle**, not model-driven tool calling (per the earlier
-  decision): on, the app runs one SearXNG query and prepends the top
-  `SEARCH_MAX_RESULTS` (4) snippets to *that turn's* prompt before a single
-  normal inference. The model never decides to search, never loops.
-- Runs in the `/api/chat` route itself, **before** the job is even built —
-  it's a fast local HTTP call (`llamacracy/search.py`, `SearxngClient`), not
-  GPU time, so it doesn't touch the FIFO queue and isn't separately metered.
-  A bigger prompt just takes a little longer, already priced by the second.
-- The user's **persisted** message stays exactly what they typed — the search
-  block is only spliced into the payload sent to the model. Citations are
-  kept separately as `messages.search_json` (new column, additive migration)
-  and rendered as a collapsible "🔍 N sources" chip under the user's bubble
-  (live via a new `search` SSE event, and on reload via
-  `/api/conversations/{id}`).
-- Failure modes degrade to "answered without it": SearXNG down/timeout ->
-  `ok:false`, empty results -> proceed on the plain message. Never blocks the
-  chat.
-- Verified live end-to-end against the real SearXNG instance (127.0.0.1:8085):
-  correct citations, injected prompt lifted `prompt_tokens` as expected (440
-  vs. a normal ~20-40), model answered from the results.
-
-### 3 · Context wheel + breakdown (done 2026-09-10)
-
-- Pure frontend — the data was already there: `/api/models` returns `ctx` and
-  `max_tokens_default`, and each persisted message carries exact
-  `prompt_tokens`/`completion_tokens` from job usage.
-- `contextInfo()` in `app.js`: walk messages back to the last one with real
-  usage → that's the exact cost of the whole history-so-far; anything after it
-  (a dangling user turn, a model that skipped usage) plus the composer draft is
-  estimated at ~3.6 chars/token. `projected` = what the next send's prompt will
-  be; `over` = prompt won't fit; `tight` = fits but the reply may truncate.
-- A conic-gradient donut (no SVG — `h()` can't namespace) above the composer:
-  blue conversation / amber draft / dim reply-reservation / empty free, centre
-  shows %, turns amber then red. Click → a breakdown panel with the numbers.
-- Updates on every render (turn, model switch, conv open) and debounced on
-  composer input. Matters now that models span 8K–128K.
-
-### 2 · Continue.dev / OpenAI-compatible API (done 2026-09-13)
-
-- `/v1/models` + `/v1/chat/completions` (chat + `/v1/models` only — no
-  `/v1/completions`, so no editor-autocomplete integration; that's a fast-lane
-  problem for another day, not this queue).
-- Auth is a per-user **bearer API key**, not oauth2-proxy: an IDE isn't a
-  browser session, so it can't do the OIDC cookie dance. Keys are
-  self-service from the usage page (`POST /api/keys`), shown once, stored as
-  a sha256 hash only (`llamacracy/apikeys.py`) — same model as a GitHub PAT.
-  `llamacracy/identity.py`'s `get_principal_api_key` is the only gate on
-  those two paths; everywhere else still requires a real login.
-- Those two paths are also carved out of oauth2-proxy's own auth
-  (`skip_auth_routes` in `deploy/oauth2-proxy.cfg`) — otherwise an
-  unauthenticated IDE request would just get redirected to the Dex login page
-  instead of a clean 401. Verified live through the real public edge
-  (`myhost.netbird.selfhosted:4180`, not just localhost): no key → 401,
-  bogus key → 401, valid key → 200, no login-redirect loop.
-- Still the **same FIFO queue and metering** as the web UI — a job is a job
-  regardless of which door it came through, one shared session/weekly cap.
-  The difference is **no conversation is persisted**: the client sends its
-  full message list every call (real OpenAI semantics), so there's nothing
-  to store server-side except the `jobs` row for billing — IDE chatter
-  doesn't clutter the web UI's chat history.
-- Streaming translates the queue's internal chunk events to the real OpenAI
-  SSE wire format (`chat.completion.chunk` / `[DONE]`), including sending the
-  initial `{"role":"assistant"}` chunk immediately on submit — before the job
-  even leaves the queue — so a slow cold-load or a queue wait doesn't read as
-  silence to the client and risk a timeout. Non-streaming drains the same
-  event stream fully and returns one `chat.completion` object with real
-  `usage` token counts.
-- Verified live end-to-end through the real edge: `/v1/models` lists the
-  picker models; a non-streaming and a streaming chat call both ran a real
-  inference and returned correctly-shaped OpenAI responses; a revoked key
-  stopped authenticating immediately; confirmed no `conversations`/`messages`
-  rows were created by API traffic, only `jobs` rows (for billing).
-- Mid-verification, an old test artifact from an earlier feature's testing
-  surfaced (a stray user row created by a header-spoofing mistake in a
-  previous session, not the owner) — cleaned it up along with its test jobs;
-  no real user data was touched.
-
-### 4 · On-demand multimodal / vision (done 2026-09-13)
-
-- Two extra llama-swap entries per vision-capable model — same weights, plus
-  `--mmproj` — generated by `gen_llamaswap_config.py` from a small
-  `VISION_VARIANTS` map. Not separately benchmarked: reuses the paired text
-  model's already-tuned `(ctx, kv_type, n_cpu_moe)` from the ctx-sweep (#5).
-  Only moe-35b and moe-26b have an mmproj file today.
-- `unlisted: true` in llama-swap (same trick already used for the FIM model):
-  never in `/v1/models`, never picker-selectable (`in_picker: false` in the
-  registry) — only ever dispatched to internally.
-- Routing is a single substitution: an attached image swaps `job.model_id`
-  from the picked text model to its paired `…-vision` key for that one job.
-  Because `model_id` already flows generically through billing, the
-  swap-group cold-load logic, and the display name, that one substitution
-  gets correct VRAM swap-in/out, correct credit accounting, and an honest
-  "…-vision" model name on the reply, all for free — no new code paths.
-- **No synthetic "vision costs more" multiplier.** Credits are measured
-  wall-clock seconds (the metering module's own rule: "always measured, never
-  estimated"), and a vision turn is already genuinely slower — extra
-  prompt-eval for the image, usually a cold model swap — so the honest extra
-  cost falls out on its own.
-- Images: `POST /api/uploads` (multipart) stores the file on disk under
-  `UPLOAD_DIR` (default `data/uploads/`) — never base64 in the database. A new
-  `uploads` table scopes each file to its uploader; `GET /api/uploads/{id}`
-  checks ownership before serving it back. PNG/JPEG/WEBP only, 8 MB cap (both
-  configurable).
-- Only the **current** turn's image is sent to the model — prior turns'
-  images aren't resent on every follow-up (that would re-pay their full
-  prompt-eval cost every message). The model keeps what it said about an old
-  image, it just can't re-look at it. Deliberate v1 tradeoff.
-- Deleting a conversation cascades to any attached uploads (DB row + on-disk
-  file) so deleted chats don't leave orphans. Known gap: an upload made but
-  never actually sent in a successful turn (wrong model picked, request
-  rejected) isn't swept yet — not worth a GC job for a handful of stray files.
-- Verified live: generated a real test image (yellow circle + "LLAMACRACY"
-  text on blue), sent it to both vision variants — each correctly described
-  shape/color/text back. ~152 and ~84 prompt tokens, cold loads of ~19s/~16s,
-  settling at 8.7-8.9 GB VRAM (of 11.25 GB — comfortable headroom).
-  Confirmed a same-conversation follow-up with no image swaps back to the
-  plain text model automatically (fresh cold load, no image tax). Confirmed
-  cross-user upload access is rejected (404, not another user's file). Test
-  conversations + uploads cleaned up afterward.
-
-### 5 · Max out context per model (done 2026-09-10)
-
-- `bench/phase0_bench.py --ctx-sweep`: per model, walk a `(ctx, kv_type,
-  n_cpu_moe)` ladder low→high, stop at the first miss, keep the largest fit.
-  `--headroom-mib 700`.
-- **Every rung fit on VRAM — the ceiling was system RAM**, not VRAM. The
-  `--no-mmap` heavies load 14–22 GB of weights into 32 GB; raising `n_cpu_moe`
-  to free VRAM for KV pushes *more* into RAM → swap.
-- Bonus finding: `q8_0` KV (vs `f16`) made the heavies **faster** at equal or
-  larger context — less VRAM bandwidth pressure. Also: FamilyB takes `q8_0` KV
-  fine with `-fa on` (the original bench just never tried it).
-- Picks (owner chose the last two):
-
-  | model | was | now | KV | tok/s | swap Δ |
-  |---|---|---|---|---|---|
-  | fast-4b | 32K | **128K** | q8_0 | 50 (=) | — |
-  | daily-9b | 32K | **96K** | q8_0 | 33 (=) | — |
-  | alt-4b | 32K | **64K** | f16→q8_0 | 44 (=) | — |
-  | moe-26b | 16K | **24K** (nc18→20) | f16→q8_0 | 33→35 | 0 |
-  | moe-30b | 16K | **24K** (nc28→32) | f16→q8_0 | 29→29 | 0 |
-  | moe-35b | 16K | **48K** (nc28→32) | f16→q8_0 | 35→32 | +1 GB |
-
-- The 35B at 48K sits at ~6.1 GB swap (of 16 GB) with the model resident —
-  owner's deliberate call for long documents. If it thrashes under
-  concurrent use, drop it to the 32K rung (`serve_ctx` in `inventory()`,
-  re-run `gen_llamaswap_config.py`). Fallback documented; 32K was faster and
-  swap-neutral.
-- `gen_llamaswap_config.py` `OVERRIDES` emptied — the sweep bakes tuned
-  `(ctx, kv_type, n_cpu_moe)` into `recommended`. `inventory()` defaults
-  updated to match so a plain re-bench is consistent.
-- **Future experiment**: drop `--no-mmap` on the heavies so the OS pages
-  weights instead of swapping — might unlock 64K+ on the 35B at the cost of a
-  slower first token. Not tried yet.
-
-## Queue + metering tweaks (2026-09-10)
-
-- **`IDLE_TTL_SECONDS`** — the spec's idle unload is minutes-only (default 15).
-  Owner wanted the model out of VRAM/RAM within ~a minute of going quiet, so
-  added a seconds-granularity override; when set it wins over
-  `IDLE_TTL_MINUTES`. `.env` ships `IDLE_TTL_SECONDS=60`. Idle-monitor poll
-  dropped 30s → 10s so a short TTL is actually responsive. Trade-off (noted in
-  `.env.example`): a follow-up prompt after the TTL re-pays the cold load
-  (~12-25s heavyweight, half-billed to whoever triggers it).
-- **`users.uncapped`** flag — `check_limits` returns "allowed" unconditionally
-  for these users (session still opens; nothing gates). Their session/weekly
-  **percentages are still computed and shown** and can exceed 100% — the gauge
-  goes accent-coloured with an `∞`, and the 75%/90% warnings are suppressed.
-  Admin-only toggle (Users tab → "Uncapped"); not self-restricted, since the
-  intended use is the admin exempting themselves while still watching the
-  number climb. Additive migration in `db.py` (`_MIGRATIONS`) for the existing
-  DB; column also in `schema.sql` for fresh ones.
-- Per-user cap overrides (`session_credit_limit_override` /
-  `weekly_credit_limit_override`) already existed — Users tab → Overrides. Used
-  for e.g. a boosted allowance without touching the global default.
-
-## Frontend — full markdown rendering (2026-09-10)
-
-- The chat renderer was a ~5-line regex (`mdLite`: fenced + inline code only).
-  Models lean on markdown hard (headings, lists, tables, bold), so replaced it
-  with **marked** (parser) + **DOMPurify** (sanitiser) + **highlight.js** (code),
-  all from cdnjs — same "script tag, no build step" pattern as the Tailwind CDN
-  the SPA already uses.
-- **DOMPurify is not optional**: `marked` passes raw HTML through, so a model
-  emitting `<img onerror=…>` would otherwise run. Everything rendered goes
-  `marked.parse` → `DOMPurify.sanitize` → DOM. Links are then forced to
-  `target=_blank rel=noopener`.
-- `marked` config: `gfm: true`, `breaks: true` (a single newline → `<br>`, which
-  is what you want in chat).
-- Streaming: re-parse the whole partial message per token (cheap at these
-  sizes); syntax-highlight only on the *final* render, not mid-stream. Partial/
-  unclosed markdown (a `` ``` `` with no close yet) renders as its block —
-  same as the big hosted UIs.
-- Kept a regex fallback (`renderMD` when `window.marked` is missing) so a
-  blocked CDN degrades to readable text instead of nothing. If the CDN
-  dependency ever bites (full-tunnel NetBird, offline), vendor the files into
-  `static/assets/vendor/`.
-- Server unchanged — static files, so a browser refresh picks it up.
-
-### LaTeX / math (2026-09-10, follow-up)
-
-- Added **KaTeX** (cdnjs) for `$$…$$`, `\[…\]`, `\(…\)`, and a guarded `$…$`
-  (skips currency-looking text like "$5 for lunch").
-- Rendered **before** `marked`, not after: markdown treats `\(` `\[` as
-  escaped punctuation and strips the backslash, which kills the exact
-  delimiters the models emit most. `extractMath()` shields fenced/inline code,
-  pulls each math span out to a private-use-area placeholder, `katex`-renders
-  it, and swaps the HTML back in after `marked.parse` — then the whole thing
-  goes through DOMPurify (verified it keeps every KaTeX `class`/`style`).
-  `marked-katex-extension` was the obvious pick but it's `$`-only (no `\(`),
-  and not on cdnjs.
-- `output: 'html'` (no MathML) and `throwOnError: false`. Math + highlighting
-  both run only on the settled message, not per streamed token.
-
-### Branding (2026-09-10)
-
-- "Your Honor the Llama" — barrister-wigged llama. Assets in
-  `static/assets/`: `llamacracy-logo.svg` (full figure: wig, robe, gavel, navy
-  badge — used on the empty-chat state), `llamacracy-favicon.svg` (head
-  close-up, bolder lines — the tab icon, since the full figure is mud at
-  16px), plus `favicon-32.png` and `apple-touch-icon.png` (180²) fallbacks for
-  Safari / iOS home screen. SVGs carry C2PA "AI-generated" metadata; left in.
-
-## Phase 6 — deployment (2026-09-09)
-
-- Three **systemd user units** (`deploy/systemd/`): `llama-swap` (`127.0.0.1:8091`,
-  `-watch-config`), `llamacracy` (`127.0.0.1:8000`, `.venv/bin/uvicorn`),
-  `llamacracy-auth` (oauth2-proxy). `install.sh` enables linger so they run
-  without a login session.
-- **oauth2-proxy** is the only public-facing process. `ExecStartPre` reads the
-  `wt0` address at start and writes `OAUTH2_PROXY_HTTP_ADDRESS` +
-  `OAUTH2_PROXY_REDIRECT_URL` to `%t/llamacracy-auth.env` — so a NetBird
-  reconnect just needs `systemctl --user restart llamacracy-auth`, no config
-  edit. `ConditionPathExists=/sys/class/net/wt0` keeps it from flapping when
-  NetBird is down.
-- oauth2-proxy config split: non-secret `deploy/oauth2-proxy.cfg` (in git) +
-  `deploy/oauth2-proxy.env` (gitignored: client id/secret, cookie secret which
-  `install.sh` generates). `cookie_secure = false` — plain HTTP is fine inside
-  the WireGuard tunnel.
-- oauth2-proxy binary comes from the GitHub release (`v7.6.0`), not pacman
-  (not currently in the Arch repos).
-- **Verified** the production identity path (no `DEV_MODE`): missing headers →
-  503 + loud log; `X-Forwarded-User/Email` → user upserted on `sub`; admin
-  gate honours `ADMIN_EMAILS` (non-admin → 403, admin → 200).
-- `jobs.picked_at` added in Phase 5 for the queue-impact metric.
-
-### Auth: our own Dex, not NetBird's (2026-09-09, revised)
-
-- The spec assumed a reusable OIDC IdP behind the NetBird dashboard. Reality:
-  this NetBird install is the **combined `netbird-server`** image, whose
-  embedded Dex (`/oauth2` issuer) only registers the dashboard + CLI clients
-  and exposes **no config hook for a third client**
+- **oauth2-proxy in front, the app writes no auth code.** It trusts the
+  forwarded headers because it only ever listens on 127.0.0.1 with
+  oauth2-proxy in front, and refuses to serve at all if the headers are
+  missing and `DEV_MODE` is unset.
+- **Users are keyed on the OIDC `sub`, never the email.** Emails can change;
+  `sub` cannot. Admin status comes from `ADMIN_EMAILS` in config, checked
+  against the identity on every request, not from a database flag.
+- **Our own Dex, not NetBird's.** NetBird's combined server embeds a Dex but
+  exposes no way to register a third OAuth client
   ([netbirdio/netbird#5335](https://github.com/netbirdio/netbird/issues/5335)).
-  So Llamacracy can't ride NetBird's IdP.
-- Decision: run **our own Dex** (`deploy/dex/`, Docker, `ghcr.io/dexidp/dex`)
-  on myhost, published on `wt0` only. Issuer
-  `http://myhost.netbird.selfhosted:5556`. Users are a `staticPasswords`
-  list in `deploy/dex/config.yaml` (gitignored) — email + bcrypt, ~5 people,
-  no external dependency. Whole chain (browser → Dex → oauth2-proxy → app)
-  stays inside WireGuard; nothing added to the public internet.
-- Issuer + `redirect_url` pinned to the NetBird **FQDN**, which is stable
-  across reconnects; only the Dex container's port binding is IP-literal and
-  `install.sh` rewrites it each run. **Users must hit the FQDN**, not the raw
-  `100.x` — a bare-IP visit gets a cookie-host mismatch and loops.
-- `scope` gains `offline_access` so oauth2-proxy gets a refresh token for its
-  1 h `cookie_refresh`.
-- Rejected: Pocket-ID on the public Traefik (nice UI, but a public login page +
-  a DNS record, and passkeys need HTTPS); GitHub as the provider (least infra,
-  but an external auth dependency and everyone needs a GitHub account).
+  A separate Dex in Docker, published on the NetBird interface only, keeps
+  the whole chain inside the tunnel and adds nothing to the public internet.
+  Rejected: a public IdP with passkeys (needs HTTPS and a public login
+  page), GitHub as the provider (external dependency, everyone needs an
+  account).
+- Issuer and redirect URL are pinned to the peer's NetBird **FQDN**, which is
+  stable across reconnects; only the bind address is discovered at each
+  start. Users must use the FQDN: a bare-IP visit gets a cookie-host mismatch
+  and loops.
+- **Plain HTTP is deliberate.** WireGuard is the encryption layer. This also
+  means `navigator.clipboard` and service workers are unavailable (both need
+  a secure context), which shaped two front-end choices below.
+- **API keys** for IDE tools are per-user bearer tokens, shown once, stored
+  as a sha256 hash only, like a GitHub PAT. Those two `/v1` paths are carved
+  out of oauth2-proxy so an IDE gets a clean 401 instead of a login redirect.
+  Admins can revoke any single key without disabling the account.
 
-- **Owner still needs to:** `cp deploy/dex/config.yaml.example config.yaml`,
-  set the client `secret:` + a `staticPasswords` hash per user
-  (`deploy/dex/gen-hash.sh`), `docker compose up -d`, then `./deploy/install.sh`.
-  Fill the rate values in `.env`.
+## Inference layer
 
----
+- `-np 1` everywhere: llama-server defaults to 4 parallel slots and splits
+  the KV cache across them. Under strict FIFO one slot means KV = 1 × ctx.
+- **Reasoning off by default** (a "token / energy saver" choice).
+  `--reasoning-budget 0` does not stop models that emit `<think>` by default;
+  `chat_template_kwargs: {enable_thinking: false}` injected per request via
+  llama-swap's `filters.setParams` does. That is what `nothink: true` in the
+  inventory turns on.
+- Flash attention is on for every model: quantised (`q8_0`) KV requires it in
+  llama.cpp, and it was faster for prompt processing on everything measured.
+  No toggle is exposed.
+- **A FIM (code infill) model must never be chattable.** Two independent
+  guards: `unlisted` in llama-swap and `kind: fim` / `in_picker: false` in
+  the registry.
+- **Vision on demand.** A model with a `vision` block gets a second,
+  unlisted llama-swap entry (same weights + `--mmproj`). A turn with an image
+  swaps the job's model id to that variant; because the model id already
+  flows through billing, swap groups and display names, that one
+  substitution gets everything else right for free. Only the current turn's
+  image is sent; earlier images are not resent on every follow-up.
+- **Context per model is maxed out** by a benchmark sweep that walks a
+  ladder of (ctx, KV type, expert offload) and keeps the largest that fits.
+  On a small-VRAM card the ceiling is usually system RAM, not VRAM, and
+  `q8_0` KV was faster than `f16` at equal or larger context.
 
-## Phase 3 — metering (2026-09-09)
+## Front-end
 
-- **`credits = occupancy_seconds - load_seconds * (1 - LOAD_TIME_MULTIPLIER)`**
-  — full exclusive box-time held, with the cold-start portion discounted to
-  half rate. Always from our own wall-clock timers, never token-derived.
-  `state in (error, limit_exceeded)` → 0. Cancelled → the seconds actually
-  consumed. Fast lane → 0 (not implemented; everything is `exclusive`).
-- **`cost_usd = credits * watts * rate * MARKUP`** (spec's formula), watts =
-  measured mean GPU draw (nvidia-smi sampler in the queue worker) +
-  `NON_GPU_LOAD_WATTS`; falls back to the bench's per-model GPU mean, then
-  180 W, if nvidia-smi is unavailable. `rate` from the TOU table by the local
-  hour the job ran. `rate_used` + `cost_usd` frozen on the row at finalisation
-  — historical cost is never recomputed.
-- **Sessions** open on the user's first request (enqueue), fixed 5 h, never
-  extended by activity; the next request after expiry opens a fresh one.
-- **Limits checked at enqueue**, reject only if *already* at/over a cap
-  (overshoot allowed; bounded by `MAX_TOKENS_PER_REQUEST`). 429 carries
-  `{limit, used, cap, reset_at}`. Weekly `reset_at` = the Nth-oldest in-window
-  job's `finished_at + 7d` (the moment the rolling sum drops back under cap).
-  Per-user overrides on both caps.
-- **`/api/usage`** returns session/weekly used+cap+pct+reset, 30-day daily
-  series, per-model breakdown, and `estimated_fraction` (share of credits on
-  rows where the token count was estimated — should stay near 0).
-- **28 tests** (`tests/test_metering.py` + `test_queue.py`): credit formula
-  incl. load-clamp and lane, cost + TOU-by-hour, session window boundaries
-  and no-extension, expired→fresh, admit-under-cap / deny-at-cap, overshoot
-  recorded not truncated, rolling-weekly window edge (7d ± 60s), weekly
-  reset timestamp, per-user overrides, 75% warn flag.
+- **Markdown via marked + DOMPurify + highlight.js; DOMPurify is not
+  optional.** marked passes raw HTML through, so a model emitting
+  `<img onerror=…>` would otherwise run. Links are forced to
+  `target=_blank rel=noopener`.
+- **Math is extracted before markdown**, rendered with KaTeX, and swapped
+  back in through private-use-codepoint placeholders, so markdown never eats
+  the backslashes in `\(...\)`. Heavy passes (highlighting, math) run once
+  on the settled message, not per streamed token.
+- **Copy copies the raw source**, not the rendered HTML, and falls back to
+  `execCommand('copy')` because the async Clipboard API needs a secure
+  context.
+- **The context ring** projects the next send against the model's window:
+  exact token usage from the last reply plus an estimate for anything after
+  it and the draft. Compaction makes earlier usage stale, so the ring stops
+  treating it as exact once a boundary exists.
+- **Compact history is on demand only**, never automatic: no surprise
+  credit spend, no surprise memory loss. Nothing is deleted; folded messages
+  stay visible with a divider showing the summary the model now sees.
+- **Search is a toggle, never model-driven.** Small local models are
+  unreliable at deciding when to call a tool, tool loops thrash the context
+  and hold the queue, and billing across N inferences gets murky. One query,
+  top snippets prepended to that turn only, one normal inference. Not metered.
+- **Installable PWA without a service worker.** Registering one needs HTTPS
+  or literally `localhost`; iOS "Add to Home Screen" predates that
+  requirement and works fine over plain HTTP, and there is no meaningful
+  offline mode for live inference anyway.
+- The composer auto-focus only fires on devices with a fine pointer, so a
+  phone never gets its keyboard summoned by a re-render.
 
----
+## Operations
 
-## Phase 2 — backend (2026-09-09)
-
-- `llamacracy/` package on FastAPI + a single SQLite connection (WAL, one
-  asyncio lock — writes are tiny and the queue is serial anyway).
-- **queue.py**: one `_worker` task drains a `list[Job]`; `_run` streams from
-  llama-swap, detects cold start via `/running`, measures load vs generation
-  (load = wall-to-first-token minus llama.cpp's `prompt_ms`), samples GPU
-  watts during generation, emits SSE token/reasoning/done events, and on
-  cancel `break`s the stream (the httpx context manager closes the upstream
-  connection — verified the box doesn't wedge).
-- Identity: trusts `X-Forwarded-*`, keys on `sub`, 503 + loud log if headers
-  absent and `DEV_MODE` unset.
-- Timestamps are epoch REAL throughout, so the rolling-weekly query is a plain
-  indexed `SUM ... WHERE finished_at >= ?`.
-
----
-
-## Phase 1 — inference layer (2026-09-09)
-
-- **llama-swap v255** installed at `~/.local/bin/llama-swap`. Chosen over
-  `llama-server` router mode: `groups` for co-residency control, explicit
-  `/running` + unload endpoints the queue needs, and `filters.setParams` for
-  clean server-side request shaping.
-- **`bench/gen_llamaswap_config.py`** generates both `config/llama-swap.yaml`
-  (llama-swap schema only) and `config/models.json` (the app's registry: tier,
-  blurb, sampling defaults, and the measured load/throughput/VRAM seeds).
-  Re-run whenever `bench-results.json` changes.
-- **llama-swap fork/execs directly** — no shell, no `~` expansion. The
-  generator writes absolute paths (`/home/you/.local/bin/llama-server`).
-- **Reasoning off**: `--reasoning-budget 0` does NOT stop FamilyA (or
-  moe-26b QAT, or FamilyC) emitting a full `<think>` block — verified 102
-  completion tokens for a one-word answer. The fix is
-  `chat_template_kwargs: {enable_thinking: false}`, injected per-request via
-  llama-swap `filters.setParams`. Verified per model (102 → 4 tokens).
-  FamilyB **4B does not think**; FamilyB **26B QAT does**.
-- **FamilyC** runs at `--n-cpu-moe 30` (bench's 28 left only ~0.8 GB VRAM free).
-- **FIM model** is `unlisted` in llama-swap (absent from `/v1/models`) and
-  `kind=fim` / `in_picker=false` in the registry — two independent guards
-  against it being chatted with.
-- **Verified end-to-end through llama-swap** (load → stream → unload → swap):
-  all 7 models. Streaming with `stream_options:{include_usage:true}` returns a
-  final `usage` + `timings` chunk — the metering hook. Heavyweight RAM under
-  load: moe-26b swap→5.5 GB, FamilyC→5.2 GB, FamilyA-35B→5.0 GB with
-  ~11 GB still available. All usable with the desktop running.
-- **App-side unload TTL** (`IDLE_TTL_MINUTES`, default 15) is authoritative;
-  llama-swap `ttl: 1200` is only a backstop.
-
-### IdP identified
-
-OIDC discovery: **`https://netbird.21stgalleryportal.uk/oauth2/.well-known/openid-configuration`**
-
-```
-issuer:                        https://netbird.21stgalleryportal.uk/oauth2
-authorization_endpoint:        .../oauth2/auth
-token_endpoint:                .../oauth2/token
-device_authorization_endpoint: .../oauth2/device/code
-jwks_uri:                      .../oauth2/keys
-userinfo_endpoint:             .../oauth2/userinfo
-scopes:      openid email profile groups offline_access
-PKCE:        S256
-claims:      sub, email, email_verified, preferred_username, name, locale
-```
-
-Looks like **Pocket ID** (or possibly Dex) behind the NetBird dashboard —
-vendor doesn't matter, it's standard OIDC. Auth-code + PKCE, `sub` claim
-present (billing keys on `sub`). **Owner action for Phase 6:** create a new
-OIDC client for Llamacracy in that IdP's admin UI, redirect URI
-`https://<app-host>/oauth2/callback`, and drop client id/secret into `.env`.
-
----
-
-## Phase 0 — owner answers + follow-up recon (2026-09-09)
-
-- **Users:** owner + 3–4 friends (4–5 total). Small, casual. Owner still uses
-  the box himself sometimes.
-- **Session limit:** **SESSION_CREDIT_LIMIT = 3600** (60 min of continuous 35B
-  generation) — owner picked the tighter option so a heavy friend frees the box
-  sooner. **WEEKLY_CREDIT_LIMIT = 12000** (≈3.3× session; a casual user won't
-  reach it).
-- **Billing rate:** **standard** the utility the TOU plan + the CCA rates (any household discount is not passed through). Summer marginal: On-Peak ~$0.665,
-  Off-Peak ~$0.456, Super-Off-Peak ~$0.374 per kWh.
-- **Reasoning:** owner chose the "token / energy saver" default → **reasoning
-  disabled by default on every model** (`--reasoning-budget 0` for FamilyA /
-  FamilyA; equivalent for FamilyC where supported). Keeps per-answer cost
-  predictable.
-- **NetBird:** box is joined. `wt0` = **100.x.y.z/16**. Management
-  `https://netbird.21stgalleryportal.uk:443/`, NetBird 0.78.1, FQDN
-  `myhost.netbird.selfhosted`. oauth2-proxy will bind `100.x.y.z`.
-- **IdP:** NetBird 0.78 self-hosted *requires* an OIDC IdP, so one exists
-  behind that dashboard — but it is not at the dashboard root and not on an
-  `auth.` / `id.` / `zitadel.` subdomain. Identity blocked until the owner
-  pastes the client's IdP config (`sudo cat /var/lib/netbird/default.json`,
-  filtered). Llamacracy will register its own client in that same IdP.
-- **Wattage:** no wall meter, and this box exposes **no whole-system power
-  sensor** — `intel-rapl` energy counters are empty, `k10temp` is temperature
-  only, `amd_energy` not loaded. `nvidia-smi` GPU `power.draw` is the only real
-  number. **Refinement to the cost model:** record measured mean `gpu_watts`
-  per job and compute `system_watts = gpu_watts + NON_GPU_LOAD_WATTS`
-  (default 110 W: Ryzen 3600 + board + RAM + NVMe + fans + PSU loss under
-  load), instead of one flat `LOAD_WATTS`. MoE jobs (GPU ~140 W) then price
-  below dense jobs (GPU ~230 W), both from live data.
-
-### the utility rate (from the a recent statement)
-
-Rate **the TOU plan, climate zone**, household is on a discount program, generation
-via **the local generation provider** CCA ("the TOU plan, 2022 vintage"). *(Account
-holder PII is deliberately NOT stored in this repo — only the rate structure.)*
-
-TOU periods (from the statement):
-
-| Period | Weekday | Weekend / holiday |
-|---|---|---|
-| On-Peak | 16:00–21:00 | 16:00–21:00 |
-| Super Off-Peak | 00:00–06:00, 10:00–14:00 | 00:00–14:00 |
-| Off-Peak | all other hours | all other hours |
-
-Summer (Jun 1 – Oct 31) marginal $/kWh, built from delivery + CCA generation +
-PCIA 2022 + surcharges:
-
-| Period | standard | discounted (≈0.56×, empirical from the bill) |
-|---|---|---|
-| On-Peak | ~$0.665 | ~$0.37 |
-| Off-Peak | ~$0.456 | ~$0.25 |
-| Super Off-Peak | ~$0.374 | ~$0.21 |
-
-- the utility delivery is flat **$0.32948/kWh** (not TOU-differentiated on this rate);
-  all TOU variation is in the CCA generation ($0.30138 / $0.09194 / $0.01000
-  on/off/super summer). PCIA 2022 $0.03005/kWh flat.
-- Bill cross-check: $299.46 for 1,059 kWh (ex. one-time climate credit) =
-  **$0.283/kWh** all-in discounted blended.
-- **Decided:** bill at **standard** rates (above). The discounted column is kept
-  for reference only.
-- **Open:** winter (Nov 1 – May 31) generation rates not in this statement;
-  seed with summer (slightly conservative) and update from the next bill.
-
----
-
-## Phase 0 — benchmark results (2026-09-09)
-
-llama.cpp `2d8d612e4`, `GGML_CUDA_FORCE_MMQ=ON`. All runs `-np 1` (strict FIFO,
-one slot). VRAM baseline 1193 MiB (desktop). RAM ~24.4 GiB available with the
-owner's normal apps up. Full data: `bench/bench-results.json`.
-
-| Model | serve ctx | n_cpu_moe | KV | fa | cold load | prompt t/s | gen t/s | VRAM used | VRAM free | RAM + | GPU W (gen) |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| Coder 1.5B (FIM) | 8192 | – | f16 | on | 1.5 s | 3784 | **110** | 2.0 GB | 8.0 GB | 0.3 GB | 194 |
-| FamilyA 4B (reasoning off) | 32768 | – | q8_0 | on | 2.8 s | 1269 | **44** | 5.2 GB | 4.8 GB | 1.0 GB | 209 |
-| FamilyA 9B Q6_K | 32768 | – | q8_0 | on | 3.9 s | 705 | **30** | 7.1 GB | 2.8 GB | 1.0 GB | 262 |
-| FamilyB 4B (alt) | 32768 | – | f16 | on | 4.5 s | 1140 | **40** | 5.6 GB | 4.3 GB | 0.3 GB | 208 |
-| FamilyB 26B QAT (MoE) | 16384 | 18 | f16 | on | 12.2 s | 417 | **34** | 7.6 GB | 2.4 GB | 8.0 GB | 144 |
-| FamilyC Flash (MoE) | 16384 | 28 | f16 | on | 13.6 s | 288 | **29** | 9.1 GB | **0.8 GB** | 9.5 GB | 138 |
-| FamilyA 35B (MoE) | 16384 | 28 | f16 | on | 25.4 s | 300 | **32** | 8.5 GB | 1.5 GB | 12.4 GB | 139 |
-
-Findings vs the owner's estimates:
-
-- **Generation is much faster than the spec's "8–15 tok/s" guess** — all three
-  MoE heavyweights land at 29–34 tok/s (MoE = only 3–4 B active params at
-  Q4). moe-26b QAT (34) actually beats the dense FamilyA 9B (30).
-- **`-fa on` is mandatory, not optional, on this stack:** quantized (q8_0) KV
-  requires flash attention in llama.cpp (FamilyA 4B/9B fail to start with
-  `-fa off`), and for FamilyC `-fa off` doesn't fit in VRAM. `-fa on` is also
-  faster for prompt processing on every model tested. So we don't expose a
-  toggle; `-fa on` everywhere.
-- **FamilyC at n_cpu_moe=28 / ctx 16384 leaves only ~0.8 GB VRAM free** — too
-  little for compute-buffer growth. Phase 1 should run it at **n_cpu_moe=30**
-  (the owner's own "coding" variant) or ctx 12288 for headroom.
-- **FamilyA-35B works with the desktop running** (~32 tok/s) but pushed zram
-  swap from 1.5 GB to 3.6 GB during load. Fine solo; risky if other big apps
-  are open. `--no-mmap` + n_cpu_moe=28 puts ~12 GB in RAM, ~8.5 GB in VRAM.
-- Cold loads (model-file page cache evicted first): 1.5–4.5 s for the small
-  models, 12–25 s for the heavyweights. These seed the queue's load-time
-  estimates.
-- Serving contexts chosen: 32768 for the small models (room to spare),
-  **16384 for the MoE heavyweights** (the owner runs `-c 32768` but with
-  llama-server's default 4 slots that is ~8 k effective per request; at `-np 1`
-  we give a real 16 k and keep KV off the tight VRAM budget).
-
-### Proposed credit limits (owner to confirm)
-
-`1 credit = 1 second of exclusive box time.`
-
-**SESSION_CREDIT_LIMIT = 5400** (5-hour window)
-- Spec target: a heavy user on the 35B hits the cap in ~90 min of continuous
-  generation. FamilyA-35B measured at 31.8 tok/s → 90 min × 60 = **5400 s**.
-- = ~171,700 generated tokens ≈ 84 max-length (2048-tok) responses.
-- Model-load surcharge is rounding noise (10 cold 35B loads × 25.4 s × 0.5 =
-  127 credits).
-- A casual user on the 9B (30 tok/s) would need ~270 six-hundred-token replies
-  in one 5-hour window to reach it — it only ever bites a heavy 35B user.
-
-**WEEKLY_CREDIT_LIMIT = 12000** (rolling 7-day) — *needs headcount to finalise*
-- ≈ 2.2 × the session cap: a heavy user gets ~2 big sessions a week then waits
-  for the rolling window to clear.
-- = ~5.7 h of 35B generation, or ~100 max-length 35B answers, per week.
-- For a casual user that is 10+ evenings of chat — effectively unlimited.
-- Revisit once real usage data exists; it is a one-line config change.
-
-**Cost model** — *needs the real the utility rate*
-- Measured GPU-only draw (nvidia-smi): idle 20–62 W; MoE generation ~138–144 W
-  (GPU waits on CPU experts); dense generation 208–262 W.
-- Whole-system estimate (GPU + Ryzen 3600 + board/RAM/NVMe/fans): idle ~95 W,
-  generation ~230–350 W depending on model, load ~160 W.
-- Proposed defaults: `IDLE_WATTS=95`, `LOAD_WATTS=300` (blended generation).
-- `cost_usd = credits × (LOAD_WATTS/1000) × ELECTRICITY_RATE × MARKUP`
-- Worked example at a **placeholder** $0.45/kWh: a full 5400-credit session =
-  1.5 h × 0.30 kW × $0.45 = **$0.20**. The weekly cap ≈ **$0.45/week** for the
-  single heaviest user. the utility on-peak (~$0.80/kWh) roughly doubles that.
-- Even the heaviest friend costs well under $1/week in electricity; set
-  `MARKUP` to 2–3× if invoices should feel non-trivial.
-
----
-
-## Phase 0 — environment recon (2026-09-09)
-
-### Confirmed from the box
-
-- **`~/models` disk:** NVMe (Crucial T500 2 TB, PCIe 4.0), btrfs on `/home`,
-  mounted `noatime,compress=zstd:3,ssd,discard=async`, ~1.1 TB free. Cold loads
-  are fast; UI estimates and load-time billing assume NVMe.
-- **llama.cpp build:** was `~/llama.cpp` build 10724 (`2d8d612e4`, 2026-08-31)
-  with `GGML_CUDA=ON`, `CMAKE_CUDA_ARCHITECTURES=61`, but
-  `GGML_CUDA_FORCE_MMQ=OFF`. **Rebuilt** with `-DGGML_CUDA_FORCE_MMQ=ON`
-  (owner approved). CUDA 12.9 toolkit, driver 580, `nvcc` present. Clean build.
-- **Usable VRAM:** 11264 MiB total, but the Wayland desktop (Xorg + kwin) holds
-  ~1.17 GB, so llama-server sees ~9.8 GB free. Ryzen 3600 has no iGPU, so the
-  display can't move off the 1080 Ti short of running headless. All fit
-  calculations budget ~9.3–9.8 GB.
-- **New arch strings:** FamilyA = `familya`, FamilyA-35B = `moemodel`,
-  moe-30b = `deepseek2`, FamilyB = `familyb`. `familya` loads and runs on the
-  rebuilt binary (validated with FamilyA 4B). Others verified in the full sweep.
-- **`-np 1` matters:** llama-server defaults to 4 parallel slots and splits KV
-  across them. Under strict FIFO we run one slot, so both the benchmark and the
-  llama-swap config pass `-np 1` — KV cache = 1 × ctx.
-- **NetBird not joined:** `netbird status` = NeedsLogin, no `wt0` interface. The
-  IdP (Dex vs Zitadel) and the `wt0` address can't be discovered until the box
-  joins the owner's NetBird instance. Blocked pending owner input.
-- **Not installed yet:** `llama-swap`, `oauth2-proxy`. `llama-bench` /
-  `llama-cli` exist in the build dir (Phase 0 drives `llama-server` directly).
-- **Python:** system is 3.14.7 (no 3.11/3.12). Plan: `venv` + pinned deps,
-  watch for any C-extension without 3.14 wheels.
-- **systemd linger** is off — Phase 6 needs `loginctl enable-linger j4mes`.
-- **Docker** already runs a searxng stack. Our app stays Docker-free (spec
-  non-goal is about our app). `~/models/ds.json` is an unrelated MCP config —
-  ignored.
-
-### Inventory deltas vs SPEC
-
-| Model | Spec | Reality |
-|---|---|---|
-| FamilyA 9B | Q6_K ~7.5 GB | Q6_K (7.56 GB) present **plus** a redundant 18.4 GB F16 GGUF in the same dir. Owner is cleaning up `~/models` and will give the final layout before Phase 1. |
-| FamilyB 4B | "FamilyB 4B" | On disk it is `alt-4b` (8.13 GB), an alt finetune. **Decision:** expose it, labelled clearly in the picker as a finetune. Key: `alt-4b`. |
-| FamilyA 35B | "~20 GB" | 22.1 GB (`Q4_K_M`). |
-| moe-26b, FamilyC, FamilyA-35B | — | Ship `mmproj` vision projectors; FamilyA 4B/9B look like VL variants. **Decision:** serve all models text-only, ignore `mmproj` (matches the "no image input" non-goal). |
-| Heavyweights vs RAM | 32 GB | 31 GiB total, ~24 GiB available with the desktop up. FamilyC (18 GB) and FamilyA-35B (22 GB) as CPU-offload MoE are very tight. **Decision:** benchmark all three in Phase 0; drop or mark headless-only any that swap-thrash. Owner reviews the numbers. |
-
-### Still needed from the owner
-
-1. the utility rate: flat $/kWh, plus the TOU table + which schedule (the TOU plan /
-   other plans) if time-of-use costing is wanted.
-2. OIDC issuer URL, client ID, client secret (into gitignored `.env`).
-3. NetBird management/dashboard URL, and `netbird up` on the box, so the IdP
-   and `wt0` address can be read.
-4. Rough headcount of friends + expected usage, to size `WEEKLY_CREDIT_LIMIT`.
-5. Whether a wall wattage meter is available (else use spec defaults
-   ~100 W idle / ~350 W load).
+- Four systemd **user** units with linger enabled, so nothing needs a login
+  session. `install.sh` is idempotent and re-runnable after every pull.
+- The auth and Dex units discover the NetBird interface address on every
+  start, so a peer re-enrol needs a restart, not a config edit.
+- uvicorn runs with `--timeout-graceful-shutdown 5`: an open SSE connection
+  never closes on its own, and without the bound the unit would hang on
+  SIGTERM until systemd killed it.
+- The `llamacracy` CLI is a thin wrapper that hands all four unit names to
+  `systemctl` and lets systemd's own ordering resolve the rest.

@@ -1,4 +1,5 @@
-# ~/.config/systemd/user/llamacracy-dex.service
+# ~/.config/systemd/user/llamacracy-dex.service  (installed by deploy/install.sh,
+# which replaces @REPO@ with the absolute path of this checkout)
 # Dex (deploy/dex/): Llamacracy's own OIDC identity provider, run in Docker,
 # published on the NetBird interface (wt0, a 100.x address) only. Mirrors
 # llamacracy-auth.service's pattern -- discover wt0's current address on every
@@ -17,7 +18,7 @@ ConditionPathExists=/sys/class/net/wt0
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=%h/Documents/Coding/Llamacracy/deploy/dex
+WorkingDirectory=@REPO@/deploy/dex
 # discover the wt0 address and write it where `docker compose` will read it
 ExecStartPre=/bin/sh -c 'a=$(ip -4 -o addr show wt0 | awk "{print \\$4}" | cut -d/ -f1); \
   echo "DEX_BIND_ADDR=$a" > %t/llamacracy-dex.env'

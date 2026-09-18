@@ -21,9 +21,8 @@ class Settings(BaseSettings):
     )
 
     # --- identity / auth -----------------------------------------------------
-    oidc_issuer_url: str = ""
-    oidc_client_id: str = ""
-    oidc_client_secret: str = ""
+    # Auth itself lives in oauth2-proxy + Dex (deploy/); the app only trusts
+    # the forwarded headers. ADMIN_EMAILS is the one identity setting here.
     admin_emails: str = ""
     dev_mode: str = ""                       # "1"/"true" -> trust a fake identity
     dev_email: str = "dev@localhost"

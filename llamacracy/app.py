@@ -29,7 +29,7 @@ from .search import get_search
 from .uploads import UploadRejected
 from .uploads import save as save_upload
 from .uploads import validate as validate_upload
-from .upstream import Upstream, UpstreamError, get_upstream
+from .upstream import Upstream, get_upstream
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -211,13 +211,28 @@ async def list_models(principal: Principal = Depends(get_principal),
 
 
 # --------------------------------------------------------------------------- #
+# admission -- one gate for every door (web chat, compaction, /v1)
+# --------------------------------------------------------------------------- #
+async def _check_limits(job: Job, qm: QueueManager) -> None:
+    """Enqueue-time limit check. Rejecting after a queue wait is hostile, so
+    this runs before the job is submitted -- and before anything about the
+    request is persisted, so a rejected send leaves no orphan rows. Opens the
+    user's session if they have none. Overshoot is allowed: an admitted job
+    runs to completion even if it finishes over the cap."""
+    if qm.check_limits is None:
+        return
+    decision = await qm.check_limits(job.user_id, job.model_id)
+    job.session_id = decision.session_id
+    if not decision.allowed:
+        job.state = JobState.LIMIT_EXCEEDED
+        job.finished_at = now()
+        await qm._persist_job(job)
+        raise HTTPException(429, detail=decision.as_dict())
+
+
+# --------------------------------------------------------------------------- #
 # conversations
 # --------------------------------------------------------------------------- #
-class NewConversation(BaseModel):
-    model: str
-    title: str | None = None
-
-
 @app.get("/api/conversations")
 async def conversations(principal: Principal = Depends(get_principal),
                         db: Database = Depends(get_db)):
@@ -354,17 +369,8 @@ async def compact_conversation(conv_id: str,
         conversation_id=None,   # the summary lives on conversations.context_summary, not as a message
     )
 
-    # Same enqueue-time limit check as every other job -- compacting is real
-    # GPU time and gets billed like anything else.
-    if qm.check_limits is not None:
-        decision = await qm.check_limits(principal.user_id, conv["model_id"])
-        job.session_id = decision.session_id
-        if not decision.allowed:
-            job.state = JobState.LIMIT_EXCEEDED
-            job.finished_at = now()
-            await qm._persist_job(job)
-            raise HTTPException(429, detail=decision.as_dict())
-
+    # compacting is real GPU time and gets billed like anything else
+    await _check_limits(job, qm)
     await qm.submit(job)
     await job._done.wait()
     if job.state != JobState.DONE or not job.content.strip():
@@ -490,7 +496,6 @@ async def chat(req: ChatRequest,
             raise HTTPException(400, f"{model.display} doesn't support images yet")
         dispatch_model_id = vision.key
 
-    ts = now()
     conv_id = req.conversation_id
     if conv_id:
         owned = await db.fetch_one(
@@ -499,16 +504,9 @@ async def chat(req: ChatRequest,
         )
         if owned is None:
             raise HTTPException(404, "no such conversation")
+        history = await _load_history(db, conv_id)
     else:
-        conv_id = uuid.uuid4().hex
-        title = req.message.strip().replace("\n", " ")[:50]
-        await db.execute(
-            "INSERT INTO conversations (id, user_id, title, model_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (conv_id, principal.user_id, title, req.model, ts, ts),
-        )
-
-    history = await _load_history(db, conv_id)
+        history = []
 
     # Search runs here, outside the FIFO queue -- it's a local HTTP call, not
     # GPU time. One query, injected into this turn's prompt only; the user's
@@ -516,15 +514,6 @@ async def chat(req: ChatRequest,
     search_outcome = None
     if req.search:
         search_outcome = await get_search().search(req.message, settings.search_max_results)
-
-    await db.execute(
-        "INSERT INTO messages (conversation_id, role, content, search_json, "
-        "  image_upload_id, created_at) "
-        "VALUES (?, 'user', ?, ?, ?, ?)",
-        (conv_id, req.message,
-         json.dumps(search_outcome.as_dict()) if search_outcome else None,
-         req.image_id, ts),
-    )
 
     prompt_content = req.message
     if search_outcome and search_outcome.ok and search_outcome.results:
@@ -557,21 +546,30 @@ async def chat(req: ChatRequest,
         owner_email=principal.email,
         model_id=dispatch_model_id,
         payload=payload,
-        conversation_id=conv_id,
+        conversation_id=None,   # attached below, once the row is guaranteed to exist
     )
+    # Admission first: a 429 must not leave a half-written conversation or a
+    # user message that never got a reply.
+    await _check_limits(job, qm)
 
-    # Limits are checked at enqueue (rejecting after a queue wait is hostile).
-    # Opens the user's session if they have none. Overshoot is allowed: an
-    # admitted job runs to completion even if it finishes over the cap.
-    if qm.check_limits is not None:
-        decision = await qm.check_limits(principal.user_id, dispatch_model_id)
-        job.session_id = decision.session_id
-        if not decision.allowed:
-            job.state = JobState.LIMIT_EXCEEDED
-            job.finished_at = now()
-            await qm._persist_job(job)
-            raise HTTPException(429, detail=decision.as_dict())
-
+    ts = now()
+    if not conv_id:
+        conv_id = uuid.uuid4().hex
+        title = req.message.strip().replace("\n", " ")[:50]
+        await db.execute(
+            "INSERT INTO conversations (id, user_id, title, model_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (conv_id, principal.user_id, title, req.model, ts, ts),
+        )
+    await db.execute(
+        "INSERT INTO messages (conversation_id, role, content, search_json, "
+        "  image_upload_id, created_at) "
+        "VALUES (?, 'user', ?, ?, ?, ?)",
+        (conv_id, req.message,
+         json.dumps(search_outcome.as_dict()) if search_outcome else None,
+         req.image_id, ts),
+    )
+    job.conversation_id = conv_id
     await qm.submit(job)
 
     async def event_stream():
@@ -638,35 +636,6 @@ async def queue_events(request: Request,
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
-
-
-# --------------------------------------------------------------------------- #
-# FIM / infill -- separate, clearly-labelled. Never a chat model.
-# --------------------------------------------------------------------------- #
-class InfillRequest(BaseModel):
-    prefix: str
-    suffix: str = ""
-    n_predict: int = 64
-
-
-@app.post("/api/infill")
-async def infill(req: InfillRequest,
-                 principal: Principal = Depends(get_principal),
-                 reg: Registry = Depends(get_registry),
-                 up: Upstream = Depends(get_upstream)):
-    fim = reg.fim_model()
-    if fim is None:
-        raise HTTPException(503, "no FIM model configured")
-    try:
-        res = await up.infill({
-            "model": fim.key,
-            "input_prefix": req.prefix,
-            "input_suffix": req.suffix,
-            "n_predict": min(req.n_predict, 256),
-        })
-    except UpstreamError as e:
-        raise HTTPException(502, str(e))
-    return {"content": res.get("content", ""), "model": fim.display}
 
 
 # --------------------------------------------------------------------------- #
@@ -756,17 +725,9 @@ async def v1_chat_completions(req: V1ChatRequest,
         conversation_id=None,   # the client owns history; nothing to persist here
     )
 
-    # Same enqueue-time limit check as /api/chat -- one shared meter, one
-    # shared session/weekly cap regardless of which door a job came in through.
-    if qm.check_limits is not None:
-        decision = await qm.check_limits(principal.user_id, req.model)
-        job.session_id = decision.session_id
-        if not decision.allowed:
-            job.state = JobState.LIMIT_EXCEEDED
-            job.finished_at = now()
-            await qm._persist_job(job)
-            raise HTTPException(429, detail=decision.as_dict())
-
+    # one shared meter, one shared session/weekly cap regardless of which
+    # door a job came in through
+    await _check_limits(job, qm)
     await qm.submit(job)
     created = int(now())
 

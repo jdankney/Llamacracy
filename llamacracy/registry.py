@@ -54,9 +54,6 @@ class Registry:
     def chat_models(self) -> list[ModelInfo]:
         return [m for m in self._models.values() if m.kind == "chat" and m.in_picker]
 
-    def fim_model(self) -> ModelInfo | None:
-        return next((m for m in self._models.values() if m.kind == "fim"), None)
-
     def vision_variant(self, key: str) -> ModelInfo | None:
         """The unlisted -vision llama-swap entry paired with `key`, if any."""
         base = self._models.get(key)
@@ -68,6 +65,13 @@ class Registry:
 @lru_cache
 def get_registry() -> Registry:
     path = Path(get_settings().models_registry_path)
+    if not path.exists():
+        raise SystemExit(
+            f"model registry not found at {path}\n"
+            "Generate it from your model inventory first:\n"
+            "  cp bench/inventory.example.json bench/inventory.json   # then edit\n"
+            "  python3 bench/gen_llamaswap_config.py"
+        )
     data = json.loads(path.read_text())
     models = {}
     for key, m in data["models"].items():

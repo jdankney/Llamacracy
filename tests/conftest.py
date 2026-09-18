@@ -37,6 +37,9 @@ class FakeUpstream:
     async def health(self):
         return True
 
+    async def aclose(self):
+        pass
+
     async def loaded_model(self):
         return self.loaded
 

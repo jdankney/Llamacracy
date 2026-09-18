@@ -60,7 +60,3 @@ class GpuPowerSampler:
         if not self._samples:
             return None
         return round(sum(self._samples) / len(self._samples), 1)
-
-    @property
-    def peak(self) -> float | None:
-        return round(max(self._samples), 1) if self._samples else None

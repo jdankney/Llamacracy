@@ -29,3 +29,4 @@ ignore = ["E501", "B008", "B904"]  # long lines in SQL; Depends() in defaults; r
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = ["env: extra environment variables for the api test client"]

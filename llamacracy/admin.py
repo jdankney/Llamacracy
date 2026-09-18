@@ -4,6 +4,7 @@ OIDC email against ADMIN_EMAILS in config -- never a database flag.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import time
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 from .db import Database, get_db, now
 from .identity import Principal, require_admin
 from .metering import Meter
-from .queue import QueueManager, get_queue
+from .queue import JobState, QueueManager, get_queue
 from .registry import Registry, get_registry
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
@@ -49,7 +50,6 @@ async def live(qm: QueueManager = Depends(get_queue),
 
 
 async def _gpu_stats() -> dict:
-    import asyncio
     try:
         proc = await asyncio.create_subprocess_exec(
             "nvidia-smi",
@@ -176,9 +176,27 @@ async def queue_impact(days: int = 30, db: Database = Depends(get_db)):
 # --------------------------------------------------------------------------- #
 # Billing
 # --------------------------------------------------------------------------- #
-class InvoicePeriod(BaseModel):
+class InvoiceRequest(BaseModel):
+    user_id: int
     period_start: float
     period_end: float
+
+
+class InvoiceStatus(BaseModel):
+    status: str
+
+
+class LimitOverrides(BaseModel):
+    session_override: float | None = None
+    weekly_override: float | None = None
+
+
+class DisabledFlag(BaseModel):
+    disabled: bool
+
+
+class UncappedFlag(BaseModel):
+    uncapped: bool
 
 
 @router.get("/billing")
@@ -205,10 +223,8 @@ async def billing(period_days: int = 30, db: Database = Depends(get_db)):
 
 
 @router.post("/billing/invoice")
-async def create_invoice(body: dict, db: Database = Depends(get_db)):
-    user_id = int(body["user_id"])
-    start = float(body["period_start"])
-    end = float(body["period_end"])
+async def create_invoice(body: InvoiceRequest, db: Database = Depends(get_db)):
+    user_id, start, end = body.user_id, body.period_start, body.period_end
     row = await db.fetch_one(
         "SELECT COALESCE(SUM(credits),0) AS c, COALESCE(SUM(cost_usd),0) AS cost "
         "FROM jobs WHERE user_id = ? AND finished_at >= ? AND finished_at < ?",
@@ -223,8 +239,8 @@ async def create_invoice(body: dict, db: Database = Depends(get_db)):
 
 
 @router.post("/billing/invoice/{inv_id}/status")
-async def set_invoice_status(inv_id: int, body: dict, db: Database = Depends(get_db)):
-    status = body.get("status")
+async def set_invoice_status(inv_id: int, body: InvoiceStatus, db: Database = Depends(get_db)):
+    status = body.status
     if status not in ("draft", "sent", "paid"):
         raise HTTPException(400, "bad status")
     await db.execute("UPDATE invoices SET status = ? WHERE id = ?", (status, inv_id))
@@ -287,34 +303,32 @@ async def revoke_any_api_key(key_id: int, db: Database = Depends(get_db)):
 # Controls
 # --------------------------------------------------------------------------- #
 @router.post("/users/{user_id}/limits")
-async def set_limits(user_id: int, body: dict, db: Database = Depends(get_db)):
-    s = body.get("session_override")
-    w = body.get("weekly_override")
+async def set_limits(user_id: int, body: LimitOverrides, db: Database = Depends(get_db)):
     await db.execute(
         "UPDATE users SET session_credit_limit_override = ?, "
         "weekly_credit_limit_override = ? WHERE id = ?",
-        (s if s not in ("", None) else None, w if w not in ("", None) else None, user_id),
+        (body.session_override, body.weekly_override, user_id),
     )
     return {"ok": True}
 
 
 @router.post("/users/{user_id}/disabled")
-async def set_disabled(user_id: int, body: dict,
+async def set_disabled(user_id: int, body: DisabledFlag,
                        principal: Principal = Depends(require_admin),
                        db: Database = Depends(get_db)):
     if user_id == principal.user_id:
         raise HTTPException(400, "cannot disable yourself")
     await db.execute("UPDATE users SET disabled = ? WHERE id = ?",
-                     (1 if body.get("disabled") else 0, user_id))
+                     (int(body.disabled), user_id))
     return {"ok": True}
 
 
 @router.post("/users/{user_id}/uncapped")
-async def set_uncapped(user_id: int, body: dict, db: Database = Depends(get_db)):
+async def set_uncapped(user_id: int, body: UncappedFlag, db: Database = Depends(get_db)):
     """Uncapped users are never blocked at enqueue. Their session/weekly % is
     still computed and shown (and can sail past 100%)."""
     await db.execute("UPDATE users SET uncapped = ? WHERE id = ?",
-                     (1 if body.get("uncapped") else 0, user_id))
+                     (int(body.uncapped), user_id))
     return {"ok": True}
 
 
@@ -336,7 +350,6 @@ async def kill_job(job_id: str, qm: QueueManager = Depends(get_queue)):
         job._cancel.set()
     elif job in qm._pending:
         qm._pending.remove(job)
-        from .queue import JobState
         job.state = JobState.CANCELLED
         job.finished_at = now()
         await job._chunks.put(None)

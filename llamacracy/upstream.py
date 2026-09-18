@@ -100,20 +100,6 @@ class Upstream:
                     continue
                 yield _parse_chunk(obj)
 
-    async def completion(self, payload: dict) -> dict:
-        """Non-streaming /v1/completions (FIM path via input_prefix/suffix or
-        prompt). Used for the infill endpoint."""
-        r = await self._client.post("/v1/completions", json={**payload, "stream": False})
-        if r.status_code != 200:
-            raise UpstreamError(r.status_code, r.text)
-        return r.json()
-
-    async def infill(self, payload: dict) -> dict:
-        r = await self._client.post("/infill", json={**payload, "stream": False})
-        if r.status_code != 200:
-            raise UpstreamError(r.status_code, r.text)
-        return r.json()
-
 
 class UpstreamError(Exception):
     def __init__(self, status: int, detail: str):

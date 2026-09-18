@@ -1,8 +1,8 @@
 # Llamacracy — design brief
 
-> Verbatim brief from the project owner (the owner). Source of truth for scope.
-> Implementation notes and deviations agreed during Phase 0 are tracked in
-> [DECISIONS.md](DECISIONS.md).
+> The brief the project was built from, lightly redacted for publication
+> (the owner's model list and utility details are kept out). Source of truth
+> for scope; deviations are tracked in [DECISIONS.md](DECISIONS.md).
 
 ---
 
@@ -30,23 +30,16 @@ Pascal specifics:
   `-fa off` per model.
 - Consider `--cache-type-k q8_0 --cache-type-v q8_0` to buy context length back.
 
-## Model inventory (owner's estimates; Phase 0 measures real numbers)
+## Model inventory
 
-| Model | Quant | Approx weights | Notes |
-|---|---|---|---|
-| Coder Coder 1.5B | Q8_0 | ~1.7 GB | FIM only. Not a chat model. |
-| FamilyA 4B | Q8_0 | ~4.3 GB | Fits fully in VRAM |
-| FamilyB 4B | Q8_0 | ~5–8 GB | Fits, tight |
-| FamilyA 9B | Q6_K | ~7.5 GB | Fits, ~3 GB left for KV cache |
-| FamilyB 26B QAT | Q4_0 | ~15 GB | MoE, needs CPU offload |
-| FamilyC Flash 30B | Q4_K_M | ~18 GB | MoE, needs CPU offload |
-| FamilyA 35B | Q4_K_M | ~20 GB | MoE, needs CPU offload |
+The concrete model list is not part of the public repo; it lives in the
+gitignored `bench/inventory.json` (see `bench/README.md`). Any GGUF that
+`llama-server` can run is fair game. Models larger than VRAM are MoE with
+expert tensors kept in system RAM via `--n-cpu-moe N`; expect roughly 20-35
+tok/s for those on a card of this class.
 
-MoE heavyweights: attention + shared layers on GPU, expert tensors in system
-RAM via `--n-cpu-moe N`. Expect ~8–15 tok/s generation.
-
-The Coder Coder FIM model must not appear in the chat model picker. It
-targets `/infill`. Hide it or give it a separate, clearly-labelled mode.
+A fill-in-the-middle (FIM) code model, if present, must not appear in the
+chat model picker.
 
 ## Architecture
 
@@ -137,7 +130,7 @@ Limits:
 Cost model (config block, all editable without code):
 
 - `IDLE_WATTS`, `LOAD_WATTS` — whole system at the wall.
-- `ELECTRICITY_RATE` in $/kWh — the utility Portland, ask owner. Do not hardcode a
+- `ELECTRICITY_RATE` in $/kWh — the owner's actual tariff. Do not hardcode a
   national average.
 - Optional `TOU_SCHEDULE`: hour-of-day → rate. If present, cost each job at the
   rate in effect when it ran.

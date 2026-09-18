@@ -792,7 +792,7 @@ function apiKeysCard() {
       'OpenAI-compatible endpoint for tools like Continue.dev — same queue and credits as the web chat. Base URL ',
       h('code', { class: 'inline' }, base),
       ', model is any id from the picker (e.g. ',
-      h('code', { class: 'inline' }, S.pickerModel || 'fast-4b'), ').'),
+      h('code', { class: 'inline' }, S.pickerModel || S.models[0]?.id || 'model-id'), ').'),
     S.newApiKey ? h('div', { class: 'keyreveal' },
       h('div', { class: 'small' }, 'Copy this now — it will not be shown again.'),
       h('code', {}, S.newApiKey),

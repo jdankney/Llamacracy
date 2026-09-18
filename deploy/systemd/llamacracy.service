@@ -1,4 +1,5 @@
-# ~/.config/systemd/user/llamacracy.service
+# ~/.config/systemd/user/llamacracy.service  (installed by deploy/install.sh,
+# which replaces @REPO@ with the absolute path of this checkout)
 # The FastAPI app. Binds 127.0.0.1 only -- oauth2-proxy (llamacracy-auth.service)
 # is the only thing that should reach it.
 [Unit]
@@ -8,17 +9,17 @@ Wants=llama-swap.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Documents/Coding/Llamacracy
+WorkingDirectory=@REPO@
 # --timeout-graceful-shutdown bounds uvicorn's own drain wait: an open
 # /api/queue/events SSE connection (or an in-flight chat stream) never closes
 # on its own, so without this uvicorn waits on SIGTERM until systemd's
-# TimeoutStopSec (10s on this box) gives up and SIGKILLs it -- which still
-# stops the service, but leaves it reported as "failed (Result: timeout)"
-# instead of a clean stop. 5s keeps this comfortably under that.
-ExecStart=%h/Documents/Coding/Llamacracy/.venv/bin/uvicorn llamacracy.app:app --host 127.0.0.1 --port 8000 --no-server-header --timeout-graceful-shutdown 5
+# TimeoutStopSec gives up and SIGKILLs it -- which still stops the service,
+# but leaves it reported as "failed (Result: timeout)" instead of a clean
+# stop. 5s keeps this comfortably under the default stop timeout.
+ExecStart=@REPO@/.venv/bin/uvicorn llamacracy.app:app --host 127.0.0.1 --port 8000 --no-server-header --timeout-graceful-shutdown 5
 Restart=on-failure
 RestartSec=3
-# read OIDC secrets etc. from the gitignored .env in the working dir (pydantic-settings)
+# settings come from the gitignored .env in the working dir (pydantic-settings)
 
 [Install]
 WantedBy=default.target
