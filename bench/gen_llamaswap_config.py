@@ -223,12 +223,14 @@ def generate(inv: dict, bench: dict) -> tuple[str, dict]:
         key = vkey[: -len("-vision")]
         v = m["vision"]
         mmproj = expand(v["mmproj"], models_dir)
-        # same ctx/kv/offload as the base model; extra CLI args only if the
-        # vision block sets its own (sampling defaults are applied app-side
-        # from the registry anyway)
+        # A vision variant is the same llama-server invocation with --mmproj
+        # bolted on, so it inherits the base model's ctx/kv/offload AND its
+        # CLI args -- a custom --chat-template-file matters just as much to
+        # the vision entry. `vision.args` overrides outright when a model
+        # genuinely needs different flags with the projector loaded.
         serve = dict(m.get("serve", {}))
         serve["args"] = [expand(a, models_dir) if a.startswith("~") else a
-                         for a in v.get("args", [])]
+                         for a in v.get("args", serve.get("args", []))]
         display = v.get("display", f'{m["display"]} -- vision')
         emit_yaml_entry(
             y, vkey, build_cmd(path, rec, serve, threads, mmproj=mmproj),
