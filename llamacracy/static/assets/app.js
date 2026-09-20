@@ -213,7 +213,9 @@ function connectQueue() {
 
 /* --------------------------------------------------------------- rendering */
 function render() {
-  const main = S.view === 'usage' ? usageView() : S.view === 'admin' ? adminView() : chatView();
+  const main = S.view === 'usage' ? usageView()
+    : S.view === 'help' ? helpView()
+    : S.view === 'admin' ? adminView() : chatView();
   $app.replaceChildren(
     topbar(),
     h('div', { class: 'app-body' }, S.view === 'admin' ? null : sidebar(), main),
@@ -252,7 +254,7 @@ function setView(v) {
 
 /* topbar */
 function topbar() {
-  const nav = [['chat', 'Chat'], ['usage', 'Usage']];
+  const nav = [['chat', 'Chat'], ['usage', 'Usage'], ['help', 'Help']];
   if (S.me?.is_admin) nav.push(['admin', 'Admin']);
   return h('header', { id: 'topbar', class: 'topbar' },
     h('button', {
@@ -386,7 +388,9 @@ function emptyState() {
     h('div', { class: 'hints' },
       h('span', { class: 'hint' }, icon('globe', 'icon-sm'), 'Search adds live web results to a message'),
       h('span', { class: 'hint' }, icon('eye', 'icon-sm'), 'Vision models can read an attached image'),
-      h('span', { class: 'hint' }, h('kbd', {}, 'Enter'), 'send', h('kbd', {}, 'Shift+Enter'), 'newline')));
+      h('span', { class: 'hint' }, h('kbd', {}, 'Enter'), 'send', h('kbd', {}, 'Shift+Enter'), 'newline'),
+      h('button', { class: 'hint hint-link', onclick: () => setView('help') },
+        icon('info', 'icon-sm'), 'New here? Start with Help')));
 }
 function jumpPill() {
   if (S.stick || !S.messages.length) return null;
@@ -616,7 +620,7 @@ function composeHintKids() {
     h('span', { class: 'sep' }, '·'),
     h('span', {}, `~${Math.round(m.tok_s)} tok/s`),
   ];
-  if (m.blurb) kids.push(h('span', { class: 'sep' }, '·'), h('span', {}, m.blurb));
+  if (m.blurb) kids.push(h('span', { class: 'sep blurb' }, '·'), h('span', { class: 'blurb' }, m.blurb));
   kids.push(h('span', { class: 'kbd' }, 'Enter to send · Shift+Enter for a new line'));
   return kids;
 }
@@ -676,7 +680,9 @@ function composer() {
           S.active
             ? h('button', { type: 'button', class: 'btn btn-icon btn-danger', 'aria-label': 'Stop generating', title: 'Stop', onclick: cancelActive }, icon('stop'))
             : h('button', { type: 'submit', class: 'btn btn-primary btn-icon', 'aria-label': 'Send', title: 'Send (Enter)' }, icon('send')))),
-      h('div', { id: 'compose-hint', class: 'compose-hint' }, ...composeHintKids())),
+      h('div', { id: 'compose-hint', class: 'compose-hint' }, ...composeHintKids()),
+      h('div', { class: 'disclaimer' },
+        'Llamacracy can make mistakes. Check anything important.')),
   );
 }
 
@@ -833,6 +839,189 @@ async function revokeApiKey(id) {
     S.apiKeys = S.apiKeys.filter(k => k.id !== id);
     render();
   } catch (e) { flashError(e.message); }
+}
+
+/* ------------------------------------------------------------------- help */
+// Written for people who have never used this and shouldn't have to learn the
+// word "token". Everything is derived from /api/models and /api/me, so adding
+// or removing a model in bench/inventory.json updates this page with it.
+const W_PER_TOK = 0.75;          // rough English average
+const W_PER_PAGE = 500;          // words on a typical printed page
+const pagesFor = ctx => Math.max(1, Math.round(ctx * W_PER_TOK / W_PER_PAGE));
+const wordsSec = tok => Math.max(1, Math.round((tok || 0) * W_PER_TOK));
+const waitFor = s => s < 3 ? 'instant' : `~${Math.round(s)}s`;
+const pickable = () => S.models.filter(m => m.in_picker);
+
+// "I want to ... " -> which model, and why. Computed, never hard-coded.
+function modelPicks() {
+  const ms = pickable();
+  if (!ms.length) return [];
+  const top = f => [...ms].sort((a, b) => f(b) - f(a))[0];
+  const tier = t => ms.filter(m => m.tier === t);
+  const daily = tier('daily')[0] || top(m => m.tok_s);
+  const fastest = top(m => m.tok_s);
+  const longest = top(m => m.ctx);
+  const seers = ms.filter(m => m.vision);
+  const rank = { heavy: 3, daily: 2, fast: 1 };
+  const bestSeer = seers.length
+    ? [...seers].sort((a, b) => (rank[b.tier] || 0) - (rank[a.tier] || 0) || b.ctx - a.ctx)[0]
+    : null;
+  const heavy = tier('heavy');
+  const strongest = heavy.length ? [...heavy].sort((a, b) => b.ctx - a.ctx)[0] : longest;
+
+  const rows = [
+    ['Just chatting, or a normal question', daily,
+     'The all-rounder. Quick to answer and good at most things.'],
+    ['You want the answer right now', fastest,
+     `The quickest to reply — about ${wordsSec(fastest.tok_s)} words a second.`],
+    ['Pasting in something long', longest,
+     `Holds the most at once, roughly ${pagesFor(longest.ctx)} pages of text.`],
+  ];
+  if (bestSeer) rows.push(['Sharing a photo or a screenshot', bestSeer,
+    seers.length > 1
+      ? `The best of the ${seers.length} that can see pictures. The others are quicker if you're in a hurry.`
+      : 'The one model here that can look at pictures you attach.']);
+  rows.push(['Looking something up on the web', daily,
+    'Any model can search. This one is fast and has room for the results.']);
+  if (strongest && strongest.id !== daily.id) rows.push(['A hard or fiddly question', strongest,
+    'The strongest one here. Slower to wake up, usually worth the wait.']);
+  return rows;
+}
+
+function statusStrip() {
+  const n = S.queue.depth || 0;
+  return h('div', { class: 'card status-strip' },
+    h('div', { class: 'row' },
+      h('span', { class: 'badge is-on' }, h('i', { class: 'dot' }), 'Online'),
+      S.loadedModel
+        ? h('span', {}, h('strong', {}, modelName(S.loadedModel)), ' is warmed up and ready to go')
+        : h('span', { class: 'muted' }, 'Nothing loaded right now — your first message wakes a model up'),
+      h('div', { class: 'spacer' }),
+      h('span', { class: n ? '' : 'muted' },
+        n === 0 ? 'Nobody waiting' : n === 1 ? '1 request in the queue' : `${n} requests in the queue`)));
+}
+
+function helpView() {
+  const ms = pickable();
+  const seers = ms.filter(m => m.vision);
+  const lim = S.me?.limits || {};
+  const sessMin = Math.round((lim.session_credit_limit || 0) / 60);
+  const weekHr = ((lim.weekly_credit_limit || 0) / 3600).toFixed(1);
+
+  const tool = (ic, label, what) => h('tr', {},
+    h('td', {}, h('span', { class: 'btn-demo' }, icon(ic, 'icon-sm'), label)),
+    h('td', {}, what));
+
+  return h('main', { class: 'main' }, h('div', { class: 'page page-narrow help' },
+    h('h1', {}, 'How this works'),
+    h('p', { class: 'lead' },
+      'This is a private AI chat running on one computer at home. Pick a model, ask it ' +
+      'something, and the answer types itself out. Everything below is live — it updates ' +
+      'when the models change.'),
+    statusStrip(),
+
+    h('h2', {}, 'Which model should I use?'),
+    h('p', {}, 'Short answer: the one already selected is a good default. If you want to be picky:'),
+    h('div', { class: 'table-wrap' }, h('table', {},
+      h('thead', {}, h('tr', {}, h('th', {}, 'I want to…'), h('th', {}, 'Use'), h('th', {}, 'Why'))),
+      h('tbody', {}, modelPicks().map(([want, m, why]) => h('tr', {},
+        h('td', { class: 'want' }, want),
+        h('td', { class: 'pick' }, m.display),
+        h('td', { class: 'muted' }, why)))))),
+
+    h('h2', {}, 'All the models, side by side'),
+    // data-label lets this collapse into one card per model on a phone, where
+    // six columns would otherwise scroll off the right edge unnoticed
+    h('div', { class: 'table-wrap model-wrap' }, h('table', { class: 'model-table' },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Model'), h('th', {}, 'Best for'), h('th', {}, 'Photos'),
+        h('th', {}, 'Holds about'), h('th', {}, 'Types at'), h('th', {}, 'Wake-up'))),
+      h('tbody', {}, ms.map(m => h('tr', {},
+        h('td', { 'data-label': 'Model' }, h('span', { class: 'pick' }, m.display),
+          m.tier ? h('span', { class: 'tag' }, m.tier) : null),
+        h('td', { class: 'muted', 'data-label': 'Best for' }, m.blurb || '—'),
+        h('td', { 'data-label': 'Photos' }, m.vision
+          ? h('span', { class: 'yes' }, icon('eye', 'icon-sm'), 'Yes')
+          : h('span', { class: 'no' }, '—')),
+        h('td', { class: 'num', 'data-label': 'Holds about' }, `~${pagesFor(m.ctx)} pages`),
+        h('td', { class: 'num', 'data-label': 'Types at' }, `~${wordsSec(m.tok_s)} words/sec`),
+        h('td', { class: 'num muted', 'data-label': 'Wake-up' }, waitFor(m.cold_load_s)))))),
+    ),
+    h('div', { class: 'legend' },
+      h('span', {}, h('strong', {}, 'Holds about'), ' — how much text it can keep in mind at once, you and it combined.'),
+      h('span', {}, h('strong', {}, 'Wake-up'), ' — the one-off pause when a model has to load. Only if it isn\'t already running.')),
+
+    h('h2', {}, 'Photos and documents'),
+    h('p', {},
+      seers.length
+        ? `${seers.length} of the ${ms.length} models can see pictures — the ones marked Yes ` +
+          'in the table above. Pick one of those, then use the paperclip to attach a photo, ' +
+          'a screenshot, or a picture of a page, and ask about it.'
+        : 'None of the models loaded right now can see pictures.'),
+    h('p', {},
+      'There is no file upload for documents — paste the text straight into the message box. ' +
+      'The only real limit is the "holds about" column above, so for anything long, pick a ' +
+      'model near the top of that list. A photo of a document works too, on the models marked Yes.'),
+    h('p', { class: 'muted' },
+      'One quirk worth knowing: a model only looks at the picture in the message you attached ' +
+      'it to. Ask your follow-up questions about it in that same message, or attach it again.'),
+
+    h('h2', {}, 'The buttons around the message box'),
+    h('div', { class: 'table-wrap' }, h('table', {},
+      h('tbody', {},
+        tool('globe', 'Search', 'Searches the web first and hands the results to the model before it answers. Off unless you turn it on, and it doesn\'t cost you anything.'),
+        tool('clip', 'Attach', 'Adds a photo. Greyed out unless the model you\'ve picked can see.'),
+        tool('compress', 'Compact', 'In a very long chat, folds the older part into a short summary so there\'s room to keep going. Nothing is deleted.'),
+        tool('stop', 'Stop', 'Cuts a reply short and hands the computer straight back to whoever\'s next.')))),
+    h('p', { class: 'muted' },
+      'The little circle next to them fills up as a conversation gets long. When it turns ' +
+      'amber or red, start a new chat or hit Compact.'),
+
+    h('h2', {}, 'Waiting your turn'),
+    h('p', {},
+      'There is exactly one computer and it does one thing at a time, in the order people ask. ' +
+      'If someone else is mid-answer you\'ll see your place in the queue, and it\'s usually ' +
+      'seconds. Switching to a different model means putting the old one away and fetching the ' +
+      'new one, which is the wake-up time in the table.'),
+
+    lim.session_credit_limit ? h('div', {},
+      h('h2', {}, 'Credits'),
+      h('p', {},
+        'Usage is counted in seconds of the computer actually writing for you. Reading your ' +
+        'message is free, waiting in the queue is free.'),
+      h('div', { class: 'table-wrap' }, h('table', {},
+        h('tbody', {},
+          h('tr', {}, h('td', {}, 'In any ' + (lim.session_window_hours || 5) + '-hour stretch'),
+            h('td', { class: 'num' }, `about ${sessMin} minutes of writing`)),
+          h('tr', {}, h('td', {}, 'Across a week'),
+            h('td', { class: 'num' }, `about ${weekHr} hours of writing`))))),
+      h('p', { class: 'muted' },
+        'That is far more than it sounds — a long reply is a few seconds. If you ever do run ' +
+        'out, a started answer always finishes, you just wait a while before starting another. ' +
+        'Your own numbers are on the Usage page, and the limits can be raised on request.')) : null,
+
+    h('h2', {}, 'If something looks wrong'),
+    h('details', {},
+      h('summary', {}, icon('alert', 'icon-sm'), 'The site won\'t load at all'),
+      h('p', {}, 'Check the VPN app is connected — this site only exists inside it and is ' +
+        'invisible from the normal internet. If it is connected and the page still won\'t ' +
+        'load, turn DNS on in the VPN app, or just ask.')),
+    h('details', {},
+      h('summary', {}, icon('alert', 'icon-sm'), 'It\'s taking ages'),
+      h('p', {}, 'Either someone is ahead of you in the queue, or the model you picked is ' +
+        'waking up. Both are shown on screen while they happen. Picking a model near the top ' +
+        'of the speed column avoids most of it.')),
+    h('details', {},
+      h('summary', {}, icon('alert', 'icon-sm'), 'It forgot what we were talking about'),
+      h('p', {}, 'Each conversation is separate, and very long ones eventually run out of ' +
+        'room — that is what the Compact button is for. Starting a fresh chat for a new topic ' +
+        'also works well.')),
+    h('details', {},
+      h('summary', {}, icon('alert', 'icon-sm'), 'It said something wrong'),
+      h('p', {}, 'It will, confidently. These are small models running on one home graphics ' +
+        'card, not the big commercial ones. Check anything that matters, and use the Search ' +
+        'toggle for anything recent or factual.')),
+  ));
 }
 
 /* ---------------------------------------------------------------- actions */
