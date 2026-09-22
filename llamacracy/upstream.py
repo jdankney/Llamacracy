@@ -100,6 +100,30 @@ class Upstream:
                     continue
                 yield _parse_chunk(obj)
 
+    async def stream_raw(self, payload: dict) -> AsyncIterator[bytes]:
+        """POST /v1/chat/completions and yield the response body byte for byte.
+
+        The /v1 passthrough uses this instead of stream_chat: nothing in the
+        wire format is parsed, reshaped or re-serialised on the way out, so
+        tool calls, logprobs, multiple choices and whatever llama.cpp grows
+        next reach the client exactly as llama-swap sent them. Billing reads
+        what it needs from a separate sniffer fed the same bytes.
+        """
+        async with self._client.stream("POST", "/v1/chat/completions", json=payload) as resp:
+            if resp.status_code != 200:
+                detail = (await resp.aread()).decode("utf-8", "replace")
+                raise UpstreamError(resp.status_code, detail)
+            async for raw in resp.aiter_bytes():
+                if raw:
+                    yield raw
+
+    async def post_raw(self, payload: dict) -> bytes:
+        """Non-streaming sibling of stream_raw: the whole JSON body, untouched."""
+        r = await self._client.post("/v1/chat/completions", json=payload)
+        if r.status_code != 200:
+            raise UpstreamError(r.status_code, r.text)
+        return r.content
+
 
 class UpstreamError(Exception):
     def __init__(self, status: int, detail: str):
@@ -119,6 +143,61 @@ def _parse_chunk(obj: dict) -> StreamChunk:
         timings=obj.get("timings"),
         finish_reason=(choices[0].get("finish_reason") if choices else None),
     )
+
+
+class UsageSniffer:
+    """Reads billing facts out of a passthrough response without touching it.
+
+    Fed the same bytes that go to the client, it watches for the first sign of
+    real generation (so the queue can stop the cold-load clock) and keeps the
+    last `usage` / `timings` block it sees. Anything it fails to parse is
+    simply ignored -- a sniffer that cannot read a chunk must never be able to
+    break the stream that chunk belongs to.
+    """
+
+    def __init__(self) -> None:
+        self._buf = b""
+        self.usage: dict | None = None
+        self.timings: dict | None = None
+        self.saw_output = False
+
+    def feed(self, raw: bytes) -> None:
+        """Accumulate SSE bytes; whole `data:` lines are parsed as they complete."""
+        self._buf += raw
+        while b"\n" in self._buf:
+            line, self._buf = self._buf.split(b"\n", 1)
+            line = line.strip()
+            if line.startswith(b"data:"):
+                self._feed_json(line[5:].strip())
+
+    def feed_body(self, raw: bytes) -> None:
+        """Parse one complete non-streaming JSON body."""
+        self._feed_json(raw)
+
+    def _feed_json(self, data: bytes) -> None:
+        if not data or data == b"[DONE]":
+            return
+        try:
+            obj = json.loads(data)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if not isinstance(obj, dict):
+            return
+        if isinstance(obj.get("usage"), dict):
+            self.usage = obj["usage"]
+        if isinstance(obj.get("timings"), dict):
+            self.timings = obj["timings"]
+        for choice in obj.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            # streaming carries `delta`, non-streaming `message`; either one
+            # holding content, reasoning or a tool call means the model is
+            # producing, not still loading
+            part = choice.get("delta") or choice.get("message") or {}
+            if isinstance(part, dict) and any(
+                part.get(k) for k in ("content", "reasoning_content", "tool_calls")
+            ):
+                self.saw_output = True
 
 
 _upstream: Upstream | None = None

@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -647,6 +647,11 @@ async def queue_events(request: Request,
 # conversation to persist: the client sends its full message list every call,
 # exactly like the real OpenAI API, and we don't keep IDE chatter in the web
 # UI's history.
+#
+# The chat completion is a raw passthrough: the body goes upstream as it
+# arrived (plus the model's sampling and the token cap) and llama-swap's bytes
+# come back untouched, so tool calling and anything else llama.cpp supports
+# works without this file knowing it exists.
 # --------------------------------------------------------------------------- #
 @app.get("/v1/models")
 async def v1_models(principal: Principal = Depends(get_principal_api_key),
@@ -658,32 +663,28 @@ async def v1_models(principal: Principal = Depends(get_principal_api_key),
     }
 
 
-class V1Message(BaseModel):
-    role: str
-    content: str    # v1 scope: text only -- no vision/tool-calls over this endpoint
-
-
-class V1ChatRequest(BaseModel):
-    model: str
-    messages: list[V1Message] = Field(min_length=1)
-    stream: bool = False
-    max_tokens: int | None = None
-
-
-def _v1_chunk(job_id: str, model: str, created: int, delta: dict,
-             finish_reason: str | None) -> dict:
-    return {
-        "id": f"chatcmpl-{job_id}", "object": "chat.completion.chunk", "created": created,
-        "model": model, "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-    }
+# How much of a /v1 request we understand: the model (it is the billing key and
+# decides which llama-swap entry runs) and that there are messages at all.
+# Everything else -- tools, tool_choice, response_format, logprobs, n, whatever
+# the client sends next year -- is forwarded verbatim and never modelled here.
+# Declaring those fields is what used to drop them: a pydantic model with
+# `extra="ignore"` silently ate `tools`, so the chat template never rendered a
+# tool section and models answered with a description of the call instead.
+_V1_KEEPALIVE_S = 15.0
 
 
 async def _v1_drain(job: Job, qm: QueueManager, request: Request):
-    """Yields the queue's own internal chunk events until the job ends,
-    cancelling on client disconnect -- same contract as /api/chat's stream."""
+    """Yields the queue's own internal events until the job ends, cancelling on
+    client disconnect -- same contract as /api/chat's stream. Emits a keepalive
+    event while the job is still waiting its turn, so a long FIFO wait or a
+    heavyweight cold start never looks like a dead connection to the client."""
     try:
         while True:
-            chunk = await job._chunks.get()
+            try:
+                chunk = await asyncio.wait_for(job._chunks.get(), timeout=_V1_KEEPALIVE_S)
+            except TimeoutError:
+                yield {"type": "keepalive"}
+                continue
             if chunk is None:
                 break
             yield chunk
@@ -695,92 +696,97 @@ async def _v1_drain(job: Job, qm: QueueManager, request: Request):
 
 
 @app.post("/v1/chat/completions")
-async def v1_chat_completions(req: V1ChatRequest,
-                              request: Request,
+async def v1_chat_completions(request: Request,
                               principal: Principal = Depends(get_principal_api_key),
                               settings: Settings = Depends(get_settings),
                               reg: Registry = Depends(get_registry),
                               qm: QueueManager = Depends(get_queue)):
-    model = reg.get(req.model)
-    if model is None or model.kind != "chat" or not model.in_picker:
-        raise HTTPException(400, f"unknown model: {req.model}")
+    """Queued raw passthrough to llama-swap.
 
-    cap = min(
-        req.max_tokens or model.max_tokens_default,
-        model.max_tokens_default,
-        settings.max_tokens_per_request,
-    )
-    payload = {
-        "messages": [m.model_dump() for m in req.messages],
-        "max_tokens": cap,
-        **model.sampling,
-    }
+    The job holds the same exclusive FIFO slot and is metered off the same
+    clocks as a web chat; the only thing this endpoint does to the payload is
+    merge in the model's sampling defaults and clamp max_tokens. The response
+    is llama-swap's own bytes, unaltered.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "body must be JSON") from None
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
+
+    model_id = body.get("model")
+    model = reg.get(model_id) if isinstance(model_id, str) else None
+    if model is None or model.kind != "chat" or not model.in_picker:
+        raise HTTPException(400, f"unknown model: {model_id}")
+    if not isinstance(body.get("messages"), list) or not body["messages"]:
+        raise HTTPException(400, "messages must be a non-empty array")
+
+    try:
+        asked = int(body["max_tokens"]) if body.get("max_tokens") is not None else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "max_tokens must be an integer") from None
+    cap = min(asked or model.max_tokens_default,
+              model.max_tokens_default,
+              settings.max_tokens_per_request)
+
+    stream = bool(body.get("stream"))
+    # sampling wins over the client, as it does for the web UI: these models are
+    # tuned per entry in the inventory and an IDE has no idea what suits them
+    payload = {**body, "max_tokens": cap, **model.sampling}
+    payload.pop("model", None)          # the queue sets it from job.model_id
+    if stream:
+        # credits come off the real usage block, never an estimate, so ask for
+        # it. The client sees one extra final chunk: ordinary OpenAI behaviour.
+        payload["stream_options"] = {**(payload.get("stream_options") or {}),
+                                     "include_usage": True}
 
     job = Job(
         user_id=principal.user_id,
         owner_name=principal.display_name,
         owner_email=principal.email,
-        model_id=req.model,
+        model_id=model_id,
         payload=payload,
         conversation_id=None,   # the client owns history; nothing to persist here
+        raw_passthrough=True,
     )
 
     # one shared meter, one shared session/weekly cap regardless of which
     # door a job came in through
     await _check_limits(job, qm)
     await qm.submit(job)
-    created = int(now())
 
-    if req.stream:
+    if stream:
         async def event_stream():
-            # sent immediately, before the job even leaves the queue -- keeps
-            # the connection alive with real bytes through a cold load/wait
-            # instead of going silent and risking a client-side timeout.
-            yield _sse(_v1_chunk(job.id, req.model, created,
-                                 {"role": "assistant", "content": ""}, None))
             async for chunk in _v1_drain(job, qm, request):
                 t = chunk.get("type")
-                if t == "token":
-                    yield _sse(_v1_chunk(job.id, req.model, created,
-                                         {"content": chunk["text"]}, None))
-                elif t in ("done", "cancelled"):
-                    yield _sse(_v1_chunk(job.id, req.model, created, {}, "stop"))
-                    yield "data: [DONE]\n\n"
+                if t == "raw":
+                    yield chunk["data"]
+                elif t == "keepalive":
+                    # an SSE comment: every conformant parser ignores it, so it
+                    # holds the connection open without entering the payload
+                    yield b": llamacracy queued\n\n"
+                elif t == "cancelled":
+                    # upstream was cut mid-stream and never sent its own [DONE]
+                    yield b"data: [DONE]\n\n"
                 elif t == "error":
-                    yield _sse({"error": {"message": chunk.get("detail", "generation error")}})
-                    yield "data: [DONE]\n\n"
-                # "loading" / "reasoning" have no OpenAI wire-format equivalent; skip
+                    yield _sse({"error": {"message": chunk.get("detail", "generation error")}}).encode()
+                    yield b"data: [DONE]\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
 
-    # non-streaming: drain fully, return one JSON object
-    text: list[str] = []
-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    finish_reason = "stop"
+    parts: list[bytes] = []
     async for chunk in _v1_drain(job, qm, request):
         t = chunk.get("type")
-        if t == "token":
-            text.append(chunk["text"])
-        elif t == "done":
-            usage = {
-                "prompt_tokens": chunk.get("prompt_tokens") or 0,
-                "completion_tokens": chunk.get("completion_tokens") or 0,
-                "total_tokens": (chunk.get("prompt_tokens") or 0) + (chunk.get("completion_tokens") or 0),
-            }
-        elif t == "cancelled":
-            finish_reason = "cancelled"
+        if t == "raw":
+            parts.append(chunk["data"])
         elif t == "error":
             raise HTTPException(502, chunk.get("detail", "generation error"))
-
-    return {
-        "id": f"chatcmpl-{job.id}", "object": "chat.completion", "created": created,
-        "model": req.model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": "".join(text)},
-                    "finish_reason": finish_reason}],
-        "usage": usage,
-    }
+    if not parts:
+        raise HTTPException(502, "upstream returned nothing")
+    return Response(content=b"".join(parts), media_type="application/json")
 
 
 # --------------------------------------------------------------------------- #

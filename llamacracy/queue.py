@@ -27,7 +27,7 @@ from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .power import GpuPowerSampler
 from .registry import Registry, get_registry
-from .upstream import Upstream, UpstreamError, get_upstream
+from .upstream import Upstream, UpstreamError, UsageSniffer, get_upstream
 
 log = logging.getLogger("llamacracy.queue")
 
@@ -53,6 +53,10 @@ class Job:
     model_id: str
     payload: dict                      # OpenAI chat payload (messages + sampling)
     conversation_id: str | None = None
+    # /v1 passthrough: forward upstream's bytes to the caller untouched instead
+    # of decoding them into token events. Billing still comes off the same
+    # clocks; only the shape of what crosses the wire differs.
+    raw_passthrough: bool = False
     session_id: int | None = None       # session active at enqueue (set by metering)
     lane: str = "exclusive"
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -276,6 +280,90 @@ class QueueManager:
                 await job._chunks.put(None)
                 await self._broadcast()
 
+    async def _mark_generating(self, job: Job, t_start: float,
+                               sampler: GpuPowerSampler) -> None:
+        """First real output seen: stop the cold-load clock, flip the job to
+        generating and start sampling GPU power. Shared by both pumps so a /v1
+        passthrough is billed off exactly the same timers as a web chat."""
+        t_first = now()
+        job.gen_started_at = t_first
+        self._loaded_model = job.model_id
+        if job.cold_start:
+            # true load time = wall-to-first-token minus llama.cpp's
+            # measured prompt-eval; refined again from final timings below
+            job.load_seconds = max(0.0, t_first - t_start)
+        job.state = JobState.GENERATING
+        sampler.start()
+        await self._broadcast()
+
+    async def _pump_chat(self, job: Job, t_start: float,
+                         sampler: GpuPowerSampler) -> None:
+        """The web UI's path: decode upstream chunks into token events."""
+        async for chunk in self.up.stream_chat({**job.payload, "model": job.model_id}):
+            if job._cancel.is_set():
+                break
+            if job.gen_started_at is None and (chunk.content_delta or chunk.reasoning_delta):
+                await self._mark_generating(job, t_start, sampler)
+            if chunk.content_delta:
+                job.content_parts.append(chunk.content_delta)
+                await self._emit(job, {"type": "token", "text": chunk.content_delta})
+            if chunk.reasoning_delta:
+                await self._emit(job, {"type": "reasoning", "text": chunk.reasoning_delta})
+            if chunk.usage:
+                job.prompt_tokens = chunk.usage.get("prompt_tokens")
+                job.completion_tokens = chunk.usage.get("completion_tokens")
+            if chunk.timings:
+                job.last_timings = chunk.timings
+
+    async def _pump_raw(self, job: Job, t_start: float,
+                        sampler: GpuPowerSampler) -> None:
+        """The /v1 path: forward upstream's bytes verbatim as `raw` events and
+        read nothing out of them but the numbers the job row needs. Tool calls,
+        logprobs, extra choices -- none of it has to be understood here to
+        survive the trip, which is the whole point of the passthrough.
+
+        `job.content_parts` stays empty: a /v1 job has no conversation to
+        persist, so the reply is never reassembled on this side at all.
+        """
+        payload = {**job.payload, "model": job.model_id}
+        sniff = UsageSniffer()
+
+        if payload.get("stream"):
+            async for raw in self.up.stream_raw(payload):
+                if job._cancel.is_set():
+                    break
+                sniff.feed(raw)
+                if job.gen_started_at is None and sniff.saw_output:
+                    await self._mark_generating(job, t_start, sampler)
+                await self._emit(job, {"type": "raw", "data": raw})
+        else:
+            # No first-token edge to watch for, so sample across the whole
+            # upstream call and back-date the generation start from llama.cpp's
+            # own timings below -- the postamble then derives load/gen seconds
+            # from gen_started_at exactly as it does for a streamed job.
+            job.state = JobState.GENERATING
+            sampler.start()
+            await self._broadcast()
+            body = await self.up.post_raw(payload)
+            sniff.feed_body(body)
+            self._loaded_model = job.model_id
+            await self._emit(job, {"type": "raw", "data": body})
+
+        if sniff.usage:
+            job.prompt_tokens = sniff.usage.get("prompt_tokens")
+            job.completion_tokens = sniff.usage.get("completion_tokens")
+        if sniff.timings:
+            job.last_timings = sniff.timings
+        if job.gen_started_at is None and sniff.timings:
+            # Nothing marked the start of generation: either a non-streamed
+            # call, or a stream whose output we could not recognise. Timings
+            # mean the request did finish, so back-date from llama.cpp's own
+            # measurement and let the postamble split load from gen as usual.
+            # Without timings it is left None, so a job cancelled mid-load
+            # never feeds a bogus sample into the load EWMA.
+            predicted_s = (sniff.timings.get("predicted_ms") or 0) / 1000.0
+            job.gen_started_at = max(t_start, now() - predicted_s)
+
     async def _run(self, job: Job) -> None:
         loaded = await self.up.loaded_model()
         job.cold_start = loaded != job.model_id
@@ -287,33 +375,9 @@ class QueueManager:
                                    "eta_s": self.load_estimate(job.model_id)})
             await self._broadcast()
 
-        first = False
         sampler = GpuPowerSampler()
-        async for chunk in self.up.stream_chat({**job.payload, "model": job.model_id}):
-            if job._cancel.is_set():
-                break
-            if not first and (chunk.content_delta or chunk.reasoning_delta):
-                first = True
-                t_first = now()
-                job.gen_started_at = t_first
-                self._loaded_model = job.model_id
-                if job.cold_start:
-                    # true load time = wall-to-first-token minus llama.cpp's
-                    # measured prompt-eval; refined again from final timings below
-                    job.load_seconds = max(0.0, t_first - t_start)
-                job.state = JobState.GENERATING
-                sampler.start()
-                await self._broadcast()
-            if chunk.content_delta:
-                job.content_parts.append(chunk.content_delta)
-                await self._emit(job, {"type": "token", "text": chunk.content_delta})
-            if chunk.reasoning_delta:
-                await self._emit(job, {"type": "reasoning", "text": chunk.reasoning_delta})
-            if chunk.usage:
-                job.prompt_tokens = chunk.usage.get("prompt_tokens")
-                job.completion_tokens = chunk.usage.get("completion_tokens")
-            if chunk.timings:
-                job.last_timings = chunk.timings
+        pump = self._pump_raw if job.raw_passthrough else self._pump_chat
+        await pump(job, t_start, sampler)
 
         await sampler.stop()
         job.gpu_watts_mean = sampler.mean

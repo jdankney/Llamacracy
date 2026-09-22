@@ -117,6 +117,23 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   flows through billing, swap groups and display names, that one
   substitution gets everything else right for free. Only the current turn's
   image is sent; earlier images are not resent on every follow-up.
+- **The `/v1` chat endpoint is a raw passthrough, not a modelled one.** The
+  request body is forwarded as it arrived, with only the model's sampling
+  defaults and the `max_tokens` cap merged in, and llama-swap's response bytes
+  are streamed back unaltered. Only `model` and the presence of `messages` are
+  validated. This is a correction. The endpoint originally declared a pydantic
+  body of `model`/`messages`/`stream`/`max_tokens`, and pydantic's default
+  `extra="ignore"` meant a client's `tools` array was silently dropped, so
+  llama.cpp never rendered a tool section and models answered with a prose
+  description of the call they wanted to make; the same modelled body also
+  rejected the `content: null` assistant turn that carries `tool_calls`.
+  Billing never needs to understand the payload: a sniffer reads `usage` and
+  `timings` off the same bytes without touching them, and falls back to the
+  usual estimate if it finds neither.
+- **Tool loops are acceptable over `/v1` but not in the web UI**, because the
+  IDE owns the loop. Each round trip arrives as its own job and queues
+  normally, so an agent turn is N ordinary FIFO entries rather than one job
+  holding the GPU across N inferences.
 - **Context per model is maxed out** by a benchmark sweep that walks a
   ladder of (ctx, KV type, expert offload) and keeps the largest that fits.
   On a small-VRAM card the ceiling is usually system RAM, not VRAM, and

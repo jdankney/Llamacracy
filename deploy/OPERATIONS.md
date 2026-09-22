@@ -188,11 +188,24 @@ models:
     model: <model-id>                                      # any id from /v1/models
     apiBase: http://<your-fqdn>:4180/v1
     apiKey: llk_...                                        # from Usage -> API access
-    roles: [chat, edit]
+    roles: [chat, edit, apply]
 ```
 `GET /v1/models` lists the current picker models (the keys in your
 inventory). No `/v1/completions` — editor autocomplete isn't wired up (it
 would contend with everyone else's chats on the same single-GPU FIFO queue).
+
+**Tool calling works** — agent mode, edit tools, the lot.
+`/v1/chat/completions` forwards the request body to llama-swap untouched apart
+from the model's sampling defaults and the token cap, so `tools`,
+`tool_choice` and tool-result messages pass straight through and the reply
+comes back with real `tool_calls`. Whether a given model is any *good* at it
+is a property of the model, not of Llamacracy — the smaller ones will call the
+wrong tool or invent arguments.
+
+Mind the queue, though: an agent turn is one job per round trip, and each one
+takes its place in the FIFO behind whoever else is chatting. A twelve-step
+edit loop is twelve queue entries, each billed for the seconds it actually
+uses. Fine on your own; less fine while three people are mid-answer.
 
 A revoked key stops authenticating immediately. **Admin → API keys** lists
 every key issued across all users (owner, label, created, last used) with its

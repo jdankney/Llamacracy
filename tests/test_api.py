@@ -5,6 +5,7 @@ enqueue-time limit gate leaving no orphan rows behind."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -53,6 +54,7 @@ def client(tmp_db_path, monkeypatch, request):
     with TestClient(appmod.app) as c:
         c.fake_upstream = up
         c.db = db
+        c.registry = reg
         yield c
 
     appmod.app.dependency_overrides.clear()
@@ -133,3 +135,130 @@ def test_limit_rejection_leaves_no_orphans(client):
     assert _count(client.db, "conversations") == 1
     states = [row[0] for row in client.db._conn.execute("SELECT state FROM jobs ORDER BY queued_at")]
     assert states == ["done", "limit_exceeded"]
+
+
+TOOLS = [{"type": "function", "function": {
+    "name": "read_file",
+    "description": "Read a file",
+    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+}}]
+
+TOOL_CALLS = [{"index": 0, "id": "call_1", "type": "function",
+               "function": {"name": "read_file", "arguments": '{"path":"a.py"}'}}]
+
+
+def test_v1_forwards_tools_and_unknown_fields(client):
+    """The regression this endpoint was rewritten for: a modelled request body
+    silently ate `tools`, so llama.cpp never rendered a tool section and models
+    described the call in prose instead of making it."""
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={
+        "model": "small",
+        "messages": [{"role": "user", "content": "read a.py"}],
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "response_format": {"type": "text"},
+    })
+
+    sent = client.fake_upstream.seen_payload
+    assert sent["tools"] == TOOLS
+    assert sent["tool_choice"] == "auto"
+    assert sent["parallel_tool_calls"] is False
+    assert sent["response_format"] == {"type": "text"}
+    assert sent["model"] == "small"          # the queue sets this from job.model_id
+
+
+def test_v1_accepts_tool_result_turns(client):
+    """An assistant turn carrying tool_calls has `content: null`, and the tool
+    result that follows carries `tool_call_id`. Both used to be rejected."""
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    messages = [
+        {"role": "user", "content": "read a.py"},
+        {"role": "assistant", "content": None, "tool_calls": TOOL_CALLS},
+        {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": "x = 1"},
+    ]
+    r = client.post("/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {key}"},
+                    json={"model": "small", "messages": messages})
+    assert r.status_code == 200
+    assert client.fake_upstream.seen_payload["messages"] == messages
+
+
+def test_v1_streams_tool_calls_verbatim(client):
+    """Upstream's bytes reach the client unaltered, tool-call deltas included,
+    and the job row still gets the real usage numbers off the same stream."""
+    client.fake_upstream.tool_calls = TOOL_CALLS
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    with client.stream("POST", "/v1/chat/completions",
+                       headers={"Authorization": f"Bearer {key}"},
+                       json={"model": "small", "stream": True,
+                             "messages": [{"role": "user", "content": "read a.py"}],
+                             "tools": TOOLS}) as r:
+        assert r.status_code == 200
+        raw = r.read().decode()
+
+    chunks = [json.loads(ln[5:]) for ln in raw.splitlines()
+              if ln.startswith("data:") and ln[5:].strip() != "[DONE]"]
+    assert raw.endswith("data: [DONE]\n\n")
+
+    calls = [c for c in chunks if c["choices"] and c["choices"][0]["delta"].get("tool_calls")]
+    assert len(calls) == 1
+    assert calls[0]["choices"][0]["delta"]["tool_calls"] == TOOL_CALLS
+    assert calls[0]["choices"][0]["finish_reason"] == "tool_calls"
+
+    # include_usage is forced on so credits come off measured tokens, not an estimate
+    assert client.fake_upstream.seen_payload["stream_options"]["include_usage"] is True
+    row = client.db._conn.execute(
+        "SELECT completion_tokens, usage_estimated, state FROM jobs").fetchone()
+    assert row[0] == 3 and row[1] == 0 and row[2] == "done"
+
+
+def test_v1_clamps_max_tokens_and_applies_sampling(client):
+    """The two things the passthrough is allowed to change about the body."""
+    client.fake_upstream.script["small"] = ["ok"]
+    reg = client.registry
+    reg._models["small"] = replace(reg.require("small"), sampling={"temperature": 0.25})
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {key}"},
+                json={"model": "small", "max_tokens": 999999, "temperature": 1.9,
+                      "messages": [{"role": "user", "content": "hi"}]})
+
+    sent = client.fake_upstream.seen_payload
+    assert sent["max_tokens"] == get_settings().max_tokens_per_request
+    assert sent["temperature"] == 0.25       # inventory sampling wins over the client
+
+
+def test_v1_rejects_bad_requests(client):
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    h = {"Authorization": f"Bearer {key}"}
+    assert client.post("/v1/chat/completions", headers=h,
+                       json={"model": "nope", "messages": [{"role": "user", "content": "x"}]}
+                       ).status_code == 400
+    assert client.post("/v1/chat/completions", headers=h,
+                       json={"model": "small", "messages": []}).status_code == 400
+    assert client.post("/v1/chat/completions", headers=h,
+                       content=b"not json").status_code == 400
+
+
+def test_v1_keepalive_is_an_ignorable_comment(client, monkeypatch):
+    """A queued job produces no bytes until its turn, and a cold start can be
+    25s of silence. The keepalive that holds the connection open must be an SSE
+    comment, which every conformant parser drops, and not something the client
+    has to understand."""
+    monkeypatch.setattr(appmod, "_V1_KEEPALIVE_S", 0.01)
+    client.fake_upstream.delay = 0.05
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    with client.stream("POST", "/v1/chat/completions",
+                       headers={"Authorization": f"Bearer {key}"},
+                       json={"model": "small", "stream": True,
+                             "messages": [{"role": "user", "content": "hi"}]}) as r:
+        raw = r.read().decode()
+
+    assert ": llamacracy queued\n\n" in raw
+    # strip comments the way an SSE parser does; the payload is untouched
+    data = [ln for ln in raw.splitlines() if ln.startswith("data:")]
+    assert data[-1] == "data: [DONE]"
+    text = "".join(json.loads(ln[5:])["choices"][0]["delta"].get("content", "")
+                   for ln in data[:-1] if json.loads(ln[5:])["choices"])
+    assert text == "hello world"

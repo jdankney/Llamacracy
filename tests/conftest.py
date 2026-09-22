@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 from collections.abc import AsyncIterator
@@ -33,6 +34,8 @@ class FakeUpstream:
         self.usage = {"prompt_tokens": 5, "completion_tokens": 3}
         self.timings = {"prompt_ms": 20.0, "predicted_ms": 30.0}
         self.unload_calls = 0
+        self.tool_calls: list[dict] | None = None
+        self.seen_payload: dict | None = None
 
     async def health(self):
         return True
@@ -61,3 +64,48 @@ class FakeUpstream:
             await asyncio.sleep(self.delay)
             yield StreamChunk(raw={}, content_delta=d)
         yield StreamChunk(raw={}, usage=dict(self.usage), timings=dict(self.timings))
+
+    # -- raw passthrough (/v1) ------------------------------------------------
+    # These return real OpenAI wire bytes rather than StreamChunks, because the
+    # passthrough's whole contract is that the bytes survive the trip untouched.
+    # `seen_payload` records what the app actually forwarded, which is where
+    # dropped fields (tools, tool_choice) would show up.
+
+    def _raw_chunks(self, model: str) -> list[dict]:
+        out = [{"id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": model,
+                "choices": [{"index": 0, "delta": {"content": d}, "finish_reason": None}]}
+               for d in self.script.get(model, ["hello", " world"])]
+        if self.tool_calls:
+            out.append({"id": "chatcmpl-fake", "object": "chat.completion.chunk",
+                        "model": model,
+                        "choices": [{"index": 0, "delta": {"tool_calls": self.tool_calls},
+                                     "finish_reason": "tool_calls"}]})
+        out.append({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": model,
+                    "choices": [], "usage": dict(self.usage), "timings": dict(self.timings)})
+        return out
+
+    async def stream_raw(self, payload) -> AsyncIterator[bytes]:
+        self.seen_payload = dict(payload)
+        model = payload.get("model")
+        self.loaded = model
+        for obj in self._raw_chunks(model):
+            await asyncio.sleep(self.delay)
+            yield f"data: {json.dumps(obj)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+    async def post_raw(self, payload) -> bytes:
+        self.seen_payload = dict(payload)
+        model = payload.get("model")
+        self.loaded = model
+        await asyncio.sleep(self.delay)
+        msg: dict = {"role": "assistant",
+                     "content": "".join(self.script.get(model, ["hello", " world"]))}
+        if self.tool_calls:
+            msg["content"] = None
+            msg["tool_calls"] = self.tool_calls
+        return json.dumps({
+            "id": "chatcmpl-fake", "object": "chat.completion", "model": model,
+            "choices": [{"index": 0, "message": msg,
+                         "finish_reason": "tool_calls" if self.tool_calls else "stop"}],
+            "usage": dict(self.usage), "timings": dict(self.timings),
+        }).encode()
