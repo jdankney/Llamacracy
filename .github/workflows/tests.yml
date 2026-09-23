@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Lint and test on every push and pull request. Needs no GPU: the tests run
+# against a fake llama-swap (see tests/conftest.py).
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check .
+      - name: Check front-end syntax
+        run: node --check llamacracy/static/assets/app.js
+      - name: Test
+        run: uv run pytest -q

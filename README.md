@@ -10,6 +10,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/jdankney/Llamacracy/actions/workflows/tests.yml"><img src="https://github.com/jdankney/Llamacracy/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License: AGPL-3.0-or-later"></a>
+</p>
+
+<p align="center">
   <img src="docs/screenshot.png" alt="Llamacracy chat UI" width="900">
 </p>
 
