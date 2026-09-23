@@ -132,8 +132,9 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   substitution gets everything else right for free. Only the current turn's
   image is sent; earlier images are not resent on every follow-up.
 - **The `/v1` chat endpoint is a raw passthrough, not a modelled one.** The
-  request body is forwarded as it arrived, with only the model's sampling
-  defaults and the `max_tokens` cap merged in, and llama-swap's response bytes
+  request body is forwarded as it arrived, with only the `max_tokens` cap
+  applied and the model's sampling defaults filled in where the client left
+  them out, and llama-swap's response bytes
   are streamed back unaltered. Only `model` and the presence of `messages` are
   validated. This is a correction. The endpoint originally declared a pydantic
   body of `model`/`messages`/`stream`/`max_tokens`, and pydantic's default
@@ -148,6 +149,15 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   IDE owns the loop. Each round trip arrives as its own job and queues
   normally, so an agent turn is N ordinary FIFO entries rather than one job
   holding the GPU across N inferences.
+- **On `/v1` the client's sampling wins and the output cap is larger.** In
+  the web UI nobody picks a temperature, so the inventory's values are
+  final. An editor sets them on purpose (a low temperature for its apply
+  model), so on `/v1` the inventory only fills in what the client left out.
+  This reverses the first version, which forced the inventory's values on
+  every caller. The cap is `API_MAX_TOKENS_PER_REQUEST` (default 8192)
+  rather than the 2048 chat cap, because an apply model that is cut off
+  halfway through rewriting a file leaves the file truncated. It still bounds
+  how far one API call can overshoot a limit.
 - **Context per model is maxed out** by a benchmark sweep that walks a
   ladder of (ctx, KV type, expert offload) and keeps the largest that fits.
   On a small-VRAM card the ceiling is usually system RAM, not VRAM, and

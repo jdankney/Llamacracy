@@ -744,7 +744,7 @@ async def queue_events(request: Request,
 # UI's history.
 #
 # The chat completion is a raw passthrough: the body goes upstream as it
-# arrived (plus the model's sampling and the token cap) and llama-swap's bytes
+# arrived (plus sampling defaults for anything it left out, and the token cap) and llama-swap's bytes
 # come back untouched, so tool calling and anything else llama.cpp supports
 # works without this file knowing it exists.
 # --------------------------------------------------------------------------- #
@@ -826,14 +826,15 @@ async def v1_chat_completions(request: Request,
     # that does ask gets the thinking budget, since reasoning and answer share it.
     ctk = body.get("chat_template_kwargs")
     think = model.thinking and isinstance(ctk, dict) and ctk.get("enable_thinking") is True
-    budget = (settings.thinking_max_tokens if think
-              else min(model.max_tokens_default, settings.max_tokens_per_request))
+    budget = max(settings.api_max_tokens_per_request,
+                 settings.thinking_max_tokens if think else 0)
     cap = min(asked or budget, budget)
 
     stream = bool(body.get("stream"))
-    # sampling wins over the client, as it does for the web UI: these models are
-    # tuned per entry in the inventory and an IDE has no idea what suits them
-    payload = {**body, "max_tokens": cap, **model.sampling}
+    # The inventory's sampling fills in what the client leaves out; what it
+    # does send wins. Unlike the web UI, an IDE sets these on purpose (a low
+    # temperature for its apply model, say).
+    payload = {**model.sampling, **body, "max_tokens": cap}
     payload.pop("model", None)          # the queue sets it from job.model_id
     if stream:
         # credits come off the real usage block, never an estimate, so ask for

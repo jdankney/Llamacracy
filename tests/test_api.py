@@ -220,19 +220,21 @@ def test_v1_streams_tool_calls_verbatim(client):
     assert row[0] == 3 and row[1] == 0 and row[2] == "done"
 
 
-def test_v1_clamps_max_tokens_and_applies_sampling(client):
+def test_v1_clamps_max_tokens_and_fills_in_sampling(client):
     """The two things the passthrough is allowed to change about the body."""
     client.fake_upstream.script["small"] = ["ok"]
     reg = client.registry
-    reg._models["small"] = replace(reg.require("small"), sampling={"temperature": 0.25})
+    reg._models["small"] = replace(reg.require("small"),
+                                   sampling={"temperature": 0.25, "top_p": 0.9})
     key = client.post("/api/keys", json={"label": "t"}).json()["key"]
     client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {key}"},
-                json={"model": "small", "max_tokens": 999999, "temperature": 1.9,
+                json={"model": "small", "max_tokens": 999999, "temperature": 0.1,
                       "messages": [{"role": "user", "content": "hi"}]})
 
     sent = client.fake_upstream.seen_payload
-    assert sent["max_tokens"] == get_settings().max_tokens_per_request
-    assert sent["temperature"] == 0.25       # inventory sampling wins over the client
+    assert sent["max_tokens"] == get_settings().api_max_tokens_per_request
+    assert sent["temperature"] == 0.1        # what the client sent wins...
+    assert sent["top_p"] == 0.9              # ...the inventory fills in the rest
 
 
 def test_v1_rejects_bad_requests(client):

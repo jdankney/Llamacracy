@@ -36,8 +36,11 @@ cp .env.example ~/.continue/.env
 Then edit `~/.continue/.env`:
 
 ```
-LLM_API_KEY=sk-your-real-key
+LLM_API_KEY=your-real-key
 ```
+
+With Llamacracy, generate the key under **Account → API access** in the web UI. It starts with
+`llk_` and is shown only once.
 
 **3. Point it at your server.** In `~/.continue/config.yaml`, change these values:
 
@@ -48,6 +51,18 @@ LLM_API_KEY=sk-your-real-key
 **4. Reload.** Restart your editor, or run **Developer: Reload Window** in VS Code. Then pick your
 models from the model dropdown in Continue, and choose **My Apply Model** as the Apply model in
 Continue's model settings.
+
+### Using it with Llamacracy
+
+- `apiBase` is the web UI's address plus `/v1`, for example `http://<your-fqdn>:4180/v1`.
+- `maxTokens` can go up to the server's `API_MAX_TOKENS_PER_REQUEST` (8192 by default). A larger
+  value isn't an error; the reply is just capped there.
+- The `temperature`, `topP` and `topK` you set here are the ones used. The server's per-model
+  defaults only fill in settings you leave out, so **My Small Model** gets them all.
+- Thinking is off unless a request turns it on with `enable_thinking: true`. Then the reasoning and
+  the reply share the larger `THINKING_MAX_TOKENS` budget.
+- Every request waits its turn in the same queue as the web chat and uses your credits. An agent
+  turn is one queued request per tool call.
 
 ## How it works
 
@@ -122,5 +137,6 @@ matches.
 ## Security
 
 - Never commit `~/.continue/.env` or any file containing a real key.
-- Use `https://` for `apiBase` unless the server is on your local network, or your key is sent in
-  plain text.
+- Use `https://` for `apiBase` unless the connection is already encrypted, or your key is sent in
+  plain text. A private tunnel such as NetBird or WireGuard counts, which is why Llamacracy's
+  `http://` address is fine.

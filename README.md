@@ -59,7 +59,8 @@ payment processing.
   account, so each person can make the app their own.
 - **OpenAI-compatible `/v1` endpoint** for IDE tools such as Continue.dev,
   sharing the same queue and limits. A raw passthrough, so tool calling and
-  agent mode work as well as the model underneath does.
+  agent mode work as well as the model underneath does. There's a ready-made
+  Continue config in [`examples/continue/`](examples/continue/).
 - **Admin dashboard**: live GPU stats, users, per-model performance, "queue
   impact" fairness, billing with draft invoices and CSV export, API-key
   revocation, and per-user controls.

@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # tokens, so the ordinary cap would cut the answer off. Also the bound on
     # limit overshoot for thinking turns.
     thinking_max_tokens: int = 8192
+    # Output cap on the /v1 endpoint. Coding tools legitimately need long
+    # replies (an apply model rewrites a whole file), so this is larger than
+    # the chat cap; it is still the bound on limit overshoot for API calls.
+    api_max_tokens_per_request: int = 8192
 
     # --- cost model --------------------------------------------------------
     non_gpu_load_watts: float = 110

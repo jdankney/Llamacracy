@@ -153,6 +153,7 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 | `LOAD_TIME_MULTIPLIER` | fraction of a cold-start's seconds that are billed. Default 0.5. |
 | `MAX_TOKENS_PER_REQUEST` | hard output cap; bounds limit overshoot. Default 2048. |
 | `THINKING_MAX_TOKENS` | output cap for a turn with Think on (reasoning and answer share it). Default 8192. |
+| `API_MAX_TOKENS_PER_REQUEST` | output cap on the `/v1` endpoint, where an editor's apply model may rewrite a whole file. Default 8192. |
 | `ELECTRICITY_RATE` / `TOU_SCHEDULE` | $/kWh. TOU_SCHEDULE (JSON hour→rate) wins if set. |
 | `NON_GPU_LOAD_WATTS` | added to measured GPU watts for the cost model. Default 110. |
 | `MARKUP` | multiplier on `cost_usd`. Default 1.0 -- raise to 2-3x for non-trivial invoices. |
@@ -194,6 +195,10 @@ models:
     apiKey: llk_...                                        # from Account -> API access
     roles: [chat, edit, apply]
 ```
+For a fuller setup (a dedicated apply model, the key kept in a `.env` file,
+a rule that stops small models wiping files), start from
+[`examples/continue/`](../examples/continue/).
+
 `GET /v1/models` lists the current picker models (the keys in your
 inventory). No `/v1/completions` — editor autocomplete isn't wired up (it
 would contend with everyone else's chats on the same single-GPU FIFO queue).
@@ -203,9 +208,14 @@ would contend with everyone else's chats on the same single-GPU FIFO queue).
 `requestOptions.extraBodyProperties`). A request that does gets the larger
 `THINKING_MAX_TOKENS` budget, since the reasoning and the answer share it.
 
+**Sampling and length.** The inventory's sampling values only fill in what
+the request leaves out, so a `temperature` set in the editor is the one used.
+Replies are capped at `API_MAX_TOKENS_PER_REQUEST` (default 8192), not the
+2048 chat cap, so an apply model can rewrite a whole file.
+
 **Tool calling works** — agent mode, edit tools, the lot.
 `/v1/chat/completions` forwards the request body to llama-swap untouched apart
-from the model's sampling defaults and the token cap, so `tools`,
+from the token cap and the model's sampling defaults, so `tools`,
 `tool_choice` and tool-result messages pass straight through and the reply
 comes back with real `tool_calls`. Whether a given model is any *good* at it
 is a property of the model, not of Llamacracy — the smaller ones will call the
