@@ -107,8 +107,12 @@ matches.
 
 - **Files get wiped or truncated when edited.** Check that the apply model is selected, and raise its
   `maxTokens` above the size of your largest file. Use git so a bad edit is easy to undo.
-- **Tool calls show up as raw text in chat.** Your server isn't parsing tool calls. llama.cpp needs
-  `--jinja`; vLLM needs `--enable-auto-tool-choice` plus the right `--tool-call-parser`.
+- **Tool calls show up as raw text in chat.** The model never received the tool definitions, or the
+  server isn't turning its output back into tool calls. First check that the `tools` array actually
+  reaches the server: a proxy or gateway in front of it can drop it silently. On llama.cpp, tool
+  calling uses the Jinja template engine, which current builds turn on by default (older builds need
+  `--jinja`, and `--no-jinja` turns it off). vLLM needs `--enable-auto-tool-choice` plus the right
+  `--tool-call-parser` for your model.
 - **401 / unauthorized.** Check that `~/.continue/.env` exists, the variable name matches the config
   exactly, and no project `.env` defines the same name with a different value.
 - **The context percentage looks off.** Continue calculates it from `contextLength`, so set that to
