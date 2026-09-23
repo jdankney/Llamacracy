@@ -27,6 +27,8 @@ _MIGRATIONS = [
     "ALTER TABLE conversations ADD COLUMN compact_boundary_id INTEGER",
     "ALTER TABLE conversations ADD COLUMN context_summary TEXT",
     "ALTER TABLE users ADD COLUMN prefs_json TEXT",
+    "ALTER TABLE messages ADD COLUMN reasoning TEXT",
+    "ALTER TABLE messages ADD COLUMN thinking_seconds REAL",
 ]
 
 

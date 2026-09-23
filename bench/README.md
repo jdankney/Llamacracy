@@ -57,7 +57,7 @@ API, billing rows):
 | `in_picker` | `false` hides a chat model without removing it. |
 | `blurb` | One line under the composer when the model is selected. |
 | `reasoning` | `"off"` (thinking exists, disabled), `"none"` (model has none), or `null`. Informational. |
-| `nothink` | `true` injects `chat_template_kwargs: {enable_thinking: false}` per request. Use for models that emit `<think>` by default. |
+| `thinking` | `true` for a model that can reason (Qwen3-style `enable_thinking` templates). Thinking is off by default; users turn it on per message with the Think toggle, and the app sends `chat_template_kwargs.enable_thinking` on every request. `nothink: true` is the older name and means the same. |
 | `sampling` | Per-model request defaults the app sends (`temperature`, `top_p`, `top_k`, `min_p`). |
 | `max_tokens` | Per-model reply cap, default 2048 (also capped by `MAX_TOKENS_PER_REQUEST`). |
 | `serve` | How llama-server runs it: `ctx`, `kv_type` (`f16`/`q8_0`), `n_cpu_moe` (MoE expert offload, or omit), `no_mmap`, `fa` (`on`), `args` (extra CLI flags). |

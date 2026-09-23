@@ -106,8 +106,11 @@ Just ask. I can raise your limits individually.
 | **<daily model>** | general daily use; runs fully on the GPU, nice and quick |
 | **<big model>** | the big gun — long documents, tougher reasoning, images |
 
-"Thinking" / chain-of-thought is off by default to save time and power. Just
-ask your question normally.
+Some models can **think** a problem through before they answer. It's off by
+default (it's slower and uses more of your credits), so just ask normally. For
+a tricky one (maths, a puzzle, some planning) pick a model that thinks and tap
+the lightbulb by the message box. You'll see "Thought for 1m 26s" above the
+answer, and you can tap it to read what it was thinking.
 
 ## What it can't do (yet)
 

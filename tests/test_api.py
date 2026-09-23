@@ -24,6 +24,10 @@ def _registry() -> Registry:
     return Registry({
         "small": ModelInfo("small", "Small", "chat", "fast", True, "", "off",
                            seed_cold_load_s=1.0, seed_tg_tok_s=40.0),
+        # can reason on request (the Think toggle); hidden from the picker so
+        # the existing tests that list picker models are unaffected
+        "thinker": ModelInfo("thinker", "Thinker", "chat", "daily", True, "", "off",
+                             thinking=True, seed_cold_load_s=1.0, seed_tg_tok_s=40.0),
     }, "test")
 
 
@@ -77,7 +81,8 @@ def _count(db: Database, table: str) -> int:
 def test_models_lists_picker_models(client):
     r = client.get("/api/models")
     assert r.status_code == 200
-    assert [m["id"] for m in r.json()["models"]] == ["small"]
+    assert [m["id"] for m in r.json()["models"]] == ["small", "thinker"]
+    assert [m["thinking"] for m in r.json()["models"]] == [False, True]
 
 
 def test_chat_streams_and_persists(client):
@@ -288,3 +293,75 @@ def test_appearance_rejects_anything_but_plain_values(client, bad):
     """Colours are written into CSS custom properties, so only #rrggbb gets in."""
     assert client.put("/api/me/prefs", json=bad).status_code == 422
     assert client.get("/api/me").json()["prefs"]["appearance"]["preset"] == "llamacracy"
+
+
+def _chat(client, **body) -> list[dict]:
+    with client.stream("POST", "/api/chat", json={"message": "hi", **body}) as r:
+        assert r.status_code == 200
+        return _sse_events(r)
+
+
+def test_thinking_off_by_default_and_on_when_asked(client):
+    up = client.fake_upstream
+    _chat(client, model="thinker")
+    assert up.seen_payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert up.seen_payload["max_tokens"] == get_settings().max_tokens_per_request
+
+    up.thinking["thinker"] = ["Seventeen", " times twenty-three..."]
+    events = _chat(client, model="thinker", think=True)
+    assert up.seen_payload["chat_template_kwargs"] == {"enable_thinking": True}
+    # reasoning and answer share one budget, so a thinking turn gets the big one
+    assert up.seen_payload["max_tokens"] == get_settings().thinking_max_tokens
+
+    types = [e["type"] for e in events]
+    assert types.index("reasoning") < types.index("thought") < types.index("token")
+    assert events[-1]["thinking_seconds"] is not None
+
+    conv = client.get(f"/api/conversations/{events[0]['conversation_id']}").json()
+    reply = conv["messages"][-1]
+    assert reply["reasoning"] == "Seventeen times twenty-three..."
+    assert reply["thinking_seconds"] >= 0
+    assert reply["content"] == "hello world"
+
+
+def test_think_is_ignored_for_models_that_cannot(client):
+    _chat(client, model="small", think=True)
+    sent = client.fake_upstream.seen_payload
+    assert "chat_template_kwargs" not in sent
+    assert sent["max_tokens"] == get_settings().max_tokens_per_request
+
+
+def test_reasoning_is_not_resent_as_history(client):
+    events = _chat(client, model="thinker", think=True)
+    _chat(client, model="thinker", conversation_id=events[0]["conversation_id"])
+    history = client.fake_upstream.seen_payload["messages"]
+    assert [m["role"] for m in history] == ["user", "assistant", "user"]
+    assert history[1]["content"] == "hello world"          # the answer only, no thinking
+
+
+def test_a_reply_that_only_thought_is_still_saved(client):
+    """If thinking uses the whole budget there's no answer, but the user paid
+    for the reasoning and should be able to read it."""
+    client.fake_upstream.script["thinker"] = []
+    events = _chat(client, model="thinker", think=True)
+    conv = client.get(f"/api/conversations/{events[0]['conversation_id']}").json()
+    assert conv["messages"][-1]["role"] == "assistant"
+    assert conv["messages"][-1]["content"] == ""
+    assert conv["messages"][-1]["reasoning"] == "Let me think."
+
+
+def test_v1_thinking_defaults_off_and_client_can_turn_it_on(client):
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    h = {"Authorization": f"Bearer {key}"}
+    msgs = [{"role": "user", "content": "hi"}]
+
+    client.post("/v1/chat/completions", headers=h, json={"model": "thinker", "messages": msgs})
+    # nothing said -> the queue's safety net switches thinking off
+    assert client.fake_upstream.seen_payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+    client.post("/v1/chat/completions", headers=h, json={
+        "model": "thinker", "messages": msgs, "max_tokens": 999999,
+        "chat_template_kwargs": {"enable_thinking": True}})
+    sent = client.fake_upstream.seen_payload
+    assert sent["chat_template_kwargs"] == {"enable_thinking": True}
+    assert sent["max_tokens"] == get_settings().thinking_max_tokens

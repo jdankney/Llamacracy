@@ -19,8 +19,10 @@ Outputs
 
 Serving choices baked in:
   - `-np 1` so KV cache = 1 x context (strict FIFO, one inference at a time)
-  - `nothink: true` models get `chat_template_kwargs: {enable_thinking: false}`
-    injected per request via llama-swap's filters.setParams
+  - `thinking: true` (older name: `nothink: true`) marks a model that can
+    reason. No llama-swap filter is emitted for it: the app sends
+    `chat_template_kwargs.enable_thinking` on every request, off unless the
+    user flips the Think toggle (a setParams filter would override that)
   - kind=fim models are `unlisted` in llama-swap and hidden from the picker
   - a model's `vision` block adds a second, unlisted `<key>-vision` entry:
     same weights + --mmproj, dispatched to only when a message carries an image
@@ -107,7 +109,7 @@ def build_cmd(path: str, rec: dict, serve: dict, threads: int, *,
 
 
 def emit_yaml_entry(y: list[str], key: str, argv: list[str], comment: str, *,
-                    ttl: int, nothink: bool = False, unlisted: bool = False) -> None:
+                    ttl: int, unlisted: bool = False) -> None:
     y.append(f'  "{key}":')
     y.append(f"    # {comment}")
     # cmd as a literal block: one flag (+ its value) per line for readability
@@ -124,11 +126,6 @@ def emit_yaml_entry(y: list[str], key: str, argv: list[str], comment: str, *,
     y.append('    proxy: "http://127.0.0.1:${PORT}"')
     y.append('    checkEndpoint: "/health"')
     y.append(f"    ttl: {ttl}")
-    if nothink:
-        y.append("    filters:")
-        y.append("      setParams:")
-        y.append("        chat_template_kwargs:")
-        y.append("          enable_thinking: false")
     if unlisted:
         y.append("    unlisted: true")
     y.append("")
@@ -145,6 +142,9 @@ def registry_entry(m: dict, rec: dict, path: str, *, display: str, blurb: str,
         "in_picker": in_picker,
         "blurb": blurb,
         "reasoning": m.get("reasoning", None if is_fim else "off"),
+        # can reason on request (the Think toggle). `nothink` is the older
+        # name for the same fact: "reasons, but keep it off by default".
+        "thinking": bool(m.get("thinking", m.get("nothink", False))) and not is_fim,
         "sampling": m.get("sampling", {}),
         "ctx": rec["ctx"],
         "seed_cold_load_s": rec["cold_load_s"],
@@ -208,7 +208,7 @@ def generate(inv: dict, bench: dict) -> tuple[str, dict]:
             y, key, build_cmd(path, rec, serve, threads),
             f'{m["display"]} | {rec["tg_tok_s"]} tok/s | '
             f'{rec["cold_load_s"]}s cold | {rec["vram_used_mib"]} MiB VRAM',
-            ttl=ttl, nothink=bool(m.get("nothink")), unlisted=is_fim)
+            ttl=ttl, unlisted=is_fim)
         built.add(key)
         groups.setdefault(m.get("group", "default"), []).append(key)
         registry["models"][key] = registry_entry(
@@ -236,7 +236,7 @@ def generate(inv: dict, bench: dict) -> tuple[str, dict]:
         emit_yaml_entry(
             y, vkey, build_cmd(path, rec, serve, threads, mmproj=mmproj),
             f"{display} | mmproj: {Path(mmproj).name}",
-            ttl=ttl, nothink=bool(m.get("nothink")), unlisted=True)
+            ttl=ttl, unlisted=True)
         built.add(vkey)
         groups.setdefault(m.get("group", "default"), []).append(vkey)
         registry["models"][vkey] = registry_entry(

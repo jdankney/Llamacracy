@@ -24,6 +24,7 @@ class ModelInfo:
     in_picker: bool
     blurb: str
     reasoning: str | None
+    thinking: bool = False    # can reason on request; off unless the user asks
     sampling: dict = field(default_factory=dict)
     ctx: int = 8192
     seed_cold_load_s: float = 10.0
@@ -84,6 +85,7 @@ def get_registry() -> Registry:
             in_picker=m.get("in_picker", m["kind"] != "fim"),
             blurb=m.get("blurb", ""),
             reasoning=m.get("reasoning"),
+            thinking=bool(m.get("thinking", False)),
             sampling=m.get("sampling", {}),
             ctx=m.get("ctx", 8192),
             seed_cold_load_s=m.get("seed_cold_load_s", 10.0),

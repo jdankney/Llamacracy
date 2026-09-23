@@ -128,6 +128,7 @@ async def me(principal: Principal = Depends(get_principal),
             "weekly_credit_limit": settings.weekly_credit_limit,
             "session_window_hours": settings.session_window_hours,
             "max_tokens_per_request": settings.max_tokens_per_request,
+            "thinking_max_tokens": settings.thinking_max_tokens,
             "upload_max_mb": settings.upload_max_mb,
             "compact_keep_recent": settings.compact_keep_recent,
         },
@@ -251,6 +252,7 @@ async def list_models(principal: Principal = Depends(get_principal),
             "blurb": m.blurb,
             "ctx": m.ctx,
             "reasoning": m.reasoning,
+            "thinking": m.thinking,
             "tok_s": m.seed_tg_tok_s,
             "cold_load_s": qm.load_estimate(m.key),
             "resident": m.key == loaded,
@@ -308,7 +310,8 @@ async def conversation_detail(conv_id: str,
         raise HTTPException(404, "no such conversation")
     msgs = await db.fetch_all(
         "SELECT id, role, content, model_id, prompt_tokens, completion_tokens, "
-        "usage_estimated, search_json, image_upload_id, created_at FROM messages "
+        "usage_estimated, search_json, image_upload_id, reasoning, thinking_seconds, "
+        "created_at FROM messages "
         "WHERE conversation_id = ? ORDER BY id",
         (conv_id,),
     )
@@ -490,6 +493,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     max_tokens: int | None = None
     search: bool = False
+    think: bool = False          # the Think toggle; ignored for models that can't
     image_id: str | None = None
 
 
@@ -585,12 +589,15 @@ async def chat(req: ChatRequest,
         user_content = prompt_content
     messages = history + [{"role": "user", "content": user_content}]
 
-    cap = min(
-        req.max_tokens or model.max_tokens_default,
-        model.max_tokens_default,
-        settings.max_tokens_per_request,
-    )
+    # Thinking and the answer share one output budget, so a thinking turn gets
+    # the larger THINKING_MAX_TOKENS instead of the everyday cap.
+    think = req.think and model.thinking
+    budget = (settings.thinking_max_tokens if think
+              else min(model.max_tokens_default, settings.max_tokens_per_request))
+    cap = min(req.max_tokens or budget, budget)
     payload = {"messages": messages, "max_tokens": cap, **model.sampling}
+    if model.thinking:
+        payload["chat_template_kwargs"] = {"enable_thinking": think}
 
     job = Job(
         user_id=principal.user_id,
@@ -778,9 +785,14 @@ async def v1_chat_completions(request: Request,
         asked = int(body["max_tokens"]) if body.get("max_tokens") is not None else None
     except (TypeError, ValueError):
         raise HTTPException(400, "max_tokens must be an integer") from None
-    cap = min(asked or model.max_tokens_default,
-              model.max_tokens_default,
-              settings.max_tokens_per_request)
+    # Thinking is off unless the client asks (chat_template_kwargs.enable_thinking,
+    # as llama.cpp and vLLM take it); the queue fills in the "off". A client
+    # that does ask gets the thinking budget, since reasoning and answer share it.
+    ctk = body.get("chat_template_kwargs")
+    think = model.thinking and isinstance(ctk, dict) and ctk.get("enable_thinking") is True
+    budget = (settings.thinking_max_tokens if think
+              else min(model.max_tokens_default, settings.max_tokens_per_request))
+    cap = min(asked or budget, budget)
 
     stream = bool(body.get("stream"))
     # sampling wins over the client, as it does for the web UI: these models are

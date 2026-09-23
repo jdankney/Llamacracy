@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS messages (
     usage_estimated   INTEGER NOT NULL DEFAULT 0,
     search_json       TEXT,                  -- SearXNG outcome for this (user) turn, if requested
     image_upload_id   TEXT REFERENCES uploads(id),  -- attached image for this (user) turn, if any
+    reasoning         TEXT,                  -- the model's thinking before this (assistant) reply, if it thought
+    thinking_seconds  REAL,                  -- first thinking token -> first answer token
     created_at        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation ON messages(conversation_id, id);

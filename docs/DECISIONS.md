@@ -100,11 +100,25 @@ reasoning, so you can tell which ones to keep when you adapt it. The
 
 - `-np 1` everywhere: llama-server defaults to 4 parallel slots and splits
   the KV cache across them. Under strict FIFO one slot means KV = 1 × ctx.
-- **Reasoning off by default** (a "token / energy saver" choice).
-  `--reasoning-budget 0` does not stop models that emit `<think>` by default;
-  `chat_template_kwargs: {enable_thinking: false}` injected per request via
-  llama-swap's `filters.setParams` does. That is what `nothink: true` in the
-  inventory turns on.
+- **Reasoning is off by default and a per-message toggle** (a "token / energy
+  saver" default with an opt-in). `--reasoning-budget 0` does not stop models
+  that emit `<think>` by default; `chat_template_kwargs.enable_thinking` does.
+  That flag used to be forced off by a llama-swap `filters.setParams`, but a
+  filter overrides the request, so no user could ever turn thinking on. The app
+  now sends the flag on every request to a model marked `thinking: true` in the
+  inventory: on only when the user flipped Think (or an API client asked for
+  it), and the queue fills in "off" for anything that didn't say, so no path
+  can make a model think by accident. The generator no longer emits the
+  filter.
+- **A thinking turn gets its own, larger output budget**
+  (`THINKING_MAX_TOKENS`, default 8192). Reasoning and answer share
+  `max_tokens`, and a model can think for thousands of tokens, so the everyday
+  cap would leave no room for the answer. It is also the overshoot bound for
+  those turns. The thinking is saved with the reply (shown folded under
+  "Thought for 1m 26s", timed from its first token to the answer's first
+  token) but never resent as history, so it costs context only on the turn
+  that produced it. A reply that spent its whole budget thinking is still
+  saved, because the user paid for that reasoning.
 - Flash attention is on for every model: quantised (`q8_0`) KV requires it in
   llama.cpp, and it was faster for prompt processing on everything measured.
   No toggle is exposed.

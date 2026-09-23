@@ -36,6 +36,7 @@ class FakeUpstream:
         self.timings = {"prompt_ms": 20.0, "predicted_ms": 30.0}
         self.unload_calls = 0
         self.tool_calls: list[dict] | None = None
+        self.thinking: dict[str, list[str]] = {}
         self.seen_payload: dict | None = None
 
     async def health(self):
@@ -58,9 +59,16 @@ class FakeUpstream:
     async def stream_chat(self, payload) -> AsyncIterator:
         from llamacracy.upstream import StreamChunk
 
+        self.seen_payload = dict(payload)
         model = payload.get("model")
         deltas = self.script.get(model, ["hello", " world"])
         self.loaded = model
+        # a model asked to think streams its reasoning before the answer
+        ctk = payload.get("chat_template_kwargs") or {}
+        if ctk.get("enable_thinking"):
+            for r in self.thinking.get(model, ["Let me", " think."]):
+                await asyncio.sleep(self.delay)
+                yield StreamChunk(raw={}, reasoning_delta=r)
         for d in deltas:
             await asyncio.sleep(self.delay)
             yield StreamChunk(raw={}, content_delta=d)

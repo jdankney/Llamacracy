@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     session_window_hours: float = 5
     load_time_multiplier: float = 0.5
     max_tokens_per_request: int = 2048
+    # Output budget for a turn with thinking on. The reasoning and the answer
+    # share max_tokens, and a model can easily think for a few thousand
+    # tokens, so the ordinary cap would cut the answer off. Also the bound on
+    # limit overshoot for thinking turns.
+    thinking_max_tokens: int = 8192
 
     # --- cost model --------------------------------------------------------
     non_gpu_load_watts: float = 110

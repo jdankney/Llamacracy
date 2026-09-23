@@ -42,6 +42,9 @@ payment processing.
 - **Rich rendering**: markdown, syntax-highlighted code, KaTeX math, a copy
   button that copies the raw source, and a context-window ring that shows how
   full the prompt is before you send.
+- **Thinking on demand**: models that can reason get a Think toggle. Off by
+  default; when on, the reasoning streams live under "Thinking…" and folds
+  away to "Thought for 1m 26s", with a larger token budget for that turn.
 - **Web search on demand**: flip a toggle and that one message gets the top
   SearXNG snippets prepended, with sources cited under it. Never a tool loop.
 - **Vision on demand**: attach an image and the turn routes to the model's

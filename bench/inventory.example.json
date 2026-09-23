@@ -43,6 +43,22 @@
                 "vram_used_mib": 7800, "gpu_gen_w_mean": 240.0 }
     },
 
+    "qwen3-8b": {
+      "display": "Qwen3 8B (Q5_K_M)",
+      "path": "Qwen3-8B/Qwen3-8B-Q5_K_M.gguf",
+      "kind": "chat",
+      "tier": "daily",
+      "in_picker": true,
+      "blurb": "Can think a problem through first when you turn on Think.",
+      "reasoning": "off",
+      "thinking": true,
+      "sampling": { "temperature": 0.7, "top_p": 0.8, "top_k": 20 },
+      "serve": { "ctx": 40960, "kv_type": "q8_0", "no_mmap": false, "args": ["-b", "2048", "-ub", "512"] },
+      "group": "standard",
+      "seed": { "cold_load_s": 4.0, "tg_tok_s": 30.0, "pp_tok_s": 700.0,
+                "vram_used_mib": 8200, "gpu_gen_w_mean": 240.0 }
+    },
+
     "gemma3-4b": {
       "display": "Gemma 3 4B (Q8_0)",
       "path": "gemma-3-4b-it/gemma-3-4b-it-Q8_0.gguf",

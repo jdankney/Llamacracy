@@ -87,6 +87,11 @@ class Job:
     gpu_watts_mean: float | None = None
 
     content_parts: list[str] = field(default_factory=list)
+    # thinking (reasoning) the model did before answering: kept for display
+    # and timed from its first token to the first token of the answer
+    reasoning_parts: list[str] = field(default_factory=list)
+    think_started_at: float | None = None
+    think_ended_at: float | None = None
     _chunks: asyncio.Queue = field(default_factory=asyncio.Queue)
     _cancel: asyncio.Event = field(default_factory=asyncio.Event)
     _done: asyncio.Event = field(default_factory=asyncio.Event)
@@ -94,6 +99,17 @@ class Job:
     @property
     def content(self) -> str:
         return "".join(self.content_parts)
+
+    @property
+    def reasoning(self) -> str:
+        return "".join(self.reasoning_parts)
+
+    @property
+    def thinking_seconds(self) -> float | None:
+        if self.think_started_at is None:
+            return None
+        end = self.think_ended_at or self.finished_at or now()
+        return round(max(0.0, end - self.think_started_at), 1)
 
     def public(self, position: int) -> dict:
         return {
@@ -305,11 +321,20 @@ class QueueManager:
                 break
             if job.gen_started_at is None and (chunk.content_delta or chunk.reasoning_delta):
                 await self._mark_generating(job, t_start, sampler)
+            if chunk.reasoning_delta:
+                if job.think_started_at is None:
+                    job.think_started_at = now()
+                job.reasoning_parts.append(chunk.reasoning_delta)
+                await self._emit(job, {"type": "reasoning", "text": chunk.reasoning_delta})
             if chunk.content_delta:
+                if job.think_started_at is not None and job.think_ended_at is None:
+                    # the answer has started: thinking is over, and the UI can
+                    # swap "Thinking..." for "Thought for Ns" right now
+                    job.think_ended_at = now()
+                    await self._emit(job, {"type": "thought",
+                                           "seconds": job.thinking_seconds})
                 job.content_parts.append(chunk.content_delta)
                 await self._emit(job, {"type": "token", "text": chunk.content_delta})
-            if chunk.reasoning_delta:
-                await self._emit(job, {"type": "reasoning", "text": chunk.reasoning_delta})
             if chunk.usage:
                 job.prompt_tokens = chunk.usage.get("prompt_tokens")
                 job.completion_tokens = chunk.usage.get("completion_tokens")
@@ -365,7 +390,24 @@ class QueueManager:
             predicted_s = (sniff.timings.get("predicted_ms") or 0) / 1000.0
             job.gen_started_at = max(t_start, now() - predicted_s)
 
+    def _default_thinking_off(self, job: Job) -> None:
+        """Every request to a model that can reason says explicitly whether it
+        should. Endpoints set it when the user asked; anything that didn't say
+        gets thinking OFF here, so no code path (compaction, an API client, a
+        future endpoint) can make a model think by accident. This used to be a
+        llama-swap setParams filter, but a filter overrides the request, which
+        made the Think toggle impossible."""
+        m = self.reg.get(job.model_id)
+        if m is None or not m.thinking:
+            return
+        ctk = job.payload.get("chat_template_kwargs")
+        ctk = dict(ctk) if isinstance(ctk, dict) else {}
+        if "enable_thinking" not in ctk:
+            ctk["enable_thinking"] = False
+            job.payload = {**job.payload, "chat_template_kwargs": ctk}
+
     async def _run(self, job: Job) -> None:
+        self._default_thinking_off(job)
         loaded = await self.up.loaded_model()
         job.cold_start = loaded != job.model_id
         t_start = now()
@@ -385,6 +427,8 @@ class QueueManager:
 
         t_end = now()
         job.finished_at = t_end
+        if job.think_started_at is not None and job.think_ended_at is None:
+            job.think_ended_at = t_end     # thought right up to the end (or was cut off)
         job.occupancy_seconds = t_end - t_start
 
         prompt_s = 0.0
@@ -417,6 +461,7 @@ class QueueManager:
             "usage_estimated": job.usage_estimated,
             "load_seconds": round(job.load_seconds, 2),
             "gen_seconds": round(job.gen_seconds, 2),
+            "thinking_seconds": job.thinking_seconds,
         })
 
     # -- finalisation ---------------------------------------------------------
@@ -432,7 +477,9 @@ class QueueManager:
             except Exception:  # noqa: BLE001
                 log.exception("billing finalize failed for job %s", job.id)
         await self._persist_job(job)
-        if job.conversation_id and job.state == JobState.DONE and job.content:
+        # a reply that spent its whole budget thinking still gets saved: the
+        # user paid for that reasoning and should be able to read it
+        if job.conversation_id and job.state == JobState.DONE and (job.content or job.reasoning):
             await self._persist_assistant_message(job)
 
     async def _persist_job(self, job: Job) -> None:
@@ -465,10 +512,12 @@ class QueueManager:
     async def _persist_assistant_message(self, job: Job) -> None:
         await self.db.execute(
             "INSERT INTO messages (conversation_id, role, content, model_id, "
-            "  prompt_tokens, completion_tokens, usage_estimated, created_at) "
-            "VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?)",
+            "  prompt_tokens, completion_tokens, usage_estimated, reasoning, "
+            "  thinking_seconds, created_at) "
+            "VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)",
             (job.conversation_id, job.content, job.model_id, job.prompt_tokens,
-             job.completion_tokens, int(job.usage_estimated), now()),
+             job.completion_tokens, int(job.usage_estimated), job.reasoning or None,
+             job.thinking_seconds, now()),
         )
         await self.db.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?",

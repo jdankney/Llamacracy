@@ -91,6 +91,9 @@ journalctl --user -u llamacracy -f
 
 # after a code change (git pull)
 uv sync && ./deploy/install.sh && systemctl --user restart llamacracy
+# ...and if the pull touched bench/gen_llamaswap_config.py, regenerate AFTER
+# the restart (llama-swap runs with -watch-config and reloads it by itself)
+python3 bench/gen_llamaswap_config.py
 
 # after NetBird reconnected / changed address
 systemctl --user restart llamacracy-dex llamacracy-auth
@@ -149,6 +152,7 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 | `WEEKLY_CREDIT_LIMIT` | rolling 7-day cap. Default 12000. |
 | `LOAD_TIME_MULTIPLIER` | fraction of a cold-start's seconds that are billed. Default 0.5. |
 | `MAX_TOKENS_PER_REQUEST` | hard output cap; bounds limit overshoot. Default 2048. |
+| `THINKING_MAX_TOKENS` | output cap for a turn with Think on (reasoning and answer share it). Default 8192. |
 | `ELECTRICITY_RATE` / `TOU_SCHEDULE` | $/kWh. TOU_SCHEDULE (JSON hour→rate) wins if set. |
 | `NON_GPU_LOAD_WATTS` | added to measured GPU watts for the cost model. Default 110. |
 | `MARKUP` | multiplier on `cost_usd`. Default 1.0 -- raise to 2-3x for non-trivial invoices. |
@@ -193,6 +197,11 @@ models:
 `GET /v1/models` lists the current picker models (the keys in your
 inventory). No `/v1/completions` — editor autocomplete isn't wired up (it
 would contend with everyone else's chats on the same single-GPU FIFO queue).
+
+**Thinking** is off for API calls too, unless the request sets
+`chat_template_kwargs: {enable_thinking: true}` (in Continue:
+`requestOptions.extraBodyProperties`). A request that does gets the larger
+`THINKING_MAX_TOKENS` budget, since the reasoning and the answer share it.
 
 **Tool calling works** — agent mode, edit tools, the lot.
 `/v1/chat/completions` forwards the request body to llama-swap untouched apart

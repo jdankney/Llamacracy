@@ -87,6 +87,7 @@ const ICONS = {
   pen: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z',
   zap: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
   code: 'M16 18l6-6-6-6M8 6l-6 6 6 6',
+  bulb: 'M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.74V17h8v-2.26A7 7 0 0 0 12 2z',
 };
 const icon = (name, cls = '') => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -295,7 +296,7 @@ const S = {
   me: null, models: [], loadedModel: null, conversations: [],
   conv: null, messages: [], active: null, queue: { jobs: [], depth: 0 },
   usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
-  searchOn: false, pendingImage: null,
+  searchOn: false, thinkOn: false, pendingImage: null,
   apiKeys: [], newApiKey: null, apiKeyLabel: '',
   compacting: false,
   draft: '',            // composer text survives re-renders (model switch, stream end, ...)
@@ -558,10 +559,34 @@ function msgBubble(m) {
       h('span', { class: 'name' }, modelName(m.model_id) || 'Assistant'),
       m.created_at ? h('span', { title: new Date(m.created_at * 1000).toLocaleString() },
         new Date(m.created_at * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : null),
-    mdBlock(m.content, { class: 'prose-chat body' }),
+    m.reasoning ? thoughtBlock(m.reasoning, {
+      seconds: m.thinking_seconds, open: !!m._thoughtOpen, onToggle: o => { m._thoughtOpen = o; },
+    }) : null,
+    m.content ? mdBlock(m.content, { class: 'prose-chat body' })
+      : h('div', { class: 'body muted small' },
+        'It used all its room thinking and never got to the answer. Ask again, or turn Think off for this one.'),
     h('div', { class: 'msg-foot' },
       h('span', { class: 'meta' }, tokenMeta(m)),
       copyBtn(m.content)));
+}
+// "Thought for 1m 26s": the model's reasoning, folded away under one line
+const fmtThought = sec => sec == null ? 'Thought'
+  : sec < 1 ? 'Thought for a moment'
+  : sec < 60 ? `Thought for ${Math.round(sec)}s`
+  : `Thought for ${Math.floor(sec / 60)}m ${String(Math.round(sec % 60)).padStart(2, '0')}s`;
+function thoughtBlock(text, { seconds = null, live = false, open = false, onToggle, bodyId } = {}) {
+  const label = live
+    ? h('span', { id: 'think-label' }, `Thinking… ${Math.max(0, Math.round(seconds || 0))}s`)
+    : h('span', {}, fmtThought(seconds));
+  const body = live
+    ? mdBlock(text, { id: bodyId, class: 'prose-chat thought-body' }, false)
+    : mdBlock(text, { class: 'prose-chat thought-body' });
+  return h('details', {
+    class: 'thought' + (live ? ' is-live' : ''), open,
+    ontoggle: e => onToggle && onToggle(e.target.open),
+  },
+    h('summary', {}, live ? h('i', { class: 'pulse' }) : icon('bulb', 'icon-sm'), label, icon('chevron', 'icon-sm')),
+    body);
 }
 function searchChip(sr) {
   if (!sr) return null;
@@ -584,7 +609,21 @@ function activeBubble() {
       h('span', { class: 'status' }, h('i', { class: 'pulse' }), status),
       h('div', { class: 'spacer' }),
       h('button', { class: 'btn btn-ghost btn-sm btn-danger', onclick: cancelActive }, icon('stop', 'icon-sm'), 'Stop')),
+    a.reasoning ? thoughtBlock(a.reasoning, {
+      live: a.thoughtSeconds == null, seconds: a.thoughtSeconds ?? thinkElapsed(), bodyId: 'think-body',
+      open: !!a.thinkOpen, onToggle: o => { a.thinkOpen = o; },
+    }) : null,
     mdBlock(a.text, { id: 'active-body', class: 'prose-chat body' }, false));
+}
+const thinkElapsed = () => S.active?.thinkStart ? (Date.now() - S.active.thinkStart) / 1000 : 0;
+let _thinkTick = null;
+function startThinkTicker() {
+  clearInterval(_thinkTick);
+  _thinkTick = setInterval(() => {
+    const el = document.getElementById('think-label');
+    if (!S.active || S.active.thoughtSeconds != null || !el) { clearInterval(_thinkTick); return; }
+    el.textContent = `Thinking… ${Math.round(thinkElapsed())}s`;
+  }, 1000);
 }
 const modelName = id => S.models.find(m => m.id === id)?.display || id;
 
@@ -604,7 +643,10 @@ const fmtCtx = n => Math.round(n / 1024) + 'K';   // model windows are 1024-mult
 function contextInfo() {
   const m = S.models.find(x => x.id === S.pickerModel);
   if (!m) return null;
-  const limit = m.ctx, reply = m.max_tokens_default || 2048;
+  const thinking = S.thinkOn && m.thinking;
+  const limit = m.ctx;
+  const reply = thinking ? Math.min(S.me?.limits?.thinking_max_tokens || 8192, Math.floor(limit / 2))
+    : (m.max_tokens_default || 2048);
   const boundary = S.conv?.compact_boundary_id || 0;
 
   // last message with real usage, *after* the compact boundary, = exact cost
@@ -618,6 +660,9 @@ function contextInfo() {
         && (msg.id == null || msg.id > boundary)) {
       base = msg.prompt_tokens + msg.completion_tokens;
       exact = !msg.usage_estimated;
+      // completion_tokens counts the reply's thinking, which is never sent
+      // back to the model: take our estimate of it off (and say it's approx)
+      if (msg.reasoning) { base = Math.max(msg.prompt_tokens, base - estTok(msg.reasoning)); exact = false; }
       from = i + 1;
       foundExact = true;
       break;
@@ -641,7 +686,7 @@ function contextInfo() {
   const keep = S.me?.limits?.compact_keep_recent ?? 6;
   const uncompacted = S.messages.filter(msg => msg.id == null || msg.id > boundary).length;
   return {
-    m, limit, reply, used, draftTok, projected,
+    m, limit, reply, thinking, used, draftTok, projected,
     afterReply: projected + reply, exact, estimated,
     pct: projected / limit,
     over: projected >= limit,                  // prompt itself won't fit
@@ -685,7 +730,7 @@ function contextBreakdown(ci) {
       h('span', { class: 'mono' }, `${fmtTok(ci.projected)} used`)),
     row(RING.used, 'Conversation', ci.used),
     ci.draftTok ? row(RING.draft, 'Your draft', ci.draftTok) : null,
-    row(RING.reply, 'Reserved for reply', ci.reply),
+    row(RING.reply, ci.thinking ? 'Reserved for thinking + reply' : 'Reserved for reply', ci.reply),
     row(RING.free, 'Free', free),
     ci.over ? h('div', { class: 'ctx-note danger' },
       'Over the window — compact the history, trim the chat, start a new one, or pick a bigger-context model.')
@@ -773,13 +818,23 @@ function composer() {
               },
             }, S.models.filter(md => md.in_picker).map(md => h('option',
               { value: md.id, selected: md.id === S.pickerModel },
-              `${md.display}${md.tier ? ` · ${tierLabel(md.tier)}` : ''}${md.vision ? ' · vision' : ''}`))),
+              `${md.display}${md.tier ? ` · ${tierLabel(md.tier)}` : ''}${md.vision ? ' · vision' : ''}${md.thinking ? ' · thinks' : ''}`))),
             icon('chevron', 'icon-sm')),
           h('button', {
             type: 'button', title: 'Search the web before answering (one query, injected as context)',
             class: 'btn btn-sm' + (S.searchOn ? ' is-on' : ''), 'aria-pressed': S.searchOn ? 'true' : 'false',
             onclick: () => { S.searchOn = !S.searchOn; render(); },
           }, icon('globe', 'icon-sm'), h('span', { class: 'tool-label' }, 'Search')),
+          h('button', {
+            type: 'button',
+            title: m?.thinking
+              ? 'Let the model think before it answers: better at tricky problems, but slower and uses more credits'
+              : 'This model can\'t think out loud. Pick one marked "thinks"',
+            disabled: !m?.thinking,
+            class: 'btn btn-sm' + (S.thinkOn && m?.thinking ? ' is-on' : ''),
+            'aria-pressed': S.thinkOn && m?.thinking ? 'true' : 'false',
+            onclick: () => { S.thinkOn = !S.thinkOn; render(); },
+          }, icon('bulb', 'icon-sm'), h('span', { class: 'tool-label' }, 'Think')),
           h('input', {
             type: 'file', id: 'img-input', hidden: true,
             accept: 'image/png,image/jpeg,image/webp', onchange: onPickImage,
@@ -1063,8 +1118,15 @@ function modelPicks() {
       : 'The one model here that can look at pictures you attach.']);
   rows.push(['Looking something up on the web', daily,
     'Any model can search. This one is fast and has room for the results.']);
+  // a thinker for puzzles: the strongest model that can think, else any that can
+  const thinkers = ms.filter(m => m.thinking);
+  const bestThinker = thinkers.length
+    ? [...thinkers].sort((a, b) => (rank[b.tier] || 0) - (rank[a.tier] || 0) || b.ctx - a.ctx)[0] : null;
   if (strongest && strongest.id !== daily.id) rows.push(['A hard or fiddly question', strongest,
-    'The strongest one here. Slower to wake up, usually worth the wait.']);
+    'The strongest one here. Slower to wake up, usually worth the wait.' +
+    (strongest.thinking ? ' Turn on Think for the really tricky ones.' : '')]);
+  if (bestThinker && bestThinker.id !== strongest?.id) rows.push(['Maths, logic, or a puzzle', bestThinker,
+    'Turn on Think and it works the problem through before answering.']);
   return rows;
 }
 
@@ -1114,7 +1176,7 @@ function helpView() {
     // six columns would otherwise scroll off the right edge unnoticed
     h('div', { class: 'table-wrap model-wrap' }, h('table', { class: 'model-table' },
       h('thead', {}, h('tr', {},
-        h('th', {}, 'Model'), h('th', {}, 'Best for'), h('th', {}, 'Photos'),
+        h('th', {}, 'Model'), h('th', {}, 'Best for'), h('th', {}, 'Photos'), h('th', {}, 'Thinks'),
         h('th', {}, 'Holds about'), h('th', {}, 'Types at'), h('th', {}, 'Wake-up'))),
       h('tbody', {}, ms.map(m => h('tr', {},
         h('td', { 'data-label': 'Model' }, h('span', { class: 'pick' }, m.display),
@@ -1122,6 +1184,9 @@ function helpView() {
         h('td', { class: 'muted', 'data-label': 'Best for' }, m.blurb || '—'),
         h('td', { 'data-label': 'Photos' }, m.vision
           ? h('span', { class: 'yes' }, icon('eye', 'icon-sm'), 'Yes')
+          : h('span', { class: 'no' }, '—')),
+        h('td', { 'data-label': 'Thinks' }, m.thinking
+          ? h('span', { class: 'yes' }, icon('bulb', 'icon-sm'), 'Yes')
           : h('span', { class: 'no' }, '—')),
         h('td', { class: 'num', 'data-label': 'Holds about' }, `~${pagesFor(m.ctx)} pages`),
         h('td', { class: 'num', 'data-label': 'Types at' }, `~${wordsSec(m.tok_s)} words/sec`),
@@ -1146,10 +1211,33 @@ function helpView() {
       'One quirk worth knowing: a model only looks at the picture in the message you attached ' +
       'it to. Ask your follow-up questions about it in that same message, or attach it again.'),
 
+    h('h2', {}, 'Letting it think'),
+    h('p', {},
+      ms.some(m => m.thinking)
+        ? 'Some models can think a problem through before they answer: the ones marked Yes under ' +
+          'Thinks above. Pick one, turn on Think (the lightbulb by the message box), and you\'ll see ' +
+          '"Thinking…" with a timer while it works, then "Thought for 1m 26s" once it starts ' +
+          'answering. Tap that line to read what it was thinking.'
+        : 'None of the models here can think out loud, so the Think button stays greyed out.'),
+    h('p', {},
+      'It helps with maths, logic puzzles, planning, code, and questions with a catch. For chatting ' +
+      'and everyday questions, leave it off: the answer is just as good and arrives much sooner.'),
+    h('div', { class: 'callout' },
+      h('strong', {}, 'What it costs. '),
+      'Thinking is slower (often a minute or two before the answer starts), and since credits are ' +
+      'seconds of the computer working for you, a thinking answer can cost several times as much. ' +
+      'It also takes up room: while it answers, its thoughts count towards how much it can hold, ' +
+      'which is why the little circle jumps when you switch Think on. Only the answer is kept ' +
+      'for the rest of the conversation, not the thinking, so it won\'t fill a chat up faster later.'),
+    h('p', { class: 'muted' },
+      'Think stays on until you turn it off. If a reply says it used all its room thinking, ask ' +
+      'again with Think off, or split the question into smaller pieces.'),
+
     h('h2', {}, 'The buttons around the message box'),
     h('div', { class: 'table-wrap' }, h('table', {},
       h('tbody', {},
         tool('globe', 'Search', 'Searches the web first and hands the results to the model before it answers. Off unless you turn it on, and it doesn\'t cost you anything.'),
+        tool('bulb', 'Think', 'Lets the model work the problem through before answering. Slower and uses more credits, so save it for tricky questions. Greyed out on models that can\'t.'),
         tool('clip', 'Attach', 'Adds a photo. Greyed out unless the model you\'ve picked can see.'),
         tool('compress', 'Compact', 'In a very long chat, folds the older part into a short summary so there\'s room to keep going. Nothing is deleted.'),
         tool('stop', 'Stop', 'Cuts a reply short and hands the computer straight back to whoever\'s next.')))),
@@ -1315,7 +1403,8 @@ async function sendMessage(e) {
   focusComposer();
 
   aborter = new AbortController();
-  const body = { model: S.pickerModel, message: text, search: S.searchOn };
+  const pm = S.models.find(x => x.id === S.pickerModel);
+  const body = { model: S.pickerModel, message: text, search: S.searchOn, think: !!(S.thinkOn && pm?.thinking) };
   if (img) body.image_id = img.id;
   if (S.conv) body.conversation_id = S.conv.id;
   let accepted = false;
@@ -1342,13 +1431,21 @@ async function sendMessage(e) {
         if (first) render(); else { const b = document.getElementById('active-body'); if (b) { mdInto(b, S.active.text, false); scrollThread(); } }
         // (math + highlight are applied on the final render, see the 'done' branch)
       }
-      else if (ev.type === 'reasoning') { /* thinking hidden in v1 */ }
+      else if (ev.type === 'reasoning') {
+        const first = !S.active.reasoning;
+        S.active.state = 'generating';
+        S.active.reasoning = (S.active.reasoning || '') + ev.text;
+        if (first) { S.active.thinkStart = Date.now(); render(); startThinkTicker(); }
+        else { const b = document.getElementById('think-body'); if (b) { mdInto(b, S.active.reasoning, false); scrollThread(); } }
+      }
+      else if (ev.type === 'thought') { S.active.thoughtSeconds = ev.seconds; render(); }
       else if (ev.type === 'done') {
         S.messages.push({
           // ev.model is the model actually dispatched (may be a model's
           // -vision variant if this turn carried an image), not just the
           // picker's selection -- matches what's persisted server-side.
           role: 'assistant', content: S.active.text, model_id: ev.model || S.active.model,
+          reasoning: S.active.reasoning || null, thinking_seconds: ev.thinking_seconds,
           prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens,
           usage_estimated: ev.usage_estimated, created_at: Date.now() / 1000,
         });
