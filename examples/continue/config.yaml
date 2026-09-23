@@ -1,0 +1,71 @@
+%YAML 1.1
+---
+# Example Continue.dev config for an OpenAI-compatible server
+# (llama.cpp, vLLM, LiteLLM, etc.). See README.md for setup.
+#
+# The "%YAML 1.1" line above is required: it enables the anchor/merge
+# syntax (&name, *name, <<:) used below. Don't remove it.
+
+name: Example Config
+version: 0.1.0
+schema: v1
+
+# Shared connection settings. Every model below reuses this block, so the
+# URL and API key are only written once.
+model_defaults: &server
+  provider: openai
+  apiBase: https://your-server.example.com/v1   # your server's OpenAI-compatible endpoint
+  apiKey: "${{ secrets.LLM_API_KEY }}"          # read from .env; never put the real key here
+  roles:
+    - chat
+    - edit
+  capabilities:
+    - tool_use                                  # needed for Agent mode
+
+# Added to the system prompt for every Chat, Agent and Edit request.
+# This one stops weaker models from replacing whole files with a snippet.
+rules:
+  - >-
+    When modifying an existing file, use single_find_and_replace for targeted
+    changes. Only use edit_existing_file if you have read the entire file, and
+    always mark unchanged sections with "// ... existing code ..." placeholders.
+    Never replace a whole file with a partial snippet.
+
+models:
+  # Main chat/agent model
+  - name: My Chat Model
+    <<: *server
+    model: your-chat-model-id                   # the model ID your server exposes
+    defaultCompletionOptions: &chat_sampling
+      contextLength: 32768                      # match the server's real context size
+      maxTokens: 8192
+      temperature: 0.6
+      topP: 0.95
+      topK: 20
+
+  # A second model with the same sampling settings
+  - name: My Other Chat Model
+    <<: *server
+    model: your-other-model-id
+    defaultCompletionOptions: *chat_sampling
+
+  # Dedicated apply model: turns the chat model's edits into clean diffs.
+  # Same model as above, with thinking off and a low temperature.
+  - name: My Apply Model
+    <<: *server
+    model: your-chat-model-id
+    roles:
+      - apply                                   # overrides the shared roles
+    defaultCompletionOptions:
+      contextLength: 32768
+      maxTokens: 8192                           # raise this if you edit large files
+      temperature: 0.2
+    requestOptions:
+      extraBodyProperties:
+        chat_template_kwargs:
+          enable_thinking: false                # Qwen3-style models; drop for others
+
+  # Minimal entry: only the model ID, everything else comes from &server
+  - name: My Small Model
+    <<: *server
+    model: your-small-model-id
