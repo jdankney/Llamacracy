@@ -108,7 +108,7 @@ Users live in `deploy/dex/config.yaml` under `staticPasswords`. One block each:
 ```
 
 Then `systemctl --user restart llamacracy-dex`. Llamacracy creates the
-user row (and their usage page, credit counters) on first sign-in. To cut
+user row (and their Account page, credit counters) on first sign-in. To cut
 someone off for good, remove their block and restart; to pause them, use the
 admin dashboard → Controls → disable (no restart, keeps their history).
 
@@ -173,7 +173,7 @@ frozen on each job row when it finishes.
 
 ## Continue.dev / any OpenAI-compatible tool
 
-Each user generates their own key from **Usage → API access** in the web UI
+Each user generates their own key from **Account → API access** in the web UI
 (shown once — copy it then, it can't be viewed again; revoke and re-generate
 if it leaks). It flows through the same FIFO queue and credit limits as the
 web chat; the only difference is nothing gets saved to the web UI's chat
@@ -187,7 +187,7 @@ models:
     provider: openai
     model: <model-id>                                      # any id from /v1/models
     apiBase: http://<your-fqdn>:4180/v1
-    apiKey: llk_...                                        # from Usage -> API access
+    apiKey: llk_...                                        # from Account -> API access
     roles: [chat, edit, apply]
 ```
 `GET /v1/models` lists the current picker models (the keys in your

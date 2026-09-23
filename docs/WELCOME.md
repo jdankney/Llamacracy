@@ -24,7 +24,9 @@ bill has a face, and that face is mine.
 - A **search toggle** in the composer — flip it on and that message gets a
   real web search first, with sources cited underneath, before the model
   answers. Off by default.
-- Your own conversation history and a personal usage page. Long chats can be
+- Your own conversation history and a personal Account page, where you can
+  also change how the whole thing looks (themes, your own colours, bigger
+  text) just for you. Long chats can be
   **compacted** on demand (a button in the context panel) to free up room
   without losing the thread — it folds the older part into a summary, it
   doesn't delete anything.

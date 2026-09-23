@@ -26,6 +26,7 @@ _MIGRATIONS = [
     "ALTER TABLE messages ADD COLUMN image_upload_id TEXT REFERENCES uploads(id)",
     "ALTER TABLE conversations ADD COLUMN compact_boundary_id INTEGER",
     "ALTER TABLE conversations ADD COLUMN context_summary TEXT",
+    "ALTER TABLE users ADD COLUMN prefs_json TEXT",
 ]
 
 

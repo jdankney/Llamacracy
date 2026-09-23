@@ -12,11 +12,12 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .admin import router as admin_router
 from .apikeys import generate as generate_api_key
@@ -37,6 +38,7 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("llamacracy")
 
 STATIC_DIR = Path(__file__).parent / "static"
+_HEX = r"^#[0-9a-fA-F]{6}$"
 
 
 @asynccontextmanager
@@ -76,10 +78,47 @@ async def healthz(up: Upstream = Depends(get_upstream)):
     return {"ok": True, "upstream": await up.health()}
 
 
+class Appearance(BaseModel):
+    """What a user can change about how the UI looks, for their account only.
+
+    Colours end up in CSS custom properties, so they are held to a strict
+    `#rrggbb` shape: nothing else can reach a style attribute. `preset` names
+    a built-in palette; "custom" means the four colours below are in charge.
+    """
+    model_config = ConfigDict(extra="forbid")
+    preset: str = Field(default="llamacracy", pattern=r"^[a-z][a-z0-9-]{0,31}$")
+    bg: str | None = Field(default=None, pattern=_HEX)
+    surface: str | None = Field(default=None, pattern=_HEX)
+    text: str | None = Field(default=None, pattern=_HEX)
+    accent: str | None = Field(default=None, pattern=_HEX)
+    chat_text: Literal["sm", "md", "lg", "xl"] = "md"
+
+
+class Prefs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    appearance: Appearance = Field(default_factory=Appearance)
+
+
+async def _load_prefs(db: Database, user_id: int) -> Prefs:
+    row = await db.fetch_one("SELECT prefs_json FROM users WHERE id = ?", (user_id,))
+    if row is None or not row["prefs_json"]:
+        return Prefs()
+    try:
+        return Prefs.model_validate_json(row["prefs_json"])
+    except ValueError:
+        # stored by an older build or hand-edited: fall back rather than
+        # locking the user out of their own page
+        log.warning("ignoring unreadable prefs for user %s", user_id)
+        return Prefs()
+
+
 @app.get("/api/me")
 async def me(principal: Principal = Depends(get_principal),
-             settings: Settings = Depends(get_settings)):
+             settings: Settings = Depends(get_settings),
+             db: Database = Depends(get_db)):
+    prefs = await _load_prefs(db, principal.user_id)
     return {
+        "prefs": prefs.model_dump(),
         "email": principal.email,
         "display_name": principal.display_name,
         "is_admin": principal.is_admin,
@@ -93,6 +132,17 @@ async def me(principal: Principal = Depends(get_principal),
             "compact_keep_recent": settings.compact_keep_recent,
         },
     }
+
+
+@app.put("/api/me/prefs")
+async def put_prefs(prefs: Prefs,
+                    principal: Principal = Depends(get_principal),
+                    db: Database = Depends(get_db)):
+    """Replace the caller's preferences. Scoped to the signed-in user: there
+    is no way to read or write anyone else's through this route."""
+    await db.execute("UPDATE users SET prefs_json = ? WHERE id = ?",
+                     (prefs.model_dump_json(), principal.user_id))
+    return {"prefs": prefs.model_dump()}
 
 
 def get_meter(request: Request) -> Meter:

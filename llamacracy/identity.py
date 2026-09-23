@@ -110,7 +110,7 @@ async def get_principal_api_key(
     key instead of oauth2-proxy's forwarded headers. That endpoint is reached
     by IDE tools directly, outside the browser session, so oauth2-proxy skips
     auth on those paths entirely (deploy/oauth2-proxy.cfg) and this is the
-    only gate. Keys are generated from the usage page and stored as a sha256
+    only gate. Keys are generated from the Account page and stored as a sha256
     hash only (see llamacracy/apikeys.py)."""
     auth = request.headers.get("authorization", "")
     scheme, _, token = auth.partition(" ")

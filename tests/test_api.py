@@ -263,3 +263,28 @@ def test_v1_keepalive_is_an_ignorable_comment(client, monkeypatch):
     text = "".join(json.loads(ln[5:])["choices"][0]["delta"].get("content", "")
                    for ln in data[:-1] if json.loads(ln[5:])["choices"])
     assert text == "hello world"
+
+
+def test_appearance_prefs_round_trip(client):
+    me = client.get("/api/me").json()
+    assert me["prefs"]["appearance"]["preset"] == "llamacracy"     # default for a new user
+
+    look = {"preset": "custom", "bg": "#1c1216", "surface": "#2a1b22",
+            "text": "#F4E4EB", "accent": "#f59ac0", "chat_text": "lg"}
+    r = client.put("/api/me/prefs", json={"appearance": look})
+    assert r.status_code == 200
+    assert client.get("/api/me").json()["prefs"]["appearance"] == look
+
+
+@pytest.mark.parametrize("bad", [
+    {"appearance": {"preset": "custom", "bg": "red"}},
+    {"appearance": {"preset": "custom", "bg": "#fff"}},                    # shorthand isn't allowed
+    {"appearance": {"preset": "custom", "text": "#000000;background:url(x)"}},
+    {"appearance": {"preset": "Nope Nope"}},
+    {"appearance": {"chat_text": "huge"}},
+    {"appearance": {"font": "Comic Sans"}},                                # unknown field
+])
+def test_appearance_rejects_anything_but_plain_values(client, bad):
+    """Colours are written into CSS custom properties, so only #rrggbb gets in."""
+    assert client.put("/api/me/prefs", json=bad).status_code == 422
+    assert client.get("/api/me").json()["prefs"]["appearance"]["preset"] == "llamacracy"

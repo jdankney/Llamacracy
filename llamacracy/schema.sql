@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS users (
     uncapped                    INTEGER NOT NULL DEFAULT 0,  -- never blocked at enqueue; usage % still shown (can exceed 100)
     session_credit_limit_override  REAL,
     weekly_credit_limit_override   REAL,
+    -- per-user UI preferences as a JSON object (appearance: colours, chat
+    -- text size). Purely cosmetic; validated on write, never trusted as CSS.
+    prefs_json                  TEXT,
     created_at                  REAL NOT NULL,
     last_active_at              REAL
 );

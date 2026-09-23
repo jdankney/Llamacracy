@@ -10,6 +10,10 @@ const api = {
     const r = await fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) });
     if (!r.ok) throw await err(r); return r.json();
   },
+  async put(p, b) {
+    const r = await fetch(p, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) });
+    if (!r.ok) throw await err(r); return r.json();
+  },
   async del(p) { const r = await fetch(p, { method: 'DELETE' }); if (!r.ok) throw await err(r); return r.json(); },
   async upload(file) {
     const fd = new FormData(); fd.append('file', file);
@@ -188,6 +192,104 @@ const money = n => n >= 0.01 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) :
 const fmtDate = ts => new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
+
+/* ------------------------------------------------------------ appearance */
+// Per-user theme. A user picks four colours (or a preset that names four);
+// every other shade on the page is derived from them here and written onto
+// :root as the same custom properties styles.css defines, so no component
+// knows themes exist. Saved server-side per account (PUT /api/me/prefs) so it
+// follows the person across devices, and cached in localStorage so the page
+// paints in the right colours before /api/me has answered.
+const PRESETS = {
+  llamacracy: { name: 'Llamacracy', bg: '#0e1117', surface: '#151a23', text: '#dbe0ea', accent: '#8ab4ff' },
+  midnight:   { name: 'Midnight',   bg: '#000000', surface: '#0f1013', text: '#e6e6ea', accent: '#9aa8ff' },
+  rose:       { name: 'Rosé',       bg: '#1c1216', surface: '#2a1b22', text: '#f4e4eb', accent: '#f59ac0' },
+  lavender:   { name: 'Lavender',   bg: '#15122a', surface: '#201c3a', text: '#e7e2f8', accent: '#b69cff' },
+  forest:     { name: 'Forest',     bg: '#0e1813', surface: '#15231c', text: '#dcebe2', accent: '#6fd3a0' },
+  sunset:     { name: 'Sunset',     bg: '#1d140e', surface: '#2a1d14', text: '#f3e6da', accent: '#ff9f5a' },
+  paper:      { name: 'Paper',      bg: '#f6f4ef', surface: '#ffffff', text: '#1f2328', accent: '#2f63d0' },
+  blush:      { name: 'Blush',      bg: '#fcf1f5', surface: '#ffffff', text: '#3a2430', accent: '#c93a76' },
+};
+const CHAT_SIZES = { sm: ['Small', '13.5px'], md: ['Default', '14.5px'], lg: ['Large', '16px'], xl: ['Extra large', '17.5px'] };
+const DEFAULT_LOOK = { preset: 'llamacracy', bg: null, surface: null, text: null, accent: null, chat_text: 'md' };
+const LOOK_CACHE = 'llamacracy.appearance';
+
+const hexRgb = x => [1, 3, 5].map(i => parseInt(x.slice(i, i + 2), 16));
+const rgbHex = a => '#' + a.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('');
+const mix = (a, b, t) => { const p = hexRgb(a), q = hexRgb(b); return rgbHex(p.map((v, i) => v + (q[i] - v) * t)); };
+const rgba = (x, a) => `rgba(${hexRgb(x).join(', ')}, ${a})`;
+const luminance = x => {
+  const [r, g, b] = hexRgb(x).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+// WCAG contrast ratio: 4.5 is the usual floor for body text
+const contrast = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+
+// the four colours actually in force for a saved appearance
+function lookColors(a) {
+  if (a.preset !== 'custom' && PRESETS[a.preset]) return PRESETS[a.preset];
+  const d = PRESETS.llamacracy;
+  return { bg: a.bg || d.bg, surface: a.surface || d.surface, text: a.text || d.text, accent: a.accent || d.accent };
+}
+function themeVars({ bg, surface, text, accent }) {
+  const light = luminance(bg) > 0.4;
+  // status colours tuned for the ground they sit on: the dark set turns to
+  // pastel mush on white, and the light set sinks into a dark page
+  const st = light
+    ? { danger: '#c0392b', warn: '#9a6400', good: '#1d7f47', gold: '#8f6300' }
+    : { danger: '#f27878', warn: '#f2c14e', good: '#6fd39a', gold: '#e0a92c' };
+  const soft = light ? 0.12 : 0.14;
+  return {
+    '--ink': bg,
+    '--ink-2': light ? mix(bg, '#000000', 0.04) : mix(bg, '#000000', 0.3),
+    '--panel': surface,
+    '--panel-2': mix(surface, text, 0.06),
+    '--panel-3': mix(surface, text, 0.11),
+    '--line': mix(surface, text, 0.13),
+    '--line-strong': mix(surface, text, 0.22),
+    '--text': text,
+    '--text-strong': mix(text, light ? '#000000' : '#ffffff', 0.35),
+    '--text-2': mix(text, bg, 0.3),
+    '--text-3': mix(text, bg, 0.48),
+    '--text-4': mix(text, bg, 0.62),
+    '--accent': accent,
+    '--accent-strong': mix(accent, light ? '#000000' : '#ffffff', 0.15),
+    '--accent-ink': contrast(accent, '#ffffff') > contrast(accent, '#0b1220') ? '#ffffff' : '#0b1220',
+    '--accent-soft': rgba(accent, soft),
+    '--accent-line': rgba(accent, 0.4),
+    '--danger': st.danger, '--danger-soft': rgba(st.danger, soft),
+    '--warn': st.warn, '--warn-soft': rgba(st.warn, soft),
+    '--good': st.good, '--good-soft': rgba(st.good, soft),
+    '--gold': st.gold,
+    '--code-bg': light ? '#161b22' : mix(bg, '#000000', 0.3),
+    '--code-text': light ? '#e6edf3' : text,
+    '--shadow': light ? '0 10px 30px rgba(20, 20, 40, .14), 0 1px 0 rgba(255, 255, 255, .6) inset'
+                      : '0 10px 30px rgba(0, 0, 0, .45), 0 1px 0 rgba(255, 255, 255, .03) inset',
+  };
+}
+const THEME_KEYS = Object.keys(themeVars(PRESETS.llamacracy));
+
+function applyAppearance(a) {
+  a = { ...DEFAULT_LOOK, ...(a || {}) };
+  const root = document.documentElement;
+  THEME_KEYS.forEach(k => root.style.removeProperty(k));
+  const c = lookColors(a);
+  // the brand palette is what styles.css already says -- leave it canonical
+  if (a.preset !== 'llamacracy') for (const [k, v] of Object.entries(themeVars(c))) root.style.setProperty(k, v);
+  root.style.setProperty('--chat-size', (CHAT_SIZES[a.chat_text] || CHAT_SIZES.md)[1]);
+  const light = luminance(c.bg) > 0.4;
+  root.style.colorScheme = light ? 'light' : 'dark';
+  document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', light ? 'light' : 'dark');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', c.surface);
+}
+function cachedAppearance() {
+  try { return JSON.parse(localStorage.getItem(LOOK_CACHE) || 'null'); } catch { return null; }
+}
+function cacheAppearance(a) {
+  try { localStorage.setItem(LOOK_CACHE, JSON.stringify(a)); } catch { /* private mode etc. */ }
+}
+applyAppearance(cachedAppearance());   // before the first paint
+
 /* ----------------------------------------------------------------- state */
 const S = {
   me: null, models: [], loadedModel: null, conversations: [],
@@ -256,7 +358,7 @@ function setView(v) {
 
 /* topbar */
 function topbar() {
-  const nav = [['chat', 'Chat'], ['usage', 'Usage'], ['help', 'Help']];
+  const nav = [['chat', 'Chat'], ['usage', 'Account'], ['help', 'Help']];
   if (S.me?.is_admin) nav.push(['admin', 'Admin']);
   return h('header', { id: 'topbar', class: 'topbar' },
     h('button', {
@@ -277,7 +379,8 @@ function topbar() {
         class: S.view === k ? 'is-active' : '', 'aria-current': S.view === k ? 'page' : null,
         onclick: () => setView(k),
       }, l))),
-    h('span', { class: 'who', title: S.me?.email || '' }, S.me?.display_name || ''),
+    h('button', { class: 'who', title: `${S.me?.email || ''} · your account and appearance`, onclick: () => setView('usage') },
+      S.me?.display_name || ''),
   );
 }
 function renderTopbar() {
@@ -547,14 +650,14 @@ function contextInfo() {
   };
 }
 
-const RING = { used: '#8ab4ff', draft: '#f2c14e', reply: '#3a4256', free: '#232b3b' };
+const RING = { used: 'var(--accent)', draft: 'var(--warn)', reply: 'var(--line-strong)', free: 'var(--panel-3)' };
 function contextRing(ci) {
   if (!ci) return h('span');
   const pctNum = Math.round(100 * ci.projected / ci.limit);
   const u = Math.min(100, 100 * ci.used / ci.limit);
   const d = Math.min(100 - u, 100 * ci.draftTok / ci.limit);
   const r = Math.min(Math.max(0, 100 - u - d), 100 * ci.reply / ci.limit);
-  const main = ci.over ? '#f27878' : ci.tight ? '#f2c14e' : RING.used;
+  const main = ci.over ? 'var(--danger)' : ci.tight ? 'var(--warn)' : RING.used;
   const bg = `conic-gradient(${main} 0 ${u}%, ${RING.draft} ${u}% ${u + d}%, ` +
             `${RING.reply} ${u + d}% ${u + d + r}%, ${RING.free} ${u + d + r}% 100%)`;
   return h('button', {
@@ -733,7 +836,9 @@ function usageView() {
   const u = S.usage;
   if (!u) return h('main', { class: 'main' }, h('div', { class: 'page muted' }, 'Loading…'));
   return h('main', { class: 'main' }, h('div', { class: 'page page-narrow' },
-    h('h1', {}, 'Your usage'),
+    h('h1', {}, 'Your account'),
+    appearanceCard(),
+    h('h2', { class: 'section-h' }, 'Usage'),
     h('div', { class: 'grid grid-2' },
       usageCard('Session', u.session, `${S.me?.limits?.session_window_hours ?? 5}-hour window`),
       usageCard('This week', u.weekly, 'rolling 7 days')),
@@ -756,6 +861,68 @@ function usageView() {
       `${(u.estimated_fraction * 100).toFixed(1)}% of recent credits are from estimated token counts.`) : null,
     apiKeysCard(),
   ));
+}
+// ---- Appearance: presets, four colour pickers, chat text size
+const LOOK_FIELDS = [['bg', 'Background'], ['surface', 'Panels'], ['text', 'Text'], ['accent', 'Accent']];
+let _lookTimer = null;
+function setLook(patch, { save = true, rerender = true } = {}) {
+  const a = { ...DEFAULT_LOOK, ...(S.me?.prefs?.appearance || {}), ...patch };
+  S.me.prefs = { ...(S.me.prefs || {}), appearance: a };
+  applyAppearance(a);
+  if (save) {
+    cacheAppearance(a);
+    clearTimeout(_lookTimer);
+    _lookTimer = setTimeout(async () => {
+      try { await api.put('/api/me/prefs', S.me.prefs); }
+      catch (e) { flashError('Your appearance could not be saved: ' + e.message); }
+    }, 400);
+  }
+  if (rerender) { const el = document.getElementById('look-card'); if (el) el.replaceWith(appearanceCard()); }
+}
+function appearanceCard() {
+  const a = { ...DEFAULT_LOOK, ...(S.me?.prefs?.appearance || {}) };
+  const c = lookColors(a);
+  const four = { bg: c.bg, surface: c.surface, text: c.text, accent: c.accent };
+  const art = p => h('span', { class: 'swatch-art', style: `background:${p.bg}` },
+    h('i', { style: `background:${p.surface}` }),
+    h('b', { style: `background:${p.text}` }),
+    h('u', { style: `background:${p.accent}` }));
+  const swatch = (key, p) => h('button', {
+    type: 'button', class: 'swatch' + (a.preset === key ? ' is-on' : ''),
+    'aria-pressed': a.preset === key ? 'true' : 'false',
+    onclick: () => setLook({ preset: key, bg: null, surface: null, text: null, accent: null }),
+  }, art(p), h('span', { class: 'swatch-name' }, p.name));
+  const picker = ([field, label]) => h('label', { class: 'color-field' },
+    h('input', {
+      type: 'color', value: c[field], 'aria-label': label,
+      // live preview while the picker is open; commit + save once it closes
+      oninput: e => setLook({ preset: 'custom', ...four, [field]: e.target.value }, { save: false, rerender: false }),
+      onchange: e => setLook({ preset: 'custom', ...four, [field]: e.target.value }),
+    }),
+    h('span', {}, label));
+  const worst = Math.min(contrast(c.text, c.bg), contrast(c.text, c.surface));
+  return h('div', { id: 'look-card', class: 'card look' },
+    h('div', { class: 'look-head' },
+      h('div', {},
+        h('h3', {}, 'Appearance'),
+        h('p', { class: 'sub' }, 'Make Llamacracy yours. This only changes how it looks for you, and it follows you to every device you sign in on.')),
+      a.preset !== 'llamacracy' || a.chat_text !== 'md'
+        ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => setLook(DEFAULT_LOOK) }, 'Reset') : null),
+    h('div', { class: 'look-label' }, 'Themes'),
+    h('div', { class: 'swatches' },
+      Object.entries(PRESETS).map(([k, p]) => swatch(k, p)),
+      a.preset === 'custom' ? h('button', { type: 'button', class: 'swatch is-on', 'aria-pressed': 'true' },
+        art(four), h('span', { class: 'swatch-name' }, 'Custom')) : null),
+    h('div', { class: 'look-label' }, 'Your own colours'),
+    h('div', { class: 'color-fields' }, LOOK_FIELDS.map(picker)),
+    worst < 4.5 ? h('div', { class: 'look-warn' }, icon('alert', 'icon-sm'),
+      `Text may be hard to read on these colours (contrast ${worst.toFixed(1)}:1, aim for 4.5 or more).`) : null,
+    h('div', { class: 'look-label' }, 'Chat text size'),
+    h('div', { class: 'segmented', role: 'group', 'aria-label': 'Chat text size' },
+      Object.entries(CHAT_SIZES).map(([k, [label]]) => h('button', {
+        type: 'button', class: a.chat_text === k ? 'is-on' : '', 'aria-pressed': a.chat_text === k ? 'true' : 'false',
+        onclick: () => setLook({ chat_text: k }),
+      }, label))));
 }
 function usageCard(title, g, sub) {
   const tone = gaugeTone(g);
@@ -990,6 +1157,14 @@ function helpView() {
       'The little circle next to them fills up as a conversation gets long. When it turns ' +
       'amber or red, start a new chat or hit Compact.'),
 
+    h('h2', {}, 'Make it yours'),
+    h('p', {},
+      'Open ', h('button', { class: 'link-btn', onclick: () => setView('usage') }, 'Account'),
+      ' (at the top, or tap your name) and look under Appearance. Pick one of the themes, or ' +
+      'choose your own background, panel, text and accent colours, and make the chat text bigger ' +
+      'or smaller. It only changes how Llamacracy looks for you, not for anyone else, and it is ' +
+      'saved to your account, so your phone and your laptop match. Reset puts it all back.'),
+
     h('h2', {}, 'Waiting your turn'),
     h('p', {},
       'There is exactly one computer and it does one thing at a time, in the order people ask. ' +
@@ -1011,7 +1186,7 @@ function helpView() {
       h('p', { class: 'muted' },
         'That is far more than it sounds — a long reply is a few seconds. If you ever do run ' +
         'out, a started answer always finishes, you just wait a while before starting another. ' +
-        'Your own numbers are on the Usage page, and the limits can be raised on request.')) : null,
+        'Your own numbers are on the Account page, and the limits can be raised on request.')) : null,
 
     h('h2', {}, 'If something looks wrong'),
     h('details', {},
@@ -1055,7 +1230,12 @@ function scrollThread(force = false) {
 }
 
 async function boot() {
-  try { S.me = await api.get('/api/me'); }
+  try {
+    S.me = await api.get('/api/me');
+    const look = { ...DEFAULT_LOOK, ...(S.me.prefs?.appearance || {}) };
+    S.me.prefs = { ...(S.me.prefs || {}), appearance: look };
+    applyAppearance(look); cacheAppearance(look);
+  }
   catch (e) {
     $app.replaceChildren(h('div', { class: 'page' }, h('div', { class: 'card', style: 'max-width:28rem;margin:10vh auto' },
       h('h3', { style: 'color:var(--danger)' }, 'Sign-in problem'),
@@ -1365,7 +1545,7 @@ function adminBilling(d) {
 function adminApiKeys(rows) {
   if (!rows) return loading();
   return h('div', { class: 'stack' },
-    h('p', { class: 'sub' }, 'Every Continue.dev / OpenAI-compatible key across all users. Revoking kills it immediately — the holder gets 401s and has to generate a new one from their own Usage page.'),
+    h('p', { class: 'sub' }, 'Every Continue.dev / OpenAI-compatible key across all users. Revoking kills it immediately — the holder gets 401s and has to generate a new one from their own Account page.'),
     rows.length ? table([
       { label: 'User', get: r => r.email },
       { label: 'Label', get: r => r.label || h('span', { class: 'muted' }, '(unlabeled)') },

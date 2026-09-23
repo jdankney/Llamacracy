@@ -48,7 +48,9 @@ payment processing.
   vision variant. Images live on disk, never base64 in the database.
 - **Compact history**: fold the older part of a long conversation into a
   running summary, on request, billed like any other reply.
-- **Usage page** per user with a 30-day chart and self-service API keys.
+- **Account page** per user: a 30-day usage chart, self-service API keys, and
+  **appearance settings** (themes, custom colours, chat text size) saved per
+  account, so each person can make the app their own.
 - **OpenAI-compatible `/v1` endpoint** for IDE tools such as Continue.dev,
   sharing the same queue and limits. A raw passthrough, so tool calling and
   agent mode work as well as the model underneath does.

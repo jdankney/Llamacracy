@@ -167,6 +167,19 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   or literally `localhost`; iOS "Add to Home Screen" predates that
   requirement and works fine over plain HTTP, and there is no meaningful
   offline mode for live inference anyway.
+- **Per-user appearance lives on the server, derived from four colours.** A
+  user picks a preset or their own background, panel, text and accent colours
+  (plus a chat text size). Every other shade (hovers, lines, muted text,
+  status colours tuned for light or dark grounds) is computed from those
+  four in `app.js` and written onto `:root` as the same custom properties
+  `styles.css` defines, so no component knows themes exist and no rule may
+  hard-code a colour. Prefs are stored per account (`users.prefs_json`) so a
+  theme follows the person to every device, and cached in `localStorage` so
+  the page paints in the right colours before `/api/me` answers. Colours are
+  validated as strict `#rrggbb` on write because they end up in CSS. Code
+  blocks keep a dark ground under every theme, since highlight.js's colours
+  are a dark theme. It lives on the renamed **Account** tab (was Usage)
+  rather than a fifth tab the phone top bar has no room for.
 - The composer auto-focus only fires on devices with a fine pointer, so a
   phone never gets its keyboard summoned by a re-render.
 
