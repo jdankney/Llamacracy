@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Identity comes from oauth2-proxy's forwarded headers. The app writes no auth
 code -- it trusts X-Forwarded-* because it only ever listens on 127.0.0.1 with
 oauth2-proxy in front (see deploy/). If those headers are absent and DEV_MODE

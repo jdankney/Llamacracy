@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """GPU power sampling via nvidia-smi. This box has no whole-system power meter
 and no usable CPU RAPL, so nvidia-smi's GPU draw is the only measured number;
 the cost model adds a fixed NON_GPU_LOAD_WATTS on top.

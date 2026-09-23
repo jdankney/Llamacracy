@@ -211,3 +211,15 @@ tests/             pytest suite: queue, metering, search, and HTTP-level API tes
 - [docs/DECISIONS.md](docs/DECISIONS.md) explains every non-obvious choice:
   why strict FIFO, why credits are seconds, why a second Dex, why no service
   worker, and so on.
+
+## License
+
+Llamacracy is free software, released under the
+[GNU Affero General Public License v3.0 or later](LICENSE)
+(`AGPL-3.0-or-later`).
+
+In short: you can use, study, change and share it. If you run a modified
+version as a service that other people use over a network, you must offer
+those users the source code of your modified version, under the same license.
+Running it unmodified, or changing it only for your own use, asks nothing of
+you. The [full text](LICENSE) is what actually applies.

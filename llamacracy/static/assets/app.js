@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Llamacracy SPA -- vanilla JS, no build step. Served by FastAPI at /.
 // Styling lives in styles.css (hand-written; no CSS framework).
 const $app = document.getElementById('app');
@@ -81,6 +82,7 @@ const ICONS = {
   info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01',
   pen: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z',
   zap: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
+  code: 'M16 18l6-6-6-6M8 6l-6 6 6 6',
 };
 const icon = (name, cls = '') => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -333,7 +335,18 @@ function sidebarFootKids() {
       h('div', { class: 'spacer' }),
       S.loadedModel ? h('span', { class: 'faint', title: 'Resident model' }, modelName(S.loadedModel)) : null),
     n ? h('div', { class: 'qcard qcard-inline' }, queueRows()) : null,
+    sourceLine(),
   ].filter(Boolean);
+}
+// The AGPL's network clause: everyone who uses the site is offered its source.
+// SOURCE_URL points at the code this server actually runs (a fork sets its own).
+function sourceLine() {
+  const url = S.me?.source_url;
+  if (!url) return null;
+  return h('div', { class: 'source-line' },
+    icon('code', 'icon-sm'),
+    h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Source code'),
+    h('span', { class: 'faint' }, '· AGPL-3.0'));
 }
 function sidebar() {
   return [
@@ -1021,6 +1034,17 @@ function helpView() {
       h('p', {}, 'It will, confidently. These are small models running on one home graphics ' +
         'card, not the big commercial ones. Check anything that matters, and use the Search ' +
         'toggle for anything recent or factual.')),
+
+    S.me?.source_url ? h('div', {},
+      h('h2', {}, 'About Llamacracy'),
+      h('p', {},
+        'Llamacracy is free software, released under the ',
+        h('a', { href: 'https://www.gnu.org/licenses/agpl-3.0.html', target: '_blank', rel: 'noopener' },
+          'GNU Affero General Public License'),
+        ', version 3 or later. You are welcome to read, copy and change it. The code this ' +
+        'site runs is ',
+        h('a', { href: S.me.source_url, target: '_blank', rel: 'noopener' }, 'available here'),
+        '.')) : null,
   ));
 }
 

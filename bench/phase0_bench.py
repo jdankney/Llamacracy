@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Phase 0 -- measure reality.
 
 Every model in bench/inventory.json already carries a serving config you

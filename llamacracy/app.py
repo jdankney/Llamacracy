@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """FastAPI application. Binds 127.0.0.1 only; oauth2-proxy sits in front (see
 deploy/). Serves the SPA and the JSON/SSE API.
 """
@@ -82,6 +83,7 @@ async def me(principal: Principal = Depends(get_principal),
         "email": principal.email,
         "display_name": principal.display_name,
         "is_admin": principal.is_admin,
+        "source_url": settings.source_url,
         "limits": {
             "session_credit_limit": settings.session_credit_limit,
             "weekly_credit_limit": settings.weekly_credit_limit,

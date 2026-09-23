@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Image uploads for on-demand vision (Phase 8.4). Saved to disk under
 UPLOAD_DIR -- never as base64 in the database. Only a path + mime + size are
 stored, scoped to the uploading user; served back only to them (app.py).

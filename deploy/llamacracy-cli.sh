@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Llamacracy stack control -- one command for the whole thing instead of
 # remembering four systemd --user unit names. Installed on PATH as
 # `llamacracy` by deploy/install.sh (symlinked here, so `git pull` + a re-run

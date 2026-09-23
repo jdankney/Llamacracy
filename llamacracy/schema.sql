@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: AGPL-3.0-or-later
 -- Llamacracy schema. SQLite, WAL mode. Applied idempotently at startup.
 -- All timestamps are REAL Unix seconds, UTC. The rolling weekly credit query
 -- runs on every enqueue, so jobs is indexed for it.

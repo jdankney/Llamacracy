@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """SQLite access. One connection, WAL mode, serialised through a single
 asyncio lock -- writes are tiny (job/message rows) and the queue is strictly
 serial anyway, so this is plenty and keeps the code simple.

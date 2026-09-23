@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Minimal GGUF metadata reader (stdlib only).
 
 We only need a handful of scalar values to plan a benchmark run:

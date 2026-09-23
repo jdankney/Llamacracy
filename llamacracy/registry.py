@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The model registry -- config/models.json, generated from bench-results.json
 by bench/gen_llamaswap_config.py. Holds display names, tiers, sampling
 defaults, and the measured cold-load / throughput / VRAM seeds the queue uses

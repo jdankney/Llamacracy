@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Thin async client for llama-swap. Our app never spawns llama-server -- it
 talks OpenAI-compatible HTTP to llama-swap, which owns model loading/swapping.
 """

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Admin dashboard API. Every route is behind require_admin, which checks the
 OIDC email against ADMIN_EMAILS in config -- never a database flag.
 """

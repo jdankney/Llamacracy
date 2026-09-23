@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Llamacracy deployment. Idempotent -- safe to re-run after every `git pull`.
 #
 # Sets up four systemd *user* units (llama-swap, llamacracy, llamacracy-dex,

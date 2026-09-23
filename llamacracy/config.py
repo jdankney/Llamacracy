@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Runtime configuration. All values come from environment / .env (see
 .env.example). Nothing here is a secret at rest -- secrets stay in .env, which
 is gitignored.
@@ -28,6 +29,12 @@ class Settings(BaseSettings):
     dev_email: str = "dev@localhost"
     dev_sub: str = "dev-local-sub"
     dev_name: str = "Dev User"
+
+    # --- source code offer (AGPL-3.0-or-later, section 13) -------------------
+    # Shown to every signed-in user as a "Source code" link. If you run a
+    # MODIFIED Llamacracy for other people, the AGPL requires you to offer
+    # them your modified source: point this at your own fork.
+    source_url: str = "https://github.com/jdankney/Llamacracy"
 
     # --- upstream / binding ------------------------------------------------
     llamaswap_url: str = "http://127.0.0.1:8091"

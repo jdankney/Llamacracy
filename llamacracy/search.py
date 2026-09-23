@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Web search via SearXNG -- injected into the prompt on request, never
 model-driven. Local 4-35B models are unreliable at deciding when to call a
 tool, multi-round tool loops thrash a 16-128K context and hold the FIFO queue

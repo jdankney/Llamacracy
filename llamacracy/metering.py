@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Metering -- the part where a bug means someone gets billed wrong.
 
   1 credit = 1 second of exclusive box time.

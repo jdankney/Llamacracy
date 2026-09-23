@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The queue -- the core of the project.
 
 Strict global FIFO. Exactly one inference runs at a time. A single async worker

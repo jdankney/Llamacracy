@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """HTTP-level smoke tests against the real FastAPI app with a scripted
 upstream: the SSE chat contract, the OpenAI-compatible endpoint, and the
 enqueue-time limit gate leaving no orphan rows behind."""

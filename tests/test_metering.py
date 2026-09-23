@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Phase 3: the money math. A bug here bills a friend wrong, so:
 window boundaries, overshoot, cancellation partial billing, rolling-weekly edges.
 """
