@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation ON messages(conversation_id, id);
 
--- uploaded images (Phase 8.4) -- on disk under UPLOAD_DIR, never base64-in-DB.
+-- uploaded images -- on disk under UPLOAD_DIR, never base64-in-DB.
 -- Scoped to the uploader; served back only to them (see /api/uploads/{id}).
 CREATE TABLE IF NOT EXISTS uploads (
     id           TEXT PRIMARY KEY,       -- uuid hex, also the on-disk filename stem
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS uploads (
     created_at   REAL NOT NULL
 );
 
--- Per-user API keys for the OpenAI-compatible endpoint (Phase 8.2, Continue.dev
+-- Per-user API keys for the OpenAI-compatible endpoint (Continue.dev
 -- etc.) -- bearer-token auth for that endpoint only; the web UI still uses
 -- oauth2-proxy. Only the sha256 hash is stored -- the plaintext key is shown
 -- once at creation and never retrievable again.

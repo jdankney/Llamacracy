@@ -190,7 +190,7 @@ async def usage(principal: Principal = Depends(get_principal),
 
 
 # --------------------------------------------------------------------------- #
-# API keys (Phase 8.2) -- self-service, for the OpenAI-compatible endpoint
+# API keys -- self-service, for the OpenAI-compatible endpoint
 # --------------------------------------------------------------------------- #
 class CreateApiKey(BaseModel):
     label: str = ""
@@ -485,7 +485,7 @@ async def compact_conversation(conv_id: str,
 
 
 # --------------------------------------------------------------------------- #
-# vision uploads (Phase 8.4) -- on disk, scoped to the uploader
+# vision uploads -- on disk, scoped to the uploader
 # --------------------------------------------------------------------------- #
 @app.post("/api/uploads")
 async def upload_image(file: UploadFile = File(...),
@@ -734,7 +734,7 @@ async def queue_events(request: Request,
 
 
 # --------------------------------------------------------------------------- #
-# OpenAI-compatible API (Phase 8.2) -- for IDE tools (Continue.dev etc.), not
+# OpenAI-compatible API -- for IDE tools (Continue.dev etc.), not
 # the web UI. Bearer API-key auth (get_principal_api_key), not oauth2-proxy --
 # these paths are in oauth2-proxy's skip_auth_routes (deploy/oauth2-proxy.cfg)
 # since an IDE isn't a browser session. Same FIFO queue + metering as
@@ -906,4 +906,4 @@ if STATIC_DIR.exists():
         idx = STATIC_DIR / "index.html"
         if idx.exists():
             return FileResponse(idx)
-        return {"service": "llamacracy", "ui": "not built yet (Phase 4)"}
+        return {"service": "llamacracy", "ui": "static/index.html is missing"}

@@ -1079,7 +1079,7 @@ function dailyChart(rows) {
   return chart;
 }
 
-/* API keys (Phase 8.2) -- for Continue.dev and other OpenAI-compatible tools.
+/* API keys -- for Continue.dev and other OpenAI-compatible tools.
    Same queue + credits as the web chat; the key is just a different door in. */
 function apiKeysCard() {
   const base = window.location.origin + '/v1';
@@ -1262,7 +1262,7 @@ function helpView() {
     h('p', {},
       'There is no file upload for documents — paste the text straight into the message box. ' +
       'The only real limit is the "holds about" column above, so for anything long, pick a ' +
-      'model near the top of that list. A photo of a document works too, on the models marked Yes.'),
+      'model with a big number there. A photo of a document works too, on the models marked Yes.'),
     h('p', { class: 'muted' },
       'One quirk worth knowing: a model only looks at the picture in the message you attached ' +
       'it to. Ask your follow-up questions about it in that same message, or attach it again.'),
@@ -1292,7 +1292,7 @@ function helpView() {
     h('h2', {}, 'The buttons around the message box'),
     h('div', { class: 'table-wrap' }, h('table', {},
       h('tbody', {},
-        tool('globe', 'Search', 'Searches the web first and hands the results to the model before it answers. Off unless you turn it on, and it doesn\'t cost you anything.'),
+        tool('globe', 'Search', 'Searches the web first and hands the results to the model before it answers. Off unless you turn it on. The search itself is free; the model just has a little more to read.'),
         tool('bulb', 'Think', 'Lets the model work the problem through before answering. Slower and uses more credits, so save it for tricky questions. Greyed out on models that can\'t.'),
         tool('clip', 'Attach', 'Adds a photo. Greyed out unless the model you\'ve picked can see.'),
         tool('compress', 'Compact', 'In a very long chat, folds the older part into a short summary so there\'s room to keep going. Nothing is deleted.'),
@@ -1329,8 +1329,8 @@ function helpView() {
     lim.session_credit_limit ? h('div', {},
       h('h2', {}, 'Credits'),
       h('p', {},
-        'Usage is counted in seconds of the computer actually writing for you. Reading your ' +
-        'message is free, waiting in the queue is free.'),
+        'Usage is counted in seconds of the computer working on your message: reading it and ' +
+        'writing the answer. Waiting in the queue is free, and a wake-up counts at half rate.'),
       h('div', { class: 'table-wrap' }, h('table', {},
         h('tbody', {},
           h('tr', {}, h('td', {}, 'In any ' + (lim.session_window_hours || 5) + '-hour stretch'),
@@ -1351,8 +1351,8 @@ function helpView() {
     h('details', {},
       h('summary', {}, icon('alert', 'icon-sm'), 'It\'s taking ages'),
       h('p', {}, 'Either someone is ahead of you in the queue, or the model you picked is ' +
-        'waking up. Both are shown on screen while they happen. Picking a model near the top ' +
-        'of the speed column avoids most of it.')),
+        'waking up. Both are shown on screen while they happen. Sticking with the model that\'s ' +
+        'already loaded (it says so under the message box) skips the wake-up.')),
     h('details', {},
       h('summary', {}, icon('alert', 'icon-sm'), 'It forgot what we were talking about'),
       h('p', {}, 'Each conversation is separate, and very long ones eventually run out of ' +

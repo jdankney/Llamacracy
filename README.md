@@ -142,7 +142,7 @@ files under `config/` are derived from it. The full schema is in
 $EDITOR bench/inventory.json              # add / edit / delete an entry
 python3 bench/gen_llamaswap_config.py     # regenerate config/
 llama-swap -config config/llama-swap.yaml -validate
-llamacracy restart                        # or restart llama-swap + llamacracy by hand
+systemctl --user restart llamacracy       # llama-swap reloads its config by itself
 ```
 
 A minimal entry:
@@ -165,6 +165,8 @@ A minimal entry:
 - `serve` is how `llama-server` runs it: context size, KV cache type, MoE
   expert offload (`n_cpu_moe`), `--no-mmap`, extra flags.
 - Add a `vision` block with the `mmproj` path and the model can read images.
+- `"thinking": true` offers the Think toggle, for models whose chat template
+  takes `enable_thinking` (Qwen3 and later, among others).
 - `"kind": "fim"` or `"in_picker": false` keeps a model out of the picker.
 
 Benchmark when convenient, then regenerate:
@@ -173,6 +175,7 @@ Benchmark when convenient, then regenerate:
 python3 bench/phase0_bench.py --only llama31-8b     # cold load, tok/s, VRAM, watts
 python3 bench/phase0_bench.py --ctx-sweep --only llama31-8b   # find the largest context that fits
 python3 bench/gen_llamaswap_config.py
+systemctl --user restart llamacracy
 ```
 
 Removing a model is deleting its entry and regenerating. Its billing history
@@ -203,8 +206,8 @@ onboarding note to send to users: [docs/WELCOME.md](docs/WELCOME.md).
 
 Everything is an environment variable, documented with defaults in
 [`.env.example`](.env.example): credit limits, session window, load-time
-multiplier, electricity rate or time-of-use table, idle TTL, search, uploads,
-and compaction. Per-user overrides are set from the admin dashboard.
+multiplier, output caps (chat, Think and API), electricity rate or
+time-of-use table, idle TTL, search, uploads, and compaction. Per-user overrides are set from the admin dashboard.
 
 ## Project layout
 
@@ -215,16 +218,20 @@ bench/             model inventory (yours, gitignored), benchmark, config genera
 config/            generated llama-swap config + model registry (gitignored)
 deploy/            systemd units, install script, oauth2-proxy + Dex config, the CLI
 docs/              SPEC.md (the brief), DECISIONS.md (design decisions with the why), WELCOME.md
-tests/             pytest suite: queue, metering, search, and HTTP-level API tests
+examples/          a Continue.dev config for the /v1 endpoint
+tests/             pytest suite: queue, metering, search, conversation trees, HTTP-level API
 ```
 
 ## Design notes
 
-- [docs/SPEC.md](docs/SPEC.md) is the original brief and the source of truth
-  for scope.
+- [docs/SPEC.md](docs/SPEC.md) is the original brief. The project has since
+  grown past some of its non-goals (images, web search, tool calling over
+  `/v1`); each of those is explained in DECISIONS.
 - [docs/DECISIONS.md](docs/DECISIONS.md) explains every non-obvious choice:
   why strict FIFO, why credits are seconds, why a second Dex, why no service
   worker, and so on.
+- [CHANGELOG.md](CHANGELOG.md) lists what changed in each release and how to
+  upgrade.
 
 ## License
 

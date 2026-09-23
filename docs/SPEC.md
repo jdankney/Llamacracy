@@ -1,8 +1,11 @@
 # Llamacracy — design brief
 
 > The brief the project was built from, lightly redacted for publication
-> (the owner's model list and utility details are kept out). Source of truth
-> for scope; deviations are tracked in [DECISIONS.md](DECISIONS.md).
+> (the owner's model list and utility details are kept out). It is kept as
+> written, so parts of it are now history: image input, web search, tool
+> calling over `/v1`, message editing and thinking were all added later, the
+> `/usage` page became the **Account** tab, and the backend needs Python 3.14.
+> [DECISIONS.md](DECISIONS.md) explains each change.
 
 ---
 

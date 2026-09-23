@@ -9,8 +9,9 @@ reasoning, so you can tell which ones to keep when you adapt it. The
 - **llama-swap owns the models; the app never spawns `llama-server`.** The
   app talks OpenAI-compatible HTTP to llama-swap, which loads, swaps and
   unloads. Chosen over `llama-server`'s own router mode for its `groups`
-  (co-residency control), explicit `/running` + unload endpoints the queue
-  needs, and `filters.setParams` for clean server-side request shaping.
+  (co-residency control), the explicit `/running` + unload endpoints the queue
+  needs, and `-watch-config`, which picks up a regenerated config without a
+  restart.
 - **FastAPI + one SQLite connection (WAL) behind one asyncio lock.** Writes
   are tiny (job and message rows) and the queue is serial anyway. Timestamps
   are epoch floats throughout, so the rolling-weekly query is a plain indexed
@@ -54,7 +55,7 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   someone after they waited is hostile), and before anything about the
   request is persisted, so a rejection leaves no orphan rows. Overshoot is
   allowed: an admitted job runs to completion even past the cap, bounded by
-  `MAX_TOKENS_PER_REQUEST`.
+  its output cap (`MAX_TOKENS_PER_REQUEST`, or the Think or `/v1` cap).
 - Sessions open on a user's first request and run a fixed 5 hours, never
   extended by activity. The weekly limit is a rolling 7-day sum, not a
   calendar week. The 429 carries which limit was hit and the exact reset time
@@ -119,9 +120,10 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   token) but never resent as history, so it costs context only on the turn
   that produced it. A reply that spent its whole budget thinking is still
   saved, because the user paid for that reasoning.
-- Flash attention is on for every model: quantised (`q8_0`) KV requires it in
-  llama.cpp, and it was faster for prompt processing on everything measured.
-  No toggle is exposed.
+- Flash attention defaults to on for every model: quantised (`q8_0`) KV
+  requires it in llama.cpp, and it was faster for prompt processing on
+  everything measured. The benchmark still compares on and off, and an
+  inventory entry can set `serve.fa` if a model disagrees.
 - **A FIM (code infill) model must never be chattable.** Two independent
   guards: `unlisted` in llama-swap and `kind: fim` / `in_picker: false` in
   the registry.

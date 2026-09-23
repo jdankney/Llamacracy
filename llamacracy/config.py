@@ -43,11 +43,11 @@ class Settings(BaseSettings):
     database_path: str = str(REPO_ROOT / "data" / "llamacracy.db")
     models_registry_path: str = str(REPO_ROOT / "config" / "models.json")
 
-    # --- search (Phase 8) -- SearXNG, injected on request, never model-driven -
+    # --- search -- SearXNG, injected on request, never model-driven -
     searxng_url: str = "http://127.0.0.1:8085"
     search_max_results: int = 4
 
-    # --- vision uploads (Phase 8.4) -- on-disk, never base64-in-DB -----------
+    # --- vision uploads -- on-disk, never base64-in-DB -----------
     upload_dir: str = str(REPO_ROOT / "data" / "uploads")
     upload_max_mb: float = 8.0
 
@@ -81,8 +81,8 @@ class Settings(BaseSettings):
     non_gpu_load_watts: float = 110
     idle_watts: float = 95
     markup: float = 1.0
-    electricity_rate: float = 0.456          # flat fallback ($/kWh)
-    tou_schedule: str = ""                   # JSON: {"0": 0.37, ... "23": 0.46}
+    electricity_rate: float = 0.30           # flat fallback ($/kWh)
+    tou_schedule: str = ""                   # JSON: {"0": 0.25, ... "23": 0.30}
 
     # ----------------------------------------------------------------------
     @property

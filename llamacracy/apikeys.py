@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""API keys for the OpenAI-compatible endpoint (Phase 8.2 -- Continue.dev and
+"""API keys for the OpenAI-compatible endpoint (Continue.dev and
 similar tools). Bearer-token auth for /v1/* only; the web UI keeps using
 oauth2-proxy. Only a sha256 hash is ever stored -- the plaintext key is shown
 once at creation time and can't be retrieved again, same as a GitHub PAT.

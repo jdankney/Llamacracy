@@ -33,7 +33,7 @@ class ModelInfo:
     vram_used_mib: int = 0
     gpu_gen_watts: float | None = None
     max_tokens_default: int = 2048
-    vision_key: str | None = None    # paired -vision llama-swap entry, if any (Phase 8.4)
+    vision_key: str | None = None    # paired -vision llama-swap entry, if any
 
 
 class Registry:

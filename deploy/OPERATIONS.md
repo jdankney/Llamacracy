@@ -113,7 +113,7 @@ Users live in `deploy/dex/config.yaml` under `staticPasswords`. One block each:
 Then `systemctl --user restart llamacracy-dex`. Llamacracy creates the
 user row (and their Account page, credit counters) on first sign-in. To cut
 someone off for good, remove their block and restart; to pause them, use the
-admin dashboard → Controls → disable (no restart, keeps their history).
+admin dashboard → Controls → Disable (no restart, keeps their history).
 
 Changing a `userID` orphans that person's history (new `sub` = new user row),
 so don't.
@@ -127,8 +127,11 @@ schema and workflow: [bench/README.md](../bench/README.md). The short version:
 $EDITOR bench/inventory.json                 # add an entry (with a `seed` block) or delete one
 python3 bench/gen_llamaswap_config.py        # rewrites config/llama-swap.yaml + models.json
 llama-swap -config config/llama-swap.yaml -validate
-systemctl --user restart llama-swap llamacracy
+systemctl --user restart llamacracy          # reloads the model list
 ```
+
+llama-swap runs with `-watch-config`, so it picks up the new config by itself.
+Restarting it too isn't needed, and would cut off whoever is mid-answer.
 
 Benchmark when convenient so the queue's estimates and the cost model use
 measured numbers instead of your seeds:
@@ -136,7 +139,7 @@ measured numbers instead of your seeds:
 ```bash
 python3 bench/phase0_bench.py --only <key>
 python3 bench/gen_llamaswap_config.py
-systemctl --user restart llama-swap llamacracy
+systemctl --user restart llamacracy
 ```
 
 To **hide** a model from the chat picker without removing it: set
@@ -229,7 +232,7 @@ uses. Fine on your own; less fine while three people are mid-answer.
 A revoked key stops authenticating immediately. **Admin → API keys** lists
 every key issued across all users (owner, label, created, last used) with its
 own revoke button, so a leaked key can be killed without touching the rest of
-that account. Admin → Users → disable blocks the account entirely.
+that account. Admin → Controls → Disable blocks the account entirely.
 
 ## Mobile access (PWA)
 

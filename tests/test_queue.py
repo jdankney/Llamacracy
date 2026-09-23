@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Phase 2: the queue is strict FIFO, one job at a time, cancellable, and
+"""The queue is strict FIFO, one job at a time, cancellable, and
 records the timing fields metering will bill on."""
 
 from __future__ import annotations

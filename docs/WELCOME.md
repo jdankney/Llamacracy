@@ -85,8 +85,8 @@ roommate and it's great.
 
 Usage is measured in **credits**, where `1 credit = 1 second of the GPU working
 just for you`. Waiting in the queue is free. You're only charged for the
-seconds it spends actually generating your answer (and half-rate for the few
-seconds it takes to load a model you asked for).
+seconds it spends reading your message and writing the answer (and half-rate
+for the few seconds it takes to load a model you asked for).
 
 - **Session:** <session limit> credits per rolling 5-hour window — that's
   about an hour of pure generation, which is a *lot* of back-and-forth.

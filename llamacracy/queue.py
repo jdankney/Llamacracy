@@ -81,7 +81,7 @@ class Job:
     last_timings: dict | None = None
     error: str | None = None
 
-    # billing (filled by metering in Phase 3)
+    # billing (filled in by metering)
     credits: float = 0.0
     cost_usd: float = 0.0
     rate_used: float | None = None
@@ -144,7 +144,7 @@ class QueueManager:
         self._bg: set[asyncio.Task] = set()   # fire-and-forget persists; kept referenced until done
         self._idle_poll_s = 10.0    # cheap local check; keeps a short IDLE_TTL responsive
         self._running_poll_s = 10.0
-        # hook points filled by metering (Phase 3)
+        # hook points filled in by metering
         self.check_limits = None       # async (user_id, model_id) -> LimitDecision | None
         self.finalize_billing = None   # async (job) -> None
 
@@ -474,7 +474,7 @@ class QueueManager:
             job.occupancy_seconds = max(0.0, job.finished_at - job.picked_at)
         if self.finalize_billing is not None:
             try:
-                await self.finalize_billing(job)   # Phase 3
+                await self.finalize_billing(job)
             except Exception:  # noqa: BLE001
                 log.exception("billing finalize failed for job %s", job.id)
         await self._persist_job(job)

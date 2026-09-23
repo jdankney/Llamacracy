@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Phase 0 -- measure reality.
+"""Benchmark: measure reality.
 
 Every model in bench/inventory.json already carries a serving config you
 believe in. This is not a config search: it validates each one under the
@@ -14,8 +14,8 @@ Per model we measure:
   - GPU power draw (nvidia-smi) at idle and during generation
   - fa=on vs fa=off, since flash attention isn't a given on every GPU
 
-Output feeds the llama-swap config (Phase 1), the queue's load-time estimates
-(Phase 2), and the credit-limit arithmetic (Phase 3).
+Output feeds the llama-swap config, the queue's load-time estimates, and
+the cost model.
 
 Stdlib only. Drives the real `llama-server` over HTTP.
 
@@ -562,7 +562,7 @@ def main() -> int:
     ap.add_argument("--no-fa-off", action="store_true",
                     help="skip the fa=off comparison run")
     ap.add_argument("--ctx-sweep", action="store_true",
-                    help="Phase 8: walk each model's context ladder, keep the "
+                    help="walk each model's context ladder, keep the "
                          "largest that fits. Re-runs models already benched.")
     ap.add_argument("--headroom-mib", type=int, default=VRAM_HEADROOM_MIB,
                     help=f"free VRAM to keep or call it 'does not fit' "
@@ -664,7 +664,7 @@ def _summary(results: dict) -> None:
               f"{str(rec['pp_tok_s']):9}{str(rec['tg_tok_s']):8}"
               f"{str(rec['vram_used_mib']):10}{str(rec['ram_used_delta_mib']):10}"
               f"{rec['fa']:4}")
-    print("\nnext: review these numbers + the proposed credit limits before Phase 1")
+    print("\nnext: python3 bench/gen_llamaswap_config.py")
 
 
 if __name__ == "__main__":
