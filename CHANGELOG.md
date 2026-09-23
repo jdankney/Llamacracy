@@ -29,6 +29,11 @@
 - The **Usage** tab is now **Account**.
 - The generated llama-swap config no longer forces thinking off with a
   `setParams` filter; Llamacracy decides per request.
+- The built-in `ELECTRICITY_RATE` default is now 0.30, matching
+  `.env.example`. It only matters if your `.env` doesn't set a rate.
+- Docs audit: after changing models, restart only `llamacracy` (llama-swap
+  reloads its own config), and the Help page now says correctly that reading
+  your message is part of the billed time.
 
 ### Upgrading from 0.1.0
 
