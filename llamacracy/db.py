@@ -29,7 +29,35 @@ _MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN prefs_json TEXT",
     "ALTER TABLE messages ADD COLUMN reasoning TEXT",
     "ALTER TABLE messages ADD COLUMN thinking_seconds REAL",
+    "ALTER TABLE messages ADD COLUMN parent_id INTEGER",
+    "ALTER TABLE messages ADD COLUMN active_child_id INTEGER",
+    "ALTER TABLE messages ADD COLUMN context_summary TEXT",
+    "ALTER TABLE conversations ADD COLUMN active_root_id INTEGER",
 ]
+
+# Conversations became trees (message editing). A conversation from before
+# that is one straight line: link each message to the one before it, point
+# each at the one after, and make the first the active root. Its compaction
+# summary moves onto the boundary message. Only touches conversations with no
+# active_root_id yet, so it is a no-op after the first run.
+_TREE_MIGRATION = """
+BEGIN;
+UPDATE messages SET context_summary = (
+    SELECT c.context_summary FROM conversations c WHERE c.compact_boundary_id = messages.id)
+  WHERE context_summary IS NULL AND id IN (
+    SELECT compact_boundary_id FROM conversations
+    WHERE active_root_id IS NULL AND context_summary IS NOT NULL);
+UPDATE messages SET
+    parent_id = (SELECT MAX(p.id) FROM messages p
+                 WHERE p.conversation_id = messages.conversation_id AND p.id < messages.id),
+    active_child_id = (SELECT MIN(c.id) FROM messages c
+                       WHERE c.conversation_id = messages.conversation_id AND c.id > messages.id)
+  WHERE conversation_id IN (SELECT id FROM conversations WHERE active_root_id IS NULL);
+UPDATE conversations SET active_root_id = (
+    SELECT MIN(id) FROM messages WHERE conversation_id = conversations.id)
+  WHERE active_root_id IS NULL;
+COMMIT;
+"""
 
 
 class Database:
@@ -45,6 +73,7 @@ class Database:
             except sqlite3.OperationalError as e:
                 if "duplicate column name" not in str(e):
                     raise
+        self._conn.executescript(_TREE_MIGRATION)
         self._lock = asyncio.Lock()
 
     def close(self) -> None:

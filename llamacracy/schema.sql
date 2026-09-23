@@ -29,11 +29,13 @@ CREATE TABLE IF NOT EXISTS conversations (
     user_id      INTEGER NOT NULL REFERENCES users(id),
     title        TEXT NOT NULL DEFAULT '',  -- first 50 chars of first user message
     model_id     TEXT NOT NULL,
-    -- Compact context: messages with id <= compact_boundary_id are folded into
-    -- context_summary and no longer resent verbatim (still visible in the UI,
-    -- never deleted -- just excluded from the prompt going forward).
+    -- Legacy: compaction used to live here, one per conversation. It now
+    -- lives on the boundary message (messages.context_summary) so that each
+    -- branch keeps its own; db.py migrates old rows. No longer written.
     compact_boundary_id  INTEGER,
     context_summary      TEXT,
+    -- the first message of the branch being shown (see threads.py)
+    active_root_id       INTEGER,
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 );
@@ -52,6 +54,13 @@ CREATE TABLE IF NOT EXISTS messages (
     image_upload_id   TEXT REFERENCES uploads(id),  -- attached image for this (user) turn, if any
     reasoning         TEXT,                  -- the model's thinking before this (assistant) reply, if it thought
     thinking_seconds  REAL,                  -- first thinking token -> first answer token
+    -- Conversations are trees (editing a message forks it; see threads.py).
+    -- Logical links only, no FK: a conversation's messages are deleted together.
+    parent_id         INTEGER,               -- NULL for a conversation's first message(s)
+    active_child_id   INTEGER,               -- which child (reply, or edited version) is shown
+    -- set on the message where history was compacted: stands in for it and
+    -- everything above it, on every path through it
+    context_summary   TEXT,
     created_at        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation ON messages(conversation_id, id);

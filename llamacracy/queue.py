@@ -54,6 +54,7 @@ class Job:
     model_id: str
     payload: dict                      # OpenAI chat payload (messages + sampling)
     conversation_id: str | None = None
+    parent_message_id: int | None = None  # the user message this reply answers
     # /v1 passthrough: forward upstream's bytes to the caller untouched instead
     # of decoding them into token events. Billing still comes off the same
     # clocks; only the shape of what crosses the wire differs.
@@ -513,12 +514,20 @@ class QueueManager:
         await self.db.execute(
             "INSERT INTO messages (conversation_id, role, content, model_id, "
             "  prompt_tokens, completion_tokens, usage_estimated, reasoning, "
-            "  thinking_seconds, created_at) "
-            "VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  thinking_seconds, parent_id, created_at) "
+            "VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (job.conversation_id, job.content, job.model_id, job.prompt_tokens,
              job.completion_tokens, int(job.usage_estimated), job.reasoning or None,
-             job.thinking_seconds, now()),
+             job.thinking_seconds, job.parent_message_id, now()),
         )
+        # the reply becomes what's shown under the message it answers, even if
+        # the user flipped to another branch while it was being written
+        if job.parent_message_id is not None:
+            await self.db.execute(
+                "UPDATE messages SET active_child_id = "
+                "(SELECT MAX(id) FROM messages WHERE parent_id = ?) WHERE id = ?",
+                (job.parent_message_id, job.parent_message_id),
+            )
         await self.db.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?",
             (now(), job.conversation_id),

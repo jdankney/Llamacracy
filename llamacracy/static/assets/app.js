@@ -76,6 +76,8 @@ const ICONS = {
   send: 'M12 19V5M5 12l7-7 7 7',
   stop: 'M7 7h10v10H7z',
   chevron: 'M6 9l6 6 6-6',
+  left: 'M15 18l-6-6 6-6',
+  right: 'M9 18l6-6-6-6',
   down: 'M12 5v14M19 12l-7 7-7-7',
   trash: 'M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6',
   compress: 'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7',
@@ -297,6 +299,7 @@ const S = {
   conv: null, messages: [], active: null, queue: { jobs: [], depth: 0 },
   usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
   searchOn: false, thinkOn: false, pendingImage: null,
+  editing: null,        // { id, text } while a sent message is being edited in place
   apiKeys: [], newApiKey: null, apiKeyLabel: '',
   compacting: false,
   draft: '',            // composer text survives re-renders (model switch, stream end, ...)
@@ -544,14 +547,67 @@ function tokenMeta(m) {
   return `${(m.prompt_tokens || 0).toLocaleString()} in · ${m.completion_tokens.toLocaleString()} out` +
     (m.usage_estimated ? ' (est.)' : '');
 }
+// "< 2 / 3 >" under a message that has other versions (edits made to it)
+function branchNav(m) {
+  const sib = m.siblings || [];
+  if (sib.length < 2 || m.id == null) return null;
+  const i = sib.indexOf(m.id);
+  const go = j => () => switchBranch(sib[j]);
+  return h('span', { class: 'branch-nav', role: 'group', 'aria-label': 'Versions of this message' },
+    h('button', { type: 'button', 'aria-label': 'Previous version', title: 'Previous version',
+      disabled: i <= 0 || !!S.active, onclick: go(i - 1) }, icon('left', 'icon-sm')),
+    h('span', { class: 'mono' }, `${i + 1} / ${sib.length}`),
+    h('button', { type: 'button', 'aria-label': 'Next version', title: 'Next version',
+      disabled: i >= sib.length - 1 || !!S.active, onclick: go(i + 1) }, icon('right', 'icon-sm')));
+}
+function editBubble(m) {
+  const submit = () => {
+    const text = S.editing.text.trim();
+    if (!text) return;
+    S.editing = null;
+    sendMessage(null, { text, editOf: m.id });
+  };
+  const cancel = () => { S.editing = null; render(); };
+  return h('div', { class: 'msg msg-user is-editing' },
+    h('div', { class: 'edit-card' },
+      h('textarea', {
+        id: 'edit-box', rows: 1, value: S.editing.text, 'aria-label': 'Edit your message',
+        oninput: e => { S.editing.text = e.target.value; autosize(e.target); },
+        onkeydown: e => {
+          if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
+          else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+        },
+      }),
+      h('div', { class: 'edit-actions' },
+        h('span', { class: 'hint' }, m.image
+          ? 'Your original stays, and the photo comes along. Flip back any time.'
+          : 'Your original stays. You can flip back to it any time.'),
+        h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: cancel }, 'Cancel'),
+        h('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: submit }, 'Send'))));
+}
+function startEdit(m) {
+  if (S.active || m.id == null) return;
+  S.editing = { id: m.id, text: m.content };
+  render();
+  const t = document.getElementById('edit-box');
+  if (t) { autosize(t); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+}
 function msgBubble(m) {
   if (m.role === 'user') {
+    // (m.id is undefined on a just-sent message: never let that match "not editing")
+    if (S.editing && m.id != null && S.editing.id === m.id) return editBubble(m);
     return h('div', { class: 'msg msg-user' },
       h('div', { class: 'bubble' },
         m.image ? h('img', { class: 'attach', src: m.image.url, alt: 'Attached image' }) : null,
         mdBlock(m.content)),
       searchChip(m.search),
-      h('div', { class: 'msg-foot' }, copyBtn(m.content)));
+      h('div', { class: 'msg-foot' },
+        branchNav(m),
+        m.id != null && !S.active ? h('button', {
+          type: 'button', class: 'btn btn-ghost btn-sm', title: 'Edit and resend (keeps the original)',
+          onclick: () => startEdit(m),
+        }, icon('pen', 'icon-sm'), 'Edit') : null,
+        copyBtn(m.content)));
   }
   return h('div', { class: 'msg msg-assistant' },
     h('div', { class: 'head' },
@@ -1245,6 +1301,16 @@ function helpView() {
       'The little circle next to them fills up as a conversation gets long. When it turns ' +
       'amber or red, start a new chat or hit Compact.'),
 
+    h('h2', {}, 'Changing what you asked'),
+    h('p', {},
+      'Hover over one of your own messages (on a phone, it\'s right underneath) and choose ' +
+      'Edit. Change it, press Send, and the model answers the new version from that point on.'),
+    h('p', {},
+      'Nothing is lost. Your original and its answer are kept, and little arrows appear under ' +
+      'the message, like ‹ 1 / 2 ›, to flip between the versions. Each version keeps its own ' +
+      'follow-ups, so you can try a question two ways and compare. Editing sends a new request, ' +
+      'so it uses credits like any other reply.'),
+
     h('h2', {}, 'Make it yours'),
     h('p', {},
       'Open ', h('button', { class: 'link-btn', onclick: () => setView('usage') }, 'Account'),
@@ -1347,17 +1413,50 @@ async function loadUsage() {
 }
 
 function newChat() {
-  S.conv = null; S.messages = []; S.view = 'chat'; S.sidebarOpen = false; S.ctxOpen = false; S.stick = true;
+  S.conv = null; S.messages = []; S.editing = null; S.view = 'chat'; S.sidebarOpen = false; S.ctxOpen = false; S.stick = true;
   render(); focusComposer();
+}
+// The server sends the branch being shown; this is the one place that turns
+// it into UI state. Open "Thought for" blocks stay open across a reload.
+function applyConv(d) {
+  const open = new Set(S.messages.filter(m => m._thoughtOpen && m.id != null).map(m => m.id));
+  const lastOpen = S.messages.at(-1)?._thoughtOpen;
+  d.messages.forEach(m => {
+    if (m.search_json) { try { m.search = JSON.parse(m.search_json); } catch { /* ignore */ } }
+    if (m.image_upload_id) m.image = { url: '/api/uploads/' + m.image_upload_id };
+    if (open.has(m.id)) m._thoughtOpen = true;
+  });
+  if (lastOpen && d.messages.length) d.messages.at(-1)._thoughtOpen = true;
+  S.conv = d.conversation; S.messages = d.messages;
+}
+// re-read the branch after a send settles, so fresh messages get their real
+// ids (needed to edit them) and any new "2 / 2" controls appear
+async function refreshConv() {
+  const id = S.conv?.id;
+  if (!id) return;
+  try {
+    const d = await api.get('/api/conversations/' + id);
+    if (S.conv?.id !== id || S.active) return;     // moved on meanwhile
+    applyConv(d); render(); refreshCtx(0);
+  } catch { /* the next open will catch up */ }
+}
+async function switchBranch(msgId) {
+  if (S.active || !S.conv) return;
+  const t = document.getElementById('thread'), top = t?.scrollTop;
+  try {
+    applyConv(await api.post(`/api/conversations/${S.conv.id}/switch`, { message_id: msgId }));
+  } catch (e) { flashError(e.message); return; }
+  S.editing = null;
+  render(); refreshCtx(0);
+  const t2 = document.getElementById('thread');
+  if (t2 && top != null) t2.scrollTop = top;       // stay where the arrows were
 }
 async function openConv(id) {
   let d;
   try { d = await api.get('/api/conversations/' + id); } catch (e) { flashError(e.message); return; }
-  d.messages.forEach(m => {
-    if (m.search_json) { try { m.search = JSON.parse(m.search_json); } catch { /* ignore */ } }
-    if (m.image_upload_id) m.image = { url: '/api/uploads/' + m.image_upload_id };
-  });
-  S.conv = d.conversation; S.messages = d.messages; S.view = 'chat'; S.sidebarOpen = false; S.stick = true;
+  S.messages = []; S.editing = null;
+  applyConv(d);
+  S.view = 'chat'; S.sidebarOpen = false; S.stick = true;
   if (d.conversation.model_id && S.models.some(m => m.id === d.conversation.model_id))
     S.pickerModel = d.conversation.model_id;
   render();
@@ -1390,13 +1489,28 @@ async function compactConversation() {
 }
 
 let aborter = null;
-async function sendMessage(e) {
-  e.preventDefault();
+async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
+  if (e) e.preventDefault();
   if (S.active) return;
-  const text = S.draft.trim(); if (!text) return;
-  S.draft = '';
-  const img = S.pendingImage; S.pendingImage = null;
-  S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined });
+  const editing = editOf != null;
+  const text = (editing ? editText : S.draft).trim(); if (!text) return;
+  let img = null;
+  if (editing) {
+    // the edit replaces that message and everything after it on screen; the
+    // server keeps the original branch, reachable with the "< 1 / 2 >" arrows
+    const i = S.messages.findIndex(x => x.id === editOf);
+    const orig = S.messages[i];
+    S.messages = S.messages.slice(0, i);
+    S.messages.push({ role: 'user', content: text, image: orig?.image });
+    // a fork from above the compaction line has no summary: all of it is sent
+    if (S.conv?.compact_boundary_id && editOf <= S.conv.compact_boundary_id) {
+      S.conv.compact_boundary_id = null; S.conv.context_summary = null;
+    }
+  } else {
+    S.draft = '';
+    img = S.pendingImage; S.pendingImage = null;
+    S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined });
+  }
   S.active = { state: 'queued', position: '?', model: S.pickerModel, text: '' };
   S.stick = true;
   render();
@@ -1407,6 +1521,7 @@ async function sendMessage(e) {
   const body = { model: S.pickerModel, message: text, search: S.searchOn, think: !!(S.thinkOn && pm?.thinking) };
   if (img) body.image_id = img.id;
   if (S.conv) body.conversation_id = S.conv.id;
+  if (editing) body.edit_of = editOf;
   let accepted = false;
   try {
     for await (const ev of api.chatStream(body, aborter.signal)) {
@@ -1458,14 +1573,20 @@ async function sendMessage(e) {
     if (e2.name !== 'AbortError') {
       // the send never made it into the queue: hand the text back so it
       // isn't lost, and drop the optimistic bubble
-      if (!accepted) {
+      if (!accepted && !editing) {
         S.messages.pop(); S.draft = text; S.pendingImage = img;
+      }
+      if (!accepted && editing) {
+        // put the branch back as it was and reopen the edit, text intact
+        await refreshConv();
+        S.editing = { id: editOf, text };
       }
       if (e2.status === 429) limitModal(e2.detail);
       else flashError(e2.message);
     }
   }
   S.active = S.active || null; render();
+  refreshConv();
 }
 async function cancelActive() {
   if (S.active?.jobId) { try { await api.post(`/api/jobs/${S.active.jobId}/cancel`); } catch {} }

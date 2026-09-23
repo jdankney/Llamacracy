@@ -365,3 +365,97 @@ def test_v1_thinking_defaults_off_and_client_can_turn_it_on(client):
     sent = client.fake_upstream.seen_payload
     assert sent["chat_template_kwargs"] == {"enable_thinking": True}
     assert sent["max_tokens"] == get_settings().thinking_max_tokens
+
+
+def _conv(client, conv_id) -> dict:
+    return client.get(f"/api/conversations/{conv_id}").json()
+
+
+def _texts(conv) -> list[str]:
+    return [m["content"] for m in conv["messages"]]
+
+
+def test_editing_a_message_forks_the_conversation(client):
+    up = client.fake_upstream
+    first = _chat(client, model="small", message="one")
+    cid = first[0]["conversation_id"]
+    up.script["small"] = ["reply two"]
+    _chat(client, model="small", message="two", conversation_id=cid)
+    before = _conv(client, cid)
+    two = before["messages"][2]
+    assert _texts(before) == ["one", "hello world", "two", "reply two"]
+    assert two["siblings"] == [two["id"]]
+
+    # edit "two": the model sees the branch up to its parent, never the original
+    up.script["small"] = ["reply TWO"]
+    events = _chat(client, model="small", message="TWO", conversation_id=cid, edit_of=two["id"])
+    assert [m["content"] for m in up.seen_payload["messages"]] == ["one", "hello world", "TWO"]
+    after = _conv(client, cid)
+    assert _texts(after) == ["one", "hello world", "TWO", "reply TWO"]
+    edited = after["messages"][2]
+    assert edited["id"] == events[0]["message_id"]
+    assert edited["siblings"] == [two["id"], edited["id"]]         # "2 / 2"
+
+    # flip back: the original message AND its own reply come back
+    back = client.post(f"/api/conversations/{cid}/switch", json={"message_id": two["id"]}).json()
+    assert _texts(back) == ["one", "hello world", "two", "reply two"]
+    assert _texts(_conv(client, cid)) == ["one", "hello world", "two", "reply two"]   # remembered
+
+    # and carrying on continues whichever branch is showing
+    _chat(client, model="small", message="three", conversation_id=cid)
+    assert [m["content"] for m in up.seen_payload["messages"]] == [
+        "one", "hello world", "two", "reply two", "three"]
+
+
+def test_editing_the_first_message(client):
+    cid = _chat(client, model="small", message="hi")[0]["conversation_id"]
+    root = _conv(client, cid)["messages"][0]
+    _chat(client, model="small", message="hello instead", conversation_id=cid, edit_of=root["id"])
+    assert client.fake_upstream.seen_payload["messages"] == [
+        {"role": "user", "content": "hello instead"}]
+    conv = _conv(client, cid)
+    assert conv["messages"][0]["content"] == "hello instead"
+    assert conv["messages"][0]["siblings"][0] == root["id"]
+    back = client.post(f"/api/conversations/{cid}/switch", json={"message_id": root["id"]}).json()
+    assert _texts(back) == ["hi", "hello world"]
+
+
+def test_edit_and_switch_refuse_what_they_should(client):
+    cid = _chat(client, model="small")[0]["conversation_id"]
+    reply = _conv(client, cid)["messages"][1]
+    r = client.post("/api/chat", json={"model": "small", "message": "x",
+                                       "conversation_id": cid, "edit_of": reply["id"]})
+    assert r.status_code == 404                       # only your own messages can be edited
+    r = client.post("/api/chat", json={"model": "small", "message": "x", "edit_of": reply["id"]})
+    assert r.status_code == 400                       # an edit needs its conversation
+    other = _chat(client, model="small")[0]["conversation_id"]
+    other_msg = _conv(client, other)["messages"][0]["id"]
+    r = client.post(f"/api/conversations/{cid}/switch", json={"message_id": other_msg})
+    assert r.status_code == 404                       # not a message of this conversation
+
+
+@pytest.mark.env(COMPACT_KEEP_RECENT="2")
+def test_compaction_belongs_to_its_branch(client):
+    up = client.fake_upstream
+    cid = _chat(client, model="small", message="m1")[0]["conversation_id"]
+    for m in ("m2", "m3"):
+        _chat(client, model="small", message=m, conversation_id=cid)
+    msgs = _conv(client, cid)["messages"]              # m1 r m2 r m3 r
+
+    up.script["small"] = ["SUMMARY"]
+    r = client.post(f"/api/conversations/{cid}/compact").json()
+    assert r["compact_boundary_id"] == msgs[3]["id"]   # everything but the last 2
+    up.script["small"] = ["ok"]
+    _chat(client, model="small", message="m4", conversation_id=cid)
+    sent = up.seen_payload["messages"]
+    assert sent[0]["role"] == "system" and "SUMMARY" in sent[0]["content"]
+    assert [m["content"] for m in sent[1:]] == ["m3", "hello world", "m4"]
+
+    # a fork from before the cut never gets a summary of messages it doesn't have
+    _chat(client, model="small", message="m2 edited", conversation_id=cid, edit_of=msgs[2]["id"])
+    assert [m["content"] for m in up.seen_payload["messages"]] == ["m1", "hello world", "m2 edited"]
+    assert _conv(client, cid)["conversation"]["context_summary"] is None
+
+    # ...and switching back brings the original branch's summary with it
+    back = client.post(f"/api/conversations/{cid}/switch", json={"message_id": msgs[2]["id"]}).json()
+    assert back["conversation"]["context_summary"] == "SUMMARY"

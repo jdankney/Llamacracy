@@ -45,6 +45,9 @@ payment processing.
 - **Thinking on demand**: models that can reason get a Think toggle. Off by
   default; when on, the reasoning streams live under "Thinking…" and folds
   away to "Thought for 1m 26s", with a larger token budget for that turn.
+- **Edit any message you sent**: the conversation forks instead of being
+  rewritten. The original and its reply are kept, and `‹ 1 / 2 ›` arrows flip
+  between versions, each with its own follow-ups.
 - **Web search on demand**: flip a toggle and that one message gets the top
   SearXNG snippets prepended, with sources cited under it. Never a tool loop.
 - **Vision on demand**: attach an image and the turn routes to the model's

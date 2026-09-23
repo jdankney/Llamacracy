@@ -30,6 +30,9 @@ bill has a face, and that face is mine.
   **compacted** on demand (a button in the context panel) to free up room
   without losing the thread — it folds the older part into a summary, it
   doesn't delete anything.
+- Change your mind about a question? **Edit** any message you sent. You get
+  a fresh answer, and the original stays one tap away (the little ‹ 1 / 2 ›
+  arrows under it).
 - Installable as an actual app icon on your phone (see below) — not just a
   bookmark.
 - No signup circus, nothing sold to anyone.

@@ -173,6 +173,19 @@ reasoning, so you can tell which ones to keep when you adapt it. The
 - **Compact history is on demand only**, never automatic: no surprise
   credit spend, no surprise memory loss. Nothing is deleted; folded messages
   stay visible with a divider showing the summary the model now sees.
+- **Editing forks the conversation instead of rewriting it.** Messages form a
+  tree (`parent_id`); each message remembers which child is shown
+  (`active_child_id`) and the conversation which first message is
+  (`active_root_id`). An edit is a new sibling of the original with its own
+  reply, and switching versions only moves a pointer, so every branch keeps
+  its own follow-ups and nothing is ever deleted. Only the active path is
+  sent to the model. Compaction summaries moved from the conversation onto
+  the boundary message, so a summary applies exactly to the paths through
+  it: a fork from above the cut keeps its full history rather than
+  inheriting a summary of messages it never had. Older, linear
+  conversations are migrated to single-branch trees at startup. Only your
+  own messages can be edited; there is no "regenerate" for replies (yet),
+  though the tree would take one without changes.
 - **Search is a toggle, never model-driven.** Small local models are
   unreliable at deciding when to call a tool, tool loops thrash the context
   and hold the queue, and billing across N inferences gets murky. One query,

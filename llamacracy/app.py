@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import threads
 from .admin import router as admin_router
 from .apikeys import generate as generate_api_key
 from .config import Settings, get_settings
@@ -298,24 +299,66 @@ async def conversations(principal: Principal = Depends(get_principal),
     return {"conversations": [dict(r) for r in rows]}
 
 
+async def _owned_conversation(db: Database, conv_id: str, user_id: int):
+    conv = await db.fetch_one(
+        "SELECT * FROM conversations WHERE id = ? AND user_id = ?", (conv_id, user_id))
+    if conv is None:
+        raise HTTPException(404, "no such conversation")
+    return conv
+
+
+async def _conversation_payload(db: Database, conv) -> dict:
+    """The branch the user is looking at, as the UI renders it. Each message
+    carries `siblings` (its alternatives, oldest first, itself included) so
+    the UI can show "2 / 3" and switch between them; the conversation carries
+    the compaction that applies to *this* branch."""
+    rows = await threads.load(db, conv["id"])
+    path = threads.active_path(conv["active_root_id"], rows)
+    sibs = threads.siblings(rows)
+    boundary, summary = threads.summary_point(path)
+    messages = []
+    for r in path:
+        m = {k: v for k, v in r.items() if k not in ("active_child_id", "context_summary")}
+        m["siblings"] = sibs.get(r["parent_id"], [r["id"]])
+        messages.append(m)
+    conversation = {k: conv[k] for k in conv.keys() if k != "active_root_id"}
+    conversation.update(compact_boundary_id=boundary, context_summary=summary)
+    return {"conversation": conversation, "messages": messages}
+
+
 @app.get("/api/conversations/{conv_id}")
 async def conversation_detail(conv_id: str,
                               principal: Principal = Depends(get_principal),
                               db: Database = Depends(get_db)):
-    conv = await db.fetch_one(
-        "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
-        (conv_id, principal.user_id),
-    )
-    if conv is None:
-        raise HTTPException(404, "no such conversation")
-    msgs = await db.fetch_all(
-        "SELECT id, role, content, model_id, prompt_tokens, completion_tokens, "
-        "usage_estimated, search_json, image_upload_id, reasoning, thinking_seconds, "
-        "created_at FROM messages "
-        "WHERE conversation_id = ? ORDER BY id",
-        (conv_id,),
-    )
-    return {"conversation": dict(conv), "messages": [dict(m) for m in msgs]}
+    conv = await _owned_conversation(db, conv_id, principal.user_id)
+    return await _conversation_payload(db, conv)
+
+
+class SwitchRequest(BaseModel):
+    message_id: int
+
+
+@app.post("/api/conversations/{conv_id}/switch")
+async def switch_branch(conv_id: str, req: SwitchRequest,
+                        principal: Principal = Depends(get_principal),
+                        db: Database = Depends(get_db)):
+    """Show a different version of a message (the "< 2 / 3 >" controls). Only
+    a pointer moves: every branch, and everything below it, is kept, and
+    each remembers which of its own replies was last shown."""
+    conv = await _owned_conversation(db, conv_id, principal.user_id)
+    row = await db.fetch_one(
+        "SELECT id, parent_id FROM messages WHERE id = ? AND conversation_id = ?",
+        (req.message_id, conv_id))
+    if row is None:
+        raise HTTPException(404, "no such message in this conversation")
+    if row["parent_id"] is None:
+        await db.execute("UPDATE conversations SET active_root_id = ? WHERE id = ?",
+                         (row["id"], conv_id))
+    else:
+        await db.execute("UPDATE messages SET active_child_id = ? WHERE id = ?",
+                         (row["id"], row["parent_id"]))
+    conv = await _owned_conversation(db, conv_id, principal.user_id)
+    return await _conversation_payload(db, conv)
 
 
 @app.delete("/api/conversations/{conv_id}")
@@ -354,8 +397,10 @@ async def delete_conversation(conv_id: str,
 # the last COMPACT_KEEP_RECENT messages using the conversation's own model, so
 # future turns send far less history. This is a real inference: it goes
 # through the same FIFO queue and is billed the same as any other job -- not
-# free like search. Nothing is deleted; _load_history (above) is what
-# actually skips the folded-in messages when building a prompt.
+# free like search. Nothing is deleted; threads.history() is what actually
+# skips the folded-in messages when building a prompt. Compaction applies to
+# the branch being shown: the summary is stored on its boundary message, so
+# it covers exactly the paths that run through that message.
 # --------------------------------------------------------------------------- #
 _COMPACT_SYSTEM_PROMPT = (
     "You summarize conversations concisely and factually. Preserve names, "
@@ -378,19 +423,11 @@ async def compact_conversation(conv_id: str,
                                db: Database = Depends(get_db),
                                reg: Registry = Depends(get_registry),
                                qm: QueueManager = Depends(get_queue)):
-    conv = await db.fetch_one(
-        "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
-        (conv_id, principal.user_id),
-    )
-    if conv is None:
-        raise HTTPException(404, "no such conversation")
-
-    boundary = conv["compact_boundary_id"] or 0
-    rows = await db.fetch_all(
-        "SELECT id, role, content FROM messages "
-        "WHERE conversation_id = ? AND id > ? ORDER BY id",
-        (conv_id, boundary),
-    )
+    conv = await _owned_conversation(db, conv_id, principal.user_id)
+    path = threads.active_path(conv["active_root_id"], await threads.load(db, conv_id))
+    boundary, prior = threads.summary_point(path)
+    ids = [r["id"] for r in path]
+    rows = path if boundary is None else path[ids.index(boundary) + 1:]
     keep = settings.compact_keep_recent
     to_compact = rows[:-keep] if keep else list(rows)
     if len(to_compact) < 2:
@@ -402,8 +439,7 @@ async def compact_conversation(conv_id: str,
     if model is None or model.kind != "chat":
         raise HTTPException(400, f"unknown model for this conversation: {conv['model_id']}")
 
-    prior = conv["context_summary"]
-    prompt = _render_turns([dict(r) for r in to_compact])
+    prompt = _render_turns(to_compact)
     if prior:
         prompt = f"Earlier summary:\n{prior}\n\nAdditional conversation since then:\n{prompt}"
 
@@ -421,7 +457,7 @@ async def compact_conversation(conv_id: str,
         owner_email=principal.email,
         model_id=conv["model_id"],
         payload=payload,
-        conversation_id=None,   # the summary lives on conversations.context_summary, not as a message
+        conversation_id=None,   # the summary lives on its boundary message, not as a message of its own
     )
 
     # compacting is real GPU time and gets billed like anything else
@@ -433,11 +469,10 @@ async def compact_conversation(conv_id: str,
 
     summary = job.content.strip()
     new_boundary = to_compact[-1]["id"]
-    await db.execute(
-        "UPDATE conversations SET compact_boundary_id = ?, context_summary = ?, updated_at = ? "
-        "WHERE id = ?",
-        (new_boundary, summary, now(), conv_id),
-    )
+    await db.transaction([
+        ("UPDATE messages SET context_summary = ? WHERE id = ?", (summary, new_boundary)),
+        ("UPDATE conversations SET updated_at = ? WHERE id = ?", (now(), conv_id)),
+    ])
     return {
         "compact_boundary_id": new_boundary,
         "context_summary": summary,
@@ -495,31 +530,10 @@ class ChatRequest(BaseModel):
     search: bool = False
     think: bool = False          # the Think toggle; ignored for models that can't
     image_id: str | None = None
-
-
-async def _load_history(db: Database, conv_id: str) -> list[dict]:
-    conv = await db.fetch_one(
-        "SELECT compact_boundary_id, context_summary FROM conversations WHERE id = ?",
-        (conv_id,),
-    )
-    # Compacted messages (id <= boundary) are never resent verbatim -- the
-    # running summary stands in for them instead. Nothing is deleted; they're
-    # still visible in the UI, just excluded from what actually gets sent.
-    boundary = (conv["compact_boundary_id"] if conv else None) or 0
-    rows = await db.fetch_all(
-        "SELECT role, content FROM messages "
-        "WHERE conversation_id = ? AND id > ? ORDER BY id",
-        (conv_id, boundary),
-    )
-    history = [{"role": r["role"], "content": r["content"]} for r in rows]
-    if conv and conv["context_summary"]:
-        history.insert(0, {
-            "role": "system",
-            "content": "Summary of the earlier part of this conversation "
-                      "(context only -- don't refer to this note explicitly):\n"
-                      + conv["context_summary"],
-        })
-    return history
+    # Editing: the id of an earlier user message this one replaces. The
+    # original is kept; this becomes its sibling (a new branch) and gets a
+    # fresh reply. Omitted, the message continues the branch being shown.
+    edit_of: int | None = None
 
 
 @app.post("/api/chat")
@@ -534,16 +548,41 @@ async def chat(req: ChatRequest,
     if model is None or model.kind != "chat" or not model.in_picker:
         raise HTTPException(400, f"not a selectable chat model: {req.model}")
 
+    # Where the new message hangs in the conversation tree, and so what history
+    # the model sees: the branch up to its parent. A plain send continues the
+    # branch on screen; an edit becomes a sibling of the message it edits.
+    conv_id = req.conversation_id
+    parent_id: int | None = None
+    image_id = req.image_id
+    if conv_id:
+        conv = await _owned_conversation(db, conv_id, principal.user_id)
+        rows = await threads.load(db, conv_id)
+        if req.edit_of is not None:
+            orig = next((r for r in rows if r["id"] == req.edit_of), None)
+            if orig is None or orig["role"] != "user":
+                raise HTTPException(404, "no such message of yours in this conversation")
+            parent_id = orig["parent_id"]
+            # editing the words shouldn't silently drop the photo they were about
+            image_id = image_id or orig["image_upload_id"]
+        else:
+            path = threads.active_path(conv["active_root_id"], rows)
+            parent_id = path[-1]["id"] if path else None
+        history = threads.history(threads.path_to(parent_id, rows))
+    else:
+        if req.edit_of is not None:
+            raise HTTPException(400, "edit_of needs the conversation_id it belongs to")
+        history = []
+
     # An attached image routes this turn to the paired -vision llama-swap
     # entry (same weights + --mmproj) instead of the picked text model. The
     # extra VRAM/cold-load only happens on turns that actually carry an
     # image; every other turn behaves exactly as before.
     dispatch_model_id = req.model
     image_row = None
-    if req.image_id:
+    if image_id:
         image_row = await db.fetch_one(
             "SELECT * FROM uploads WHERE id = ? AND user_id = ?",
-            (req.image_id, principal.user_id),
+            (image_id, principal.user_id),
         )
         if image_row is None:
             raise HTTPException(404, "no such upload")
@@ -551,18 +590,6 @@ async def chat(req: ChatRequest,
         if vision is None:
             raise HTTPException(400, f"{model.display} doesn't support images yet")
         dispatch_model_id = vision.key
-
-    conv_id = req.conversation_id
-    if conv_id:
-        owned = await db.fetch_one(
-            "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
-            (conv_id, principal.user_id),
-        )
-        if owned is None:
-            raise HTTPException(404, "no such conversation")
-        history = await _load_history(db, conv_id)
-    else:
-        history = []
 
     # Search runs here, outside the FIFO queue -- it's a local HTTP call, not
     # GPU time. One query, injected into this turn's prompt only; the user's
@@ -620,20 +647,29 @@ async def chat(req: ChatRequest,
             "VALUES (?, ?, ?, ?, ?, ?)",
             (conv_id, principal.user_id, title, req.model, ts, ts),
         )
-    await db.execute(
+    user_msg_id = await db.insert(
         "INSERT INTO messages (conversation_id, role, content, search_json, "
-        "  image_upload_id, created_at) "
-        "VALUES (?, 'user', ?, ?, ?, ?)",
+        "  image_upload_id, parent_id, created_at) "
+        "VALUES (?, 'user', ?, ?, ?, ?, ?)",
         (conv_id, req.message,
          json.dumps(search_outcome.as_dict()) if search_outcome else None,
-         req.image_id, ts),
+         image_id, parent_id, ts),
     )
+    # ...and make it the version on screen: its parent (or, for a first
+    # message, the conversation) now points at it
+    if parent_id is None:
+        await db.execute("UPDATE conversations SET active_root_id = ? WHERE id = ?",
+                         (user_msg_id, conv_id))
+    else:
+        await db.execute("UPDATE messages SET active_child_id = ? WHERE id = ?",
+                         (user_msg_id, parent_id))
     job.conversation_id = conv_id
+    job.parent_message_id = user_msg_id
     await qm.submit(job)
 
     async def event_stream():
         yield _sse({"type": "accepted", "job_id": job.id,
-                    "conversation_id": conv_id,
+                    "conversation_id": conv_id, "message_id": user_msg_id,
                     "position": qm.position_of(job.id)})
         if search_outcome is not None:
             yield _sse(search_outcome.as_dict())
