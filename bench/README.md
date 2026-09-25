@@ -43,7 +43,7 @@ Top level:
 | `threads` | `6` | `-t` for llama-server. |
 | `vram_total_mib` | | Informational. |
 | `ttl_backstop_s` | `1200` | llama-swap's own idle unload; the app's `IDLE_TTL_*` is the real one. |
-| `health_timeout_s` | `480` | How long llama-swap waits for a cold `--no-mmap` load. |
+| `health_timeout_s` | `480` | How long llama-swap waits for a cold `no_mmap` load. |
 
 Each entry under `models` (the key is the model id used everywhere: picker,
 API, billing rows):
@@ -60,7 +60,7 @@ API, billing rows):
 | `thinking` | `true` for a model that can reason and whose chat template takes `enable_thinking` (Qwen3 and later, among others; try one prompt with Think on to confirm). Thinking is off by default; users turn it on per message with the Think toggle, and the app sends `chat_template_kwargs.enable_thinking` on every request. `nothink: true` is the older name for the same thing, from when these models had thinking forced off. |
 | `sampling` | Per-model request defaults the app sends (`temperature`, `top_p`, `top_k`, `min_p`). |
 | `max_tokens` | Per-model reply cap in the web chat, default 2048 (also capped by `MAX_TOKENS_PER_REQUEST`). Think turns and `/v1` calls use `THINKING_MAX_TOKENS` and `API_MAX_TOKENS_PER_REQUEST` instead. |
-| `serve` | How llama-server runs it: `ctx`, `kv_type` (`f16`/`q8_0`), `n_cpu_moe` (MoE expert offload, or omit), `no_mmap`, `fa` (`on`), `args` (extra CLI flags). |
+| `serve` | How llama-server runs it: `ctx`, `kv_type` (`f16`/`q8_0`), `n_cpu_moe` (MoE expert offload, or omit), `no_mmap` (read the weights into RAM instead of memory-mapping them; becomes `--load-mode none` on current llama.cpp builds and `--no-mmap` on older ones), `fa` (`on`), `args` (extra CLI flags). |
 | `bench` | Benchmark-only overrides: `args` (replaces `serve.args` for the benchmark run), `no_mmap`, `reasoning_budget`, and `ctx_ladder` for `--ctx-sweep`: a list of `[ctx, kv_type, n_cpu_moe]` rungs walked low to high. |
 | `group` | llama-swap swap group. Anything, `standard` / `heavyweights` are just conventions. |
 | `vision` | Adds a hidden `<key>-vision` variant: `mmproj` (path), optional `display`, `blurb`, `args`. It inherits everything in `serve`, including `args`, so a custom chat template carries over; set `vision.args` only to override that list. The app routes a message with an image to it. |

@@ -163,7 +163,8 @@ A minimal entry:
 - `seed` is what the queue's estimates and the cost model use **until you
   benchmark**. Guess generously; nothing breaks if it is off.
 - `serve` is how `llama-server` runs it: context size, KV cache type, MoE
-  expert offload (`n_cpu_moe`), `--no-mmap`, extra flags.
+  expert offload (`n_cpu_moe`), loading into RAM instead of memory-mapping
+  (`no_mmap`), extra flags.
 - Add a `vision` block with the `mmproj` path and the model can read images.
 - `"thinking": true` offers the Think toggle, for models whose chat template
   takes `enable_thinking` (Qwen3 and later, among others).

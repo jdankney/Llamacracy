@@ -40,6 +40,8 @@ import os
 import sys
 from pathlib import Path
 
+from server_flags import no_mmap as no_mmap_flag
+
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_INVENTORY = REPO / "bench" / "inventory.json"
 DEFAULT_BENCH = REPO / "bench" / "bench-results.json"
@@ -90,7 +92,7 @@ def recommended(key: str, m: dict, bench: dict) -> dict | None:
     }
 
 
-def build_cmd(path: str, rec: dict, serve: dict, threads: int, *,
+def build_cmd(path: str, rec: dict, serve: dict, threads: int, *, server_path: str,
               mmproj: str | None = None) -> list[str]:
     cmd = ["${server}", "-m", path,
            "--host", "127.0.0.1", "--port", "${PORT}",
@@ -103,7 +105,7 @@ def build_cmd(path: str, rec: dict, serve: dict, threads: int, *,
     if rec.get("kv_type", "f16") != "f16":
         cmd += ["-ctk", rec["kv_type"], "-ctv", rec["kv_type"]]
     if serve.get("no_mmap"):
-        cmd += ["--no-mmap"]
+        cmd += no_mmap_flag(server_path)
     cmd += list(serve.get("args", []))
     return cmd
 
@@ -205,7 +207,7 @@ def generate(inv: dict, bench: dict) -> tuple[str, dict]:
         vkey = f"{key}-vision" if vision else None
 
         emit_yaml_entry(
-            y, key, build_cmd(path, rec, serve, threads),
+            y, key, build_cmd(path, rec, serve, threads, server_path=server),
             f'{m["display"]} | {rec["tg_tok_s"]} tok/s | '
             f'{rec["cold_load_s"]}s cold | {rec["vram_used_mib"]} MiB VRAM',
             ttl=ttl, unlisted=is_fim)
@@ -234,7 +236,7 @@ def generate(inv: dict, bench: dict) -> tuple[str, dict]:
                          for a in v.get("args", serve.get("args", []))]
         display = v.get("display", f'{m["display"]} -- vision')
         emit_yaml_entry(
-            y, vkey, build_cmd(path, rec, serve, threads, mmproj=mmproj),
+            y, vkey, build_cmd(path, rec, serve, threads, server_path=server, mmproj=mmproj),
             f"{display} | mmproj: {Path(mmproj).name}",
             ttl=ttl, unlisted=True)
         built.add(vkey)

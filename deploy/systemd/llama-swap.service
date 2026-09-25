@@ -11,7 +11,7 @@ WorkingDirectory=@REPO@
 ExecStart=%h/.local/bin/llama-swap -config @REPO@/config/llama-swap.yaml -listen 127.0.0.1:8091 -watch-config
 Restart=on-failure
 RestartSec=3
-# llama-server children can briefly spike RAM while a large --no-mmap model loads
+# llama-server children can briefly spike RAM while a large no-mmap model loads
 OOMScoreAdjust=-200
 Nice=-5
 

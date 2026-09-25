@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from gguf_meta import summarize as gguf_summarize
+from server_flags import no_mmap as no_mmap_flag
 
 REPO = Path(__file__).resolve().parent.parent
 INVENTORY_PATH = REPO / "bench" / "inventory.json"
@@ -71,7 +72,7 @@ VRAM_HEADROOM_MIB = 400          # keep this much unused or we call it "does not
 
 GEN_TOKENS = 320
 BENCH_REPS = 3
-HEALTH_TIMEOUT_S = 420           # --no-mmap heavyweights load ~20 GB from disk
+HEALTH_TIMEOUT_S = 420           # no-mmap heavyweights load ~20 GB from disk
 
 _PARA = (
     "The quick brown fox jumps over the lazy dog while the committee debates "
@@ -118,7 +119,7 @@ class ModelSpec:
         if self.kv_type != "f16":
             cmd += ["-ctk", self.kv_type, "-ctv", self.kv_type]
         if self.no_mmap:
-            cmd += ["--no-mmap"]
+            cmd += no_mmap_flag(str(LLAMA_SERVER))
         if self.reasoning_budget is not None:
             cmd += ["--reasoning-budget", str(self.reasoning_budget)]
         cmd += self.extra
