@@ -63,7 +63,7 @@ API, billing rows):
 | `serve` | How llama-server runs it: `ctx`, `kv_type` (`f16`/`q8_0`), `n_cpu_moe` (MoE expert offload, or omit), `no_mmap` (read the weights into RAM instead of memory-mapping them; becomes `--load-mode none` on current llama.cpp builds and `--no-mmap` on older ones), `fa` (`on`), `args` (extra CLI flags). |
 | `bench` | Benchmark-only overrides: `args` (replaces `serve.args` for the benchmark run), `no_mmap`, `reasoning_budget`, and `ctx_ladder` for `--ctx-sweep`: a list of `[ctx, kv_type, n_cpu_moe]` rungs walked low to high. |
 | `group` | llama-swap swap group. Anything, `standard` / `heavyweights` are just conventions. |
-| `vision` | Adds a hidden `<key>-vision` variant: `mmproj` (path), optional `display`, `blurb`, `args`. It inherits everything in `serve`, including `args`, so a custom chat template carries over; set `vision.args` only to override that list. The app routes a message with an image to it. |
+| `vision` | Adds a hidden `<key>-vision` variant: `mmproj` (path), optional `display`, `blurb`, `args`. It inherits everything in `serve`, including `args`, so a custom chat template carries over; set `vision.args` only to override that list. The projector needs its own VRAM (about 1 GB) that the benchmark doesn't measure, so an MoE model can set `vision.n_cpu_moe` to offload a few more expert layers for the vision entry only. The app routes a message with an image to it. |
 | `seed` | Numbers to serve from before benchmarking: `cold_load_s`, `tg_tok_s`, `pp_tok_s`, `vram_used_mib`, optional `gpu_gen_w_mean`. |
 | `note` | Free text, kept in the results file. |
 

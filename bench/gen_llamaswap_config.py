@@ -234,6 +234,10 @@ def generate(inv: dict, bench: dict) -> tuple[str, dict]:
         serve = dict(m.get("serve", {}))
         serve["args"] = [expand(a, models_dir) if a.startswith("~") else a
                          for a in v.get("args", serve.get("args", []))]
+        # The projector takes its own VRAM (~1 GB) on top of the base model's
+        # benchmarked fit, so a vision entry can offload more experts.
+        if v.get("n_cpu_moe") is not None:
+            rec = {**rec, "n_cpu_moe": v["n_cpu_moe"]}
         display = v.get("display", f'{m["display"]} -- vision')
         emit_yaml_entry(
             y, vkey, build_cmd(path, rec, serve, threads, server_path=server, mmproj=mmproj),
