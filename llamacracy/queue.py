@@ -128,7 +128,10 @@ class Job:
         """The agent's trail and numbered sources, as stored on the reply."""
         if self.agent is None:
             return None
-        return {"steps": self.trail, "sources": self.agent.sources}
+        rec = {"steps": self.trail, "sources": self.agent.sources}
+        if self.agent.workspace is not None and self.agent.workspace.changed:
+            rec["files"] = list(self.agent.workspace.changed.values())
+        return rec
 
     def public(self, position: int) -> dict:
         return {

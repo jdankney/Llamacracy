@@ -65,6 +65,10 @@ payment processing.
   the conversation; click a file to see exactly what the model reads. A file
   too long to send whole is looked through instead (outline, search, read a
   part) by the models that use tools.
+- **Files the model writes**: with Files on, a tool-using model saves drafts,
+  plans, CSV or code to the chat's workspace and edits them in place when
+  you ask for changes. Files fork with the conversation: edit an earlier
+  message and that branch keeps the files as they were.
 - **Vision on demand**: attach an image and the turn routes to the model's
   vision variant. Images live on disk, never base64 in the database.
 - **Compact history**: fold the older part of a long conversation into a

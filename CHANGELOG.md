@@ -30,6 +30,13 @@
   they get a short stand-in and look through it with outline, search and
   read tools, quoting page numbers. Documents a compaction folded away stay
   reachable the same way.
+- **Files.** Turn on Files and a model that uses tools can save its work
+  (a draft, a plan, CSV, code) to the chat's workspace, and change it when
+  you ask ("make the intro shorter") with an exact edit rather than a
+  rewrite. Files appear under the reply that wrote them, open in a viewer,
+  and download as plain text; the folder button lists them all. Every write
+  is kept as a version tied to its message, so files fork with the chat:
+  an edited message's branch starts from the files as they were.
 
 ### Upgrading
 

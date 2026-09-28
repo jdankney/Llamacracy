@@ -30,11 +30,19 @@ from .metering import Meter
 from .queue import Job, JobState, QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
 from .search import get_search
-from .tools import DocRef, Toolbox, document_tools, read_page_tool, web_search_tool
+from .tools import (
+    DocRef,
+    Toolbox,
+    document_tools,
+    read_page_tool,
+    web_search_tool,
+    workspace_tools,
+)
 from .uploads import UploadRejected
 from .uploads import save as save_upload
 from .uploads import validate as validate_upload
 from .upstream import Upstream, get_upstream
+from .workspace import Workspace, branch_files
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -324,6 +332,7 @@ async def _conversation_payload(db: Database, conv) -> dict:
     sibs = threads.siblings(rows)
     boundary, summary = threads.summary_point(path)
     docs = await _describe_documents(db, threads.document_ids(path), conv["user_id"])
+    files = await branch_files(db, conv["id"], [r["id"] for r in path])
     messages = []
     for r in path:
         m = {k: v for k, v in r.items()
@@ -333,6 +342,9 @@ async def _conversation_payload(db: Database, conv) -> dict:
         messages.append(m)
     conversation = {k: conv[k] for k in conv.keys() if k != "active_root_id"}
     conversation.update(compact_boundary_id=boundary, context_summary=summary)
+    conversation["files"] = [
+        {"id": f.id, "path": f.path, "chars": len(f.content), "updated_at": f.created_at}
+        for f in sorted(files.values(), key=lambda f: f.path) if f.content is not None]
     return {"conversation": conversation, "messages": messages}
 
 
@@ -352,6 +364,32 @@ async def conversation_detail(conv_id: str,
                               db: Database = Depends(get_db)):
     conv = await _owned_conversation(db, conv_id, principal.user_id)
     return await _conversation_payload(db, conv)
+
+
+@app.get("/api/conversations/{conv_id}/files/{file_id}")
+async def workspace_file(conv_id: str, file_id: int, download: bool = False,
+                         principal: Principal = Depends(get_principal),
+                         db: Database = Depends(get_db)):
+    """One version of a workspace file. Downloads are plain text attachments:
+    a file the model wrote is never rendered as this site."""
+    await _owned_conversation(db, conv_id, principal.user_id)
+    row = await db.fetch_one(
+        "SELECT id, path, content, created_at FROM workspace_files "
+        "WHERE id = ? AND conversation_id = ? AND content IS NOT NULL", (file_id, conv_id))
+    if row is None:
+        raise HTTPException(404, "no such file")
+    if download:
+        return Response(row["content"].encode("utf-8"), media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": _attachment(row["path"].split("/")[-1]),
+                                 "X-Content-Type-Options": "nosniff"})
+    return {"id": row["id"], "path": row["path"], "content": row["content"],
+            "updated_at": row["created_at"]}
+
+
+def _attachment(name: str) -> str:
+    from urllib.parse import quote
+    safe = re.sub(r'[^\w.\- ]', "_", name) or "file.txt"
+    return f"attachment; filename=\"{safe}\"; filename*=UTF-8''{quote(name)}"
 
 
 class SwitchRequest(BaseModel):
@@ -403,6 +441,7 @@ async def delete_conversation(conv_id: str,
     )
     await db.transaction([
         ("DELETE FROM messages WHERE conversation_id = ?", (conv_id,)),
+        ("DELETE FROM workspace_files WHERE conversation_id = ?", (conv_id,)),
         ("UPDATE jobs SET conversation_id = NULL WHERE conversation_id = ?", (conv_id,)),
         ("DELETE FROM conversations WHERE id = ?", (conv_id,)),
         *[("DELETE FROM uploads WHERE id = ?", (u["id"],)) for u in uploads],
@@ -640,6 +679,7 @@ class ChatRequest(BaseModel):
     think: bool = False          # the Think toggle; ignored for models that can't
     image_id: str | None = None
     doc_ids: list[str] | None = None   # attached documents (upload ids)
+    files: bool = False          # let the model write files to the conversation's workspace
     # Editing: the id of an earlier user message this one replaces. The
     # original is kept; this becomes its sibling (a new branch) and gets a
     # fresh reply. Omitted, the message continues the branch being shown.
@@ -741,8 +781,14 @@ async def chat(req: ChatRequest,
     search_outcome = None
     agent = None
     web = req.search and model.tools
-    if web or refs:
+    # the workspace: on when asked, and from then on whenever this branch has
+    # files, so a follow-up can always reach what an earlier turn wrote
+    ws = await Workspace.open(db, conv_id, [r["id"] for r in prior])
+    use_files = model.tools and (req.files or bool(ws.listing()))
+    if web or refs or use_files:
         tools = []
+        if use_files:
+            tools += workspace_tools(ws, read_chars=settings.agent_read_chars)
         if web:
             tools += [web_search_tool(get_search(), settings.agent_search_results),
                       read_page_tool(read_chars=settings.agent_read_chars,
@@ -759,6 +805,8 @@ async def chat(req: ChatRequest,
         agent = Toolbox(tools, max_steps=settings.agent_max_steps,
                         deadline_s=settings.agent_max_seconds,
                         result_chars=settings.agent_tool_result_chars, notes=notes)
+        if use_files:
+            agent.workspace = ws
     elif req.search:
         search_outcome = await get_search().search(req.message, settings.search_max_results)
 
@@ -850,6 +898,8 @@ async def chat(req: ChatRequest,
                          (user_msg_id, parent_id))
     job.conversation_id = conv_id
     job.parent_message_id = user_msg_id
+    # this turn's writes hang off its own message, on this branch only
+    ws.conversation_id, ws.anchor = conv_id, user_msg_id
     await qm.submit(job)
 
     async def event_stream():

@@ -210,6 +210,21 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   Documents a compaction folded away stay reachable the same way, listed in
   the system prompt. Truncating a long document silently was never an
   option: the model would answer confidently about text it never saw.
+- **Workspace files are versions tied to messages, not a folder.** Every
+  write the model makes is a new row pointing at the user message whose
+  turn wrote it, and a turn sees the newest version of each path among the
+  messages on its own branch. That makes workspaces fork exactly like
+  conversations: editing a message starts a branch from the files as they
+  were, and flipping back restores the later ones, with no copying and
+  nothing ever lost. Paths are names, validated and stored in the database,
+  never places on disk; files are text, capped (40 files, 200K characters
+  each) and served only as plain-text downloads. Edits are an exact,
+  must-be-unique find-and-replace, the way coding agents edit, because a
+  small model rewriting a whole file to change one line drops the rest of
+  it. Files is a toggle (every tool schema costs prompt tokens, and a chat
+  that doesn't need files shouldn't invite the model to make some), but
+  once a branch has files the tools stay on, so a follow-up can always
+  reach what an earlier turn wrote.
 - **`read_page` fetches public addresses only, pinned per hop.** A model
   choosing URLs is a server-side request forgery risk by construction, on a
   machine that sits in a home network. Each hop's host is resolved, every

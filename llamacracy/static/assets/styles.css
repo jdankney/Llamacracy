@@ -370,6 +370,15 @@ code, pre, kbd { font-family: var(--mono); }
 .doc-meta { color: var(--text-3); white-space: nowrap; }
 .doc-x { display: inline-flex; align-items: center; justify-content: center; width: 26px; align-self: stretch; color: var(--text-3); border-left: 1px solid var(--line); border-radius: 0 var(--r-md) var(--r-md) 0; }
 .doc-x:hover { color: var(--danger); background: var(--danger-soft); }
+.reply-files { margin: 6px 0 2px; }
+.prose-chat li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.1em; }
+.msg-assistant .reply-files { padding-left: 30px; }
+.btn-pair { display: inline-flex; gap: 4px; }
+.file-count { gap: 4px; font-variant-numeric: tabular-nums; }
+.file-list { display: grid; gap: 4px; margin-top: 10px; }
+.file-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); text-align: left; min-width: 0; }
+.file-row:hover { background: var(--panel-3); border-color: var(--line-strong); }
+.file-row .doc-meta { margin-left: auto; }
 .compose-hint { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-3); padding: 6px 4px 0; min-height: 22px; flex-wrap: wrap; }
 .compose-hint .sep { color: var(--text-4); }
 .compose-hint .kbd { margin-left: auto; color: var(--text-4); }
@@ -628,7 +637,7 @@ a.btn { text-decoration: none; }
   .backdrop { display: block; position: absolute; inset: 0; z-index: 15; background: rgba(4,6,10,.55); }
   .conv .del { opacity: .7; }
   .thread { padding: 16px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left)); }
-  .msg-assistant .body, .msg-assistant .msg-foot, .msg-assistant .thought, .msg-assistant .trail, .msg-assistant > .sources { padding-left: 0; }
+  .msg-assistant .body, .msg-assistant .msg-foot, .msg-assistant .thought, .msg-assistant .trail, .msg-assistant > .sources, .msg-assistant .reply-files { padding-left: 0; }
   .composer { padding: 6px calc(10px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(10px + var(--safe-left)); }
   .compose-tools .tool-label { display: none; }
   .compose-tools .select-wrap { flex: 1 1 100%; max-width: none; }

@@ -82,6 +82,19 @@ CREATE TABLE IF NOT EXISTS uploads (
     created_at   REAL NOT NULL
 );
 
+-- A conversation's workspace: files the model writes. Every write is a new
+-- row, tied to the user message whose turn wrote it, so a branch sees only
+-- the versions on its own path (see workspace.py). content NULL = deleted.
+CREATE TABLE IF NOT EXISTS workspace_files (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id  TEXT NOT NULL REFERENCES conversations(id),
+    message_id       INTEGER NOT NULL,
+    path             TEXT NOT NULL,
+    content          TEXT,
+    created_at       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_workspace_conv ON workspace_files(conversation_id, id);
+
 -- Per-user API keys for the OpenAI-compatible endpoint (Continue.dev
 -- etc.) -- bearer-token auth for that endpoint only; the web UI still uses
 -- oauth2-proxy. Only the sha256 hash is stored -- the plaintext key is shown

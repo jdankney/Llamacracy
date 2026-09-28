@@ -92,6 +92,7 @@ const ICONS = {
   bulb: 'M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.74V17h8v-2.26A7 7 0 0 0 12 2z',
   file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8',
   download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
+  folder: 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
 };
 const icon = (name, cls = '') => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -300,7 +301,7 @@ const S = {
   me: null, models: [], loadedModel: null, conversations: [],
   conv: null, messages: [], active: null, queue: { jobs: [], depth: 0 },
   usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
-  searchOn: false, thinkOn: false, pendingImage: null,
+  searchOn: false, thinkOn: false, filesOn: false, pendingImage: null,
   pendingDocs: [],      // documents attached to the next message (already uploaded + read)
   reading: [],          // file names still being uploaded and read
   dragging: false,
@@ -631,6 +632,7 @@ function msgBubble(m) {
         ? 'It ran out of steps or room before it could answer. Ask again, maybe more narrowly.'
         : 'It used all its room thinking and never got to the answer. Ask again, or turn Think off for this one.'),
     sourcesList(m.tools?.sources, m.content),
+    m.tools?.files?.length ? h('div', { class: 'doc-chips reply-files' }, m.tools.files.map(fileChip)) : null,
     h('div', { class: 'msg-foot' },
       h('span', { class: 'meta' }, tokenMeta(m)),
       copyBtn(m.content)));
@@ -685,7 +687,8 @@ function activeBubble() {
 /* ------------------------------------------------------------ agent trail */
 // What a model did on its way to an answer: "Searching “x”" rows (and any
 // short notes it wrote between them), folded under one summary line.
-const TOOL_ICON = { web_search: 'search', read_page: 'globe', doc_outline: 'file', doc_search: 'file', doc_read: 'file' };
+const TOOL_ICON = { web_search: 'search', read_page: 'globe', doc_outline: 'file', doc_search: 'file', doc_read: 'file',
+  ws_list: 'folder', ws_read: 'folder', ws_write: 'pen', ws_edit: 'pen' };
 function trailSummary(steps, live) {
   const tools = steps.filter(s => s.type === 'tool');
   const running = tools.find(s => s.running);
@@ -698,7 +701,9 @@ function trailSummary(steps, live) {
   if (searches) bits.push(`Searched the web${searches > 1 ? ` ${searches} times` : ''}`);
   if (pages) bits.push(`${bits.length ? 'read' : 'Read'} ${pages === 1 ? 'a page' : plural(pages, 'page')}`);
   if (docs) bits.push(`${bits.length ? 'looked through' : 'Looked through'} ${docs === 1 ? 'a document' : plural(docs, 'document')}`);
-  const known = searches + n('read_page') + tools.filter(s => s.name.startsWith('doc_')).length;
+  const wrote = new Set(tools.filter(s => (s.name === 'ws_write' || s.name === 'ws_edit') && s.ok !== false).map(s => s.args?.path || s.label)).size;
+  if (wrote) bits.push(`${bits.length ? 'worked on' : 'Worked on'} ${wrote === 1 ? 'a file' : plural(wrote, 'file')}`);
+  const known = searches + n('read_page') + tools.filter(s => s.name.startsWith('doc_') || s.name.startsWith('ws_')).length;
   if (tools.length > known) bits.push(plural(tools.length - known, 'other step'));
   return bits.join(' · ') || 'Worked it out';
 }
@@ -743,6 +748,55 @@ function sourcesList(sources, text) {
       h('span', { class: 'host' }, ' · ' + hostOf(r.url))))));
 }
 const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
+/* ------------------------------------------------------------- workspace */
+// Files the model wrote in this conversation. A reply's chips open the file
+// as it was after that reply; the Files panel shows each file as it is now,
+// on the branch being shown.
+const fmtChars = n => n < 1000 ? `${n} chars` : `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}K chars`;
+function fileChip(f) {
+  const what = f.created ? 'new' : `+${f.added} −${f.removed}`;
+  return h('span', { class: 'doc-chip' },
+    h('button', { type: 'button', class: 'doc-open', title: 'Open this file as it was after this reply', onclick: () => openFile(f.id, f.path) },
+      icon('pen', 'icon-sm'), h('span', { class: 'doc-name' }, f.path), h('span', { class: 'doc-meta' }, what)));
+}
+const CODE_LANG = { py: 'python', js: 'javascript', ts: 'typescript', json: 'json', html: 'xml', css: 'css', sh: 'bash', yml: 'yaml', yaml: 'yaml', toml: 'ini', sql: 'sql', csv: 'plaintext', txt: 'plaintext' };
+async function openFile(id, path) {
+  const convId = S.conv?.id;
+  if (!convId) return;
+  const body = h('div', { class: 'doc-preview-body' }, h('div', { class: 'muted small' }, 'Loading…'));
+  const url = `/api/conversations/${convId}/files/${id}`;
+  let text = '';
+  const close = modal([
+    h('h3', {}, icon('pen'), h('span', { class: 'doc-name' }, path)),
+    body,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn btn-ghost', onclick: e => copyText(e.currentTarget, text) }, icon('copy', 'icon-sm'), 'Copy'),
+      h('a', { class: 'btn btn-ghost', href: url + '?download=1', download: path.split('/').pop() }, icon('download', 'icon-sm'), 'Download'),
+      h('button', { class: 'btn btn-primary', autofocus: true, onclick: () => close() }, 'Close')),
+  ], null, 'modal-wide');
+  try {
+    const r = await api.get(url);
+    text = r.content;
+    const ext = (path.split('.').pop() || '').toLowerCase();
+    body.replaceChildren(ext === 'md' || ext === 'markdown'
+      ? mdBlock(text)
+      : mdBlock('```' + (CODE_LANG[ext] || '') + '\n' + text.replace(/```/g, '`\u200b``') + '\n```'));
+  } catch (e) { body.replaceChildren(h('p', { class: 'muted' }, e.message)); }
+}
+function filesPanel() {
+  const files = S.conv?.files || [];
+  const close = modal([
+    h('h3', {}, icon('folder'), 'Files in this chat'),
+    h('p', { class: 'small' }, files.length
+      ? 'What the model has written so far, on the version of the chat you\'re looking at.'
+      : 'Nothing yet. Turn on Files and ask for a draft, a plan or some code.'),
+    files.length ? h('div', { class: 'file-list' }, files.map(f => h('button', {
+      type: 'button', class: 'file-row', onclick: () => { close(); openFile(f.id, f.path); },
+    }, icon('pen', 'icon-sm'), h('span', { class: 'doc-name' }, f.path),
+       h('span', { class: 'doc-meta' }, `${fmtChars(f.chars)} · ${agoStr(f.updated_at)}`)))) : null,
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', autofocus: true, onclick: () => close() }, 'Close')),
+  ]);
+}
 const thinkElapsed = () => S.active?.thinkStart ? (Date.now() - S.active.thinkStart) / 1000 : 0;
 let _thinkTick = null;
 function startThinkTicker() {
@@ -1018,6 +1072,25 @@ async function previewDoc(d) {
   } catch (e) { body.replaceChildren(h('p', { class: 'muted' }, e.message)); }
 }
 
+// "Files": let the model write to the chat's workspace. Once a chat has files
+// it stays on (a follow-up has to be able to reach them), and the count
+// opens the list.
+function filesButton(m) {
+  const n = S.conv?.files?.length || 0;
+  const on = !!m?.tools && (S.filesOn || n > 0);
+  return h('span', { class: 'btn-pair' },
+    h('button', {
+      type: 'button', disabled: !m?.tools,
+      title: !m?.tools ? 'This model can\'t work with files. Pick one that looks things up'
+        : n ? 'On for this chat: it has files the model can read and change'
+        : 'Let the model create and edit files you can open and download',
+      class: 'btn btn-sm' + (on ? ' is-on' : ''), 'aria-pressed': on ? 'true' : 'false',
+      onclick: () => { if (!n) { S.filesOn = !S.filesOn; render(); } else filesPanel(); },
+    }, icon('pen', 'icon-sm'), h('span', { class: 'tool-label' }, 'Files')),
+    n ? h('button', { type: 'button', class: 'btn btn-sm file-count', title: 'Open the files', 'aria-label': `${n} files`, onclick: filesPanel },
+      icon('folder', 'icon-sm'), String(n)) : null);
+}
+
 function composeHintKids() {
   const m = S.pickerModel && S.models.find(x => x.id === S.pickerModel);
   if (!m) return [];
@@ -1085,6 +1158,7 @@ function composer() {
             'aria-pressed': S.thinkOn && m?.thinking ? 'true' : 'false',
             onclick: () => { S.thinkOn = !S.thinkOn; render(); },
           }, icon('bulb', 'icon-sm'), h('span', { class: 'tool-label' }, 'Think')),
+          filesButton(m),
           // no `accept`: phones then offer Files as well as Photos
           h('input', { type: 'file', id: 'file-input', hidden: true, multiple: true, onchange: onPickFiles }),
           h('button', {
@@ -1479,6 +1553,18 @@ function helpView() {
       'One quirk worth knowing: a model only looks at a picture in the message you attached ' +
       'it to. Ask your follow-up questions about it in that same message, or attach it again.'),
 
+    ms.some(m => m.tools) ? h('div', {},
+      h('h2', {}, 'Files it writes for you'),
+      h('p', {},
+        'Turn on Files (by the message box) and the models that look things up can save their ' +
+        'work as files: a draft letter, a plan, a spreadsheet as CSV, a bit of code. They show up ' +
+        'under the reply; click one to read it, copy it or download it, and ask for changes in ' +
+        'plain words ("make the intro shorter"). The model edits the file instead of starting over.'),
+      h('p', { class: 'muted' },
+        'Files belong to the chat they were written in. If you edit an earlier message, that ' +
+        'version of the chat keeps the files as they were at that point, and flipping back brings ' +
+        'the later ones back. The folder button next to Files lists them all.')) : null,
+
     h('h2', {}, 'Letting it think'),
     h('p', {},
       ms.some(m => m.thinking)
@@ -1506,6 +1592,7 @@ function helpView() {
       h('tbody', {},
         tool('globe', 'Search', 'Lets the model use the web. Models that look things up decide for themselves what to search for, open the pages they need, try again if the first search misses, and number their sources so you can check them. The others get one search made from your message. Off unless you turn it on; the time spent searching and reading counts towards your credits.'),
         tool('bulb', 'Think', 'Lets the model work the problem through before answering. Slower and uses more credits, so save it for tricky questions. Greyed out on models that can\'t.'),
+        tool('pen', 'Files', 'Lets the model save its work as files you can open and download, and change them when you ask. Stays on in a chat once it has files.'),
         tool('clip', 'Attach', 'Adds a document (any model) or a photo (models that can see). Dragging a file onto the message box, or pasting a screenshot, does the same.'),
         tool('compress', 'Compact', 'In a very long chat, folds the older part into a short summary so there\'s room to keep going. Nothing is deleted.'),
         tool('stop', 'Stop', 'Cuts a reply short and hands the computer straight back to whoever\'s next.')))),
@@ -1733,7 +1820,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
 
   aborter = new AbortController();
   const pm = S.models.find(x => x.id === S.pickerModel);
-  const body = { model: S.pickerModel, message: text, search: S.searchOn, think: !!(S.thinkOn && pm?.thinking) };
+  const body = { model: S.pickerModel, message: text, search: S.searchOn, think: !!(S.thinkOn && pm?.thinking), files: S.filesOn };
   if (img) body.image_id = img.id;
   if (docs.length) body.doc_ids = docs.map(d => d.id);
   if (S.conv) body.conversation_id = S.conv.id;

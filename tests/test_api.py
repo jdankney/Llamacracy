@@ -812,3 +812,91 @@ def test_compacted_documents_stay_reachable_for_a_tools_model(agent_client):
     system = up.payloads[-1]["messages"][0]["content"]
     assert "Documents shared earlier" in system and 'ref="d1" name="plan.txt"' in system
     assert "marmalade" not in json.dumps(up.payloads[-1]["messages"])
+
+
+# --------------------------------------------------------------------------- #
+# workspace files
+# --------------------------------------------------------------------------- #
+def test_model_writes_and_edits_files(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [
+        {"tool_calls": [("ws_write", {"path": "plan.md", "content": "# Plan\n\n- one\n- two\n"})]},
+        {"tool_calls": [("ws_edit", {"path": "plan.md", "old_text": "- two", "new_text": "- two\n- three"})]},
+        {"content": ["Saved plan.md."]},
+    ]
+    ev = _chat(agent_client, model="small", message="make a plan", files=True)
+    ends = [e for e in ev if e["type"] == "tool_end"]
+    assert [e["summary"] for e in ends] == ["created, 20 chars", "+1 −0 lines"]
+    assert ends[0]["label"] == "Writing plan.md" and ends[1]["label"] == "Editing plan.md"
+    # the reply's file list sums the turn up: created, whatever happened after
+    assert ev[-1]["tools"]["files"] == [{"path": "plan.md", "id": 2, "chars": 28,
+                                         "created": True, "added": 5, "removed": 0}]
+    conv = ev[0]["conversation_id"]
+    files = agent_client.get(f"/api/conversations/{conv}").json()["conversation"]["files"]
+    assert [(f["path"], f["chars"]) for f in files] == [("plan.md", 28)]
+    got = agent_client.get(f"/api/conversations/{conv}/files/{files[0]['id']}").json()
+    assert got["content"] == "# Plan\n\n- one\n- two\n- three\n"
+    dl = agent_client.get(f"/api/conversations/{conv}/files/{files[0]['id']}?download=1")
+    assert dl.headers["content-type"].startswith("text/plain")
+    assert 'attachment; filename="plan.md"' in dl.headers["content-disposition"]
+
+
+def test_files_stay_on_for_a_conversation_that_has_them(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [{"tool_calls": [("ws_write", {"path": "a.txt", "content": "alpha"})]},
+                      {"content": ["ok"]}]
+    conv = _chat(agent_client, model="small", message="save", files=True)[0]["conversation_id"]
+    up.agent_steps = [{"tool_calls": [("ws_read", {"path": "a.txt"})]}, {"content": ["alpha"]}]
+    _chat(agent_client, model="small", message="what did you save?", conversation_id=conv)
+    system = up.payloads[-2]["messages"][0]["content"]
+    assert "Files now: a.txt (5 chars)." in system
+    assert "alpha" in up.payloads[-1]["messages"][-1]["content"]
+
+
+def test_a_fork_keeps_the_files_as_they_were(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [{"tool_calls": [("ws_write", {"path": "a.txt", "content": "v1"})]}, {"content": ["ok"]}]
+    ev = _chat(agent_client, model="small", message="first", files=True)
+    conv = ev[0]["conversation_id"]
+    up.agent_steps = [{"tool_calls": [("ws_write", {"path": "a.txt", "content": "v2"})]}, {"content": ["ok"]}]
+    second = _chat(agent_client, model="small", message="change it", conversation_id=conv)
+    files = lambda: agent_client.get(f"/api/conversations/{conv}").json()["conversation"]["files"]  # noqa: E731
+    content = lambda: agent_client.get(f"/api/conversations/{conv}/files/{files()[0]['id']}").json()["content"]  # noqa: E731
+    assert content() == "v2"
+    # edit the second message: the new branch starts from the files as they were before it
+    up.agent_steps = [{"content": ["sure"]}]
+    _chat(agent_client, model="small", message="never mind", conversation_id=conv,
+          edit_of=second[0]["message_id"])
+    assert content() == "v1"
+    # and flipping back to the original branch brings its version back
+    agent_client.post(f"/api/conversations/{conv}/switch", json={"message_id": second[0]["message_id"]})
+    assert content() == "v2"
+
+
+def test_workspace_refuses_bad_names_and_ambiguous_edits(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [
+        {"tool_calls": [("ws_write", {"path": "../../etc/passwd", "content": "x"}),
+                        ("ws_write", {"path": "a.txt", "content": "dup dup"}),
+                        ("ws_edit", {"path": "a.txt", "old_text": "dup", "new_text": "x"})]},
+        {"content": ["ok"]},
+    ]
+    ev = _chat(agent_client, model="small", message="go", files=True)
+    ends = [e for e in ev if e["type"] == "tool_end"]
+    assert [e["ok"] for e in ends] == [False, True, False]
+    results = [m["content"] for m in up.payloads[1]["messages"] if m["role"] == "tool"]
+    assert "isn't a usable file name" in results[0] and "appears 2 times" in results[2]
+
+
+def test_files_toggle_does_nothing_on_a_plain_model(client):
+    _chat(client, model="small", message="hi", files=True)
+    assert "tools" not in client.fake_upstream.seen_payload
+
+
+def test_deleting_a_conversation_deletes_its_files(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [{"tool_calls": [("ws_write", {"path": "a.txt", "content": "x"})]}, {"content": ["ok"]}]
+    conv = _chat(agent_client, model="small", message="go", files=True)[0]["conversation_id"]
+    assert _count(agent_client.db, "workspace_files") == 1
+    agent_client.delete(f"/api/conversations/{conv}")
+    assert _count(agent_client.db, "workspace_files") == 0
