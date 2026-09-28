@@ -900,3 +900,88 @@ def test_deleting_a_conversation_deletes_its_files(agent_client):
     assert _count(agent_client.db, "workspace_files") == 1
     agent_client.delete(f"/api/conversations/{conv}")
     assert _count(agent_client.db, "workspace_files") == 0
+
+
+# --------------------------------------------------------------------------- #
+# pictures in agent turns
+# --------------------------------------------------------------------------- #
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+
+
+@pytest.fixture
+def vision_client(agent_client):
+    reg = agent_client.registry
+    reg._models["small-vision"] = replace(reg.require("small"), key="small-vision", in_picker=False)
+    reg._models["small"] = replace(reg.require("small"), vision_key="small-vision")
+    return agent_client
+
+
+def _photo_turn(c, text="what plant is this?") -> str:
+    img = c.post("/api/uploads", files={"file": ("p.png", PNG, "image/png")}).json()["id"]
+    c.fake_upstream.agent_steps = [{"content": ["A fern."]}]
+    return _chat(c, model="small", message=text, image_id=img)[0]["conversation_id"]
+
+
+def test_model_can_look_again_at_an_earlier_photo(vision_client):
+    c, up = vision_client, vision_client.fake_upstream
+    conv = _photo_turn(c)
+    up.agent_steps = [{"tool_calls": [("view_image", {"image": "img1"})]},
+                      {"content": ["The leaves are fronds."]}]
+    ev = _chat(c, model="small", message="and its leaves?", conversation_id=conv)
+    first, second = up.payloads[-2:]
+    assert first["model"] == "small-vision"                  # a picture turn needs the mmproj
+    assert [t["function"]["name"] for t in first["tools"]] == ["view_image"]
+    assert 'img1 (sent with "what plant is this?")' in first["messages"][0]["content"]
+    shown = second["messages"][-1]
+    assert shown["role"] == "user" and shown["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    end = next(e for e in ev if e["type"] == "tool_end")
+    assert end["label"] == "Looking at img1" and end["upload_id"]
+
+
+def test_search_on_a_vision_model_can_find_and_view_web_images(vision_client, monkeypatch):
+    import llamacracy.fetch as fetchmod
+    c, up = vision_client, vision_client.fake_upstream
+
+    async def images(q, count):
+        from llamacracy.search import ImageResult
+        return True, [ImageResult("A llama", "https://example.org/llama", "https://img.example.org/l.png", "800 x 600")]
+    c.search.images = images
+
+    async def fake_fetch(url, *, max_bytes, **kw):
+        body = PNG if url.endswith(".png") else b"<html>not a picture</html>"
+        return fetchmod.Fetched(url, "", None, body, False)
+    monkeypatch.setattr(fetchmod, "fetch", fake_fetch)
+    up.agent_steps = [
+        {"tool_calls": [("image_search", {"query": "llama"})]},
+        {"tool_calls": [("view_image", {"image": "https://img.example.org/l.png"}),
+                        ("view_image", {"image": "https://example.org/page.html"})]},
+        {"content": ["Llamas are fluffy [2]."]},
+    ]
+    ev = _chat(c, model="small", message="what does a llama look like?", search=True)
+    names = [t["function"]["name"] for t in up.payloads[0]["tools"]]
+    assert up.payloads[0]["model"] == "small-vision" and {"image_search", "view_image"} <= set(names)
+    assert "image: https://img.example.org/l.png" in up.payloads[1]["messages"][-1]["content"]
+    ends = [e for e in ev if e["type"] == "tool_end"]
+    assert [e["ok"] for e in ends] == [True, True, False] and "not a PNG" in ends[2]["summary"]
+    shown = up.payloads[2]["messages"][-1]
+    assert shown["role"] == "user" and len(shown["content"]) == 2      # the one real picture
+    assert ev[-1]["tools"]["sources"][1]["url"] == "https://img.example.org/l.png"
+
+
+@pytest.mark.env(AGENT_IMAGES="false")
+def test_pictures_can_be_turned_off(vision_client):
+    vision_client.fake_upstream.agent_steps = [{"content": ["ok"]}]
+    _chat(vision_client, model="small", message="q", search=True)
+    assert vision_client.fake_upstream.payloads[-1]["model"] == "small"
+
+
+def test_a_resident_vision_entry_is_reused_for_plain_turns(vision_client):
+    c = vision_client
+    reg = c.registry
+    reg._models["small"] = replace(reg.require("small"), tools=False)
+    img = c.post("/api/uploads", files={"file": ("p.png", PNG, "image/png")}).json()["id"]
+    conv = _chat(c, model="small", message="look", image_id=img)[0]["conversation_id"]
+    assert c.fake_upstream.seen_payload["model"] == "small-vision"
+    _chat(c, model="small", message="thanks", conversation_id=conv)
+    # no swap back to the text entry just because this turn has no picture
+    assert c.fake_upstream.seen_payload["model"] == "small-vision"

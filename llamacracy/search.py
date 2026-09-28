@@ -114,6 +114,14 @@ class SearchOutcome:
         return "\n".join(lines) + "\n---\n"
 
 
+@dataclass
+class ImageResult:
+    title: str
+    page_url: str          # the page the picture is on
+    img_src: str           # the picture itself
+    size: str = ""         # "2560 x 1600", when the engine says
+
+
 class SearchClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
@@ -156,6 +164,30 @@ class SearchClient:
             if len(results) >= count:
                 break
         return SearchOutcome(query, ok=True, results=results)
+
+
+    async def images(self, query: str, count: int) -> tuple[bool, list[ImageResult]]:
+        """(reachable, results) from SearXNG's image category."""
+        query = (query or "").strip()[:QUERY_CHARS]
+        try:
+            r = await self._client.get(f"{self.base_url}/search",
+                                       params={"q": query, "format": "json", "categories": "images"})
+            r.raise_for_status()
+            data = r.json()
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("searxng image query failed: %s", e)
+            return False, []
+        out = []
+        for item in data.get("results", []):
+            src = (item.get("img_src") or "").strip()
+            if not src.startswith(("http://", "https://")):
+                continue
+            out.append(ImageResult((item.get("title") or "").strip() or src,
+                                   (item.get("url") or src).strip(), src,
+                                   (item.get("resolution") or "").strip()))
+            if len(out) >= count:
+                break
+        return True, out
 
 
 _search: SearchClient | None = None

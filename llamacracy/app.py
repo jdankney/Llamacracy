@@ -32,9 +32,12 @@ from .registry import Registry, get_registry
 from .search import get_search
 from .tools import (
     DocRef,
+    ImageRef,
     Toolbox,
     document_tools,
+    image_search_tool,
     read_page_tool,
+    view_image_tool,
     web_search_tool,
     workspace_tools,
 )
@@ -785,8 +788,38 @@ async def chat(req: ChatRequest,
     # files, so a follow-up can always reach what an earlier turn wrote
     ws = await Workspace.open(db, conv_id, [r["id"] for r in prior])
     use_files = model.tools and (req.files or bool(ws.listing()))
-    if web or refs or use_files:
+    # Pictures: a model with a vision variant can look again at the photos
+    # earlier in this branch, and with Search on find and view web images.
+    # That needs the -vision entry (same weights + mmproj) for the turn.
+    vision = reg.vision_variant(req.model)
+    pictures: list[ImageRef] = []
+    use_pictures = False
+    if model.tools and vision is not None and settings.agent_images:
+        earlier = [r for r in prior if r["image_upload_id"]]
+        rows = await db.fetch_all(
+            "SELECT id, path, mime FROM uploads WHERE user_id = ? AND kind = 'image' AND id IN ("
+            + ",".join("?" * len(earlier)) + ")",
+            (principal.user_id, *[r["image_upload_id"] for r in earlier])) if earlier else []
+        found = {r["id"]: r for r in rows}
+        pictures = [ImageRef(f"img{n}", r["image_upload_id"], found[r["image_upload_id"]]["path"],
+                             found[r["image_upload_id"]]["mime"],
+                             r["content"].strip().replace("\n", " ")[:80])
+                    for n, r in enumerate((r for r in earlier if r["image_upload_id"] in found), 1)]
+        use_pictures = bool(pictures) or web
+        if use_pictures:
+            dispatch_model_id = vision.key
+    if (dispatch_model_id == req.model and vision is not None
+            and qm._loaded_model == vision.key and reg.require(vision.key).ctx >= model.ctx):
+        # already resident: the vision entry does everything the text one
+        # does, so use it rather than swap models for a turn without pictures
+        dispatch_model_id = vision.key
+    if web or refs or use_files or use_pictures:
         tools = []
+        if use_pictures:
+            tools.append(view_image_tool(pictures, allow_web=web,
+                                         max_bytes=int(settings.agent_image_max_mb * 1024 * 1024)))
+            if web:
+                tools.append(image_search_tool(get_search(), settings.agent_search_results))
         if use_files:
             tools += workspace_tools(ws, read_chars=settings.agent_read_chars)
         if web:
@@ -799,6 +832,9 @@ async def chat(req: ChatRequest,
             tools += document_tools(refs, read_chars=settings.agent_read_chars)
         folded_refs = [r for r in refs if r not in by_id.values()]
         notes = []
+        if pictures:
+            notes.append("Earlier photos in this chat: " + "; ".join(
+                f'{p.ref} (sent with "{p.caption}")' for p in pictures) + ".")
         if folded_refs:
             notes.append("Documents shared earlier in this conversation (before the summary):\n"
                          + "".join(r.stub(documents.estimate_tokens(r.text)) for r in folded_refs).strip())

@@ -225,6 +225,18 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   that doesn't need files shouldn't invite the model to make some), but
   once a branch has files the tools stay on, so a follow-up can always
   reach what an earlier turn wrote.
+- **A picture the model asks for arrives as a user turn.** OpenAI-style
+  tool results are text, so `view_image` returns a line of text and the
+  image itself is appended as the next user message, the one place a chat
+  template accepts one. Earlier photos get short names (`img1`, `img2`)
+  listed in the system prompt, which replaces the old rule that a model only
+  ever sees a photo in its own message. Web images are fetched by the same
+  public-address-only fetcher as pages and accepted only as PNG, JPEG or
+  WebP by their bytes, not their headers; the UI shows thumbnails only for
+  the user's own uploads and never loads a remote image. These turns need
+  the `-vision` entry, so they run there, and a resident `-vision` entry is
+  reused for plain turns (it is the same weights plus the projector) rather
+  than swapped out, provided its context is no smaller.
 - **`read_page` fetches public addresses only, pinned per hop.** A model
   choosing URLs is a server-side request forgery risk by construction, on a
   machine that sits in a home network. Each hop's host is resolved, every

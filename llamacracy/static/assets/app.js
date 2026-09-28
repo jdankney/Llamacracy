@@ -688,7 +688,7 @@ function activeBubble() {
 // What a model did on its way to an answer: "Searching “x”" rows (and any
 // short notes it wrote between them), folded under one summary line.
 const TOOL_ICON = { web_search: 'search', read_page: 'globe', doc_outline: 'file', doc_search: 'file', doc_read: 'file',
-  ws_list: 'folder', ws_read: 'folder', ws_write: 'pen', ws_edit: 'pen' };
+  ws_list: 'folder', ws_read: 'folder', ws_write: 'pen', ws_edit: 'pen', view_image: 'eye', image_search: 'search' };
 function trailSummary(steps, live) {
   const tools = steps.filter(s => s.type === 'tool');
   const running = tools.find(s => s.running);
@@ -701,9 +701,11 @@ function trailSummary(steps, live) {
   if (searches) bits.push(`Searched the web${searches > 1 ? ` ${searches} times` : ''}`);
   if (pages) bits.push(`${bits.length ? 'read' : 'Read'} ${pages === 1 ? 'a page' : plural(pages, 'page')}`);
   if (docs) bits.push(`${bits.length ? 'looked through' : 'Looked through'} ${docs === 1 ? 'a document' : plural(docs, 'document')}`);
+  const looked = n('view_image') + n('image_search');
+  if (looked) bits.push(`${bits.length ? 'looked at' : 'Looked at'} ${n('view_image') === 1 ? 'a picture' : n('view_image') ? plural(n('view_image'), 'picture') : 'pictures'}`);
   const wrote = new Set(tools.filter(s => (s.name === 'ws_write' || s.name === 'ws_edit') && s.ok !== false).map(s => s.args?.path || s.label)).size;
   if (wrote) bits.push(`${bits.length ? 'worked on' : 'Worked on'} ${wrote === 1 ? 'a file' : plural(wrote, 'file')}`);
-  const known = searches + n('read_page') + tools.filter(s => s.name.startsWith('doc_') || s.name.startsWith('ws_')).length;
+  const known = searches + n('read_page') + looked + tools.filter(s => s.name.startsWith('doc_') || s.name.startsWith('ws_')).length;
   if (tools.length > known) bits.push(plural(tools.length - known, 'other step'));
   return bits.join(' · ') || 'Worked it out';
 }
@@ -719,7 +721,9 @@ function trailBlock(steps, { live = false, open = false, onToggle } = {}) {
       : h('li', { class: 'step' + (st.running ? ' is-running' : st.ok === false ? ' is-bad' : '') },
           st.running ? h('i', { class: 'pulse' }) : icon(st.ok === false ? 'alert' : (TOOL_ICON[st.name] || 'zap'), 'icon-sm'),
           h('span', { class: 'lbl' }, st.label),
-          st.running ? null : h('span', { class: 'res' }, [st.summary, st.ms != null ? fmtMs(st.ms) : null].filter(Boolean).join(' · '))))));
+          st.running ? null : h('span', { class: 'res' }, [st.summary, st.ms != null ? fmtMs(st.ms) : null].filter(Boolean).join(' · ')),
+          // an earlier photo it looked at again (our own upload, never a remote image)
+          st.upload_id ? h('img', { class: 'trail-thumb', src: '/api/uploads/' + st.upload_id, alt: '' }) : null))));
 }
 const fmtMs = ms => ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)}s`;
 // "[3]" in an answer becomes a link to source 3. Plain HTML, not markdown
@@ -1550,8 +1554,13 @@ function helpView() {
           'under Photos. Pick one of those to attach a photo, a screenshot, or a picture of a page.'
         : 'None of the models loaded right now can see pictures.'),
     h('p', { class: 'muted' },
-      'One quirk worth knowing: a model only looks at a picture in the message you attached ' +
-      'it to. Ask your follow-up questions about it in that same message, or attach it again.'),
+      ms.some(m => m.vision && m.tools)
+        ? 'The ones that also look things up can look again at a photo from earlier in the chat ' +
+          'when you ask about it, and with Search on they can find pictures on the web and look ' +
+          'at them too. The others only see a picture in the message you attached it to, so ask ' +
+          'your follow-ups in that message, or attach it again.'
+        : 'One quirk worth knowing: a model only looks at a picture in the message you attached ' +
+          'it to. Ask your follow-up questions about it in that same message, or attach it again.'),
 
     ms.some(m => m.tools) ? h('div', {},
       h('h2', {}, 'Files it writes for you'),
@@ -1873,7 +1882,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
       }
       else if (ev.type === 'tool_end') {
         const a = S.active, st = a.trail?.find(x => x.id === ev.id && x.running);
-        if (st) Object.assign(st, { running: false, ok: ev.ok, summary: ev.summary, ms: ev.ms, args: ev.args });
+        if (st) Object.assign(st, { running: false, ok: ev.ok, summary: ev.summary, ms: ev.ms, args: ev.args, upload_id: ev.upload_id });
         if (ev.sources?.length) a.sources = [...(a.sources || []), ...ev.sources];
         render(); scrollThread();
       }

@@ -166,6 +166,7 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 | `AGENT_MAX_STEPS` / `AGENT_MAX_SECONDS` | bounds on an agent turn (a `tools: true` model with Search on): rounds of tool calls, and wall-clock seconds, before it must answer. Default 6 and 240. The turn holds the GPU slot throughout and is billed for it. |
 | `AGENT_SEARCH_RESULTS` / `AGENT_TOOL_RESULT_CHARS` | results per `web_search` call, and the cap on one tool result's text. Default 5 and 12,000. |
 | `AGENT_READ_CHARS` / `AGENT_PAGE_MAX_MB` | how much of a page or long document one read returns, and the download cap for a page the model opens. Default 10,000 and 5 MB. Pages are only fetched from public addresses. |
+| `AGENT_IMAGES` / `AGENT_IMAGE_MAX_MB` | whether a `tools: true` model with a vision variant may look again at earlier photos and (with Search on) find and view web images, and the size cap on a web image. Such turns run on the `-vision` entry. Default on, 8 MB. |
 | `DOC_INLINE_FRACTION` | documents are sent whole while they fit in this share of the model's context; past it, a `tools: true` model looks things up in the biggest instead. Default 0.5. |
 | `UPLOAD_DIR` / `UPLOAD_MAX_MB` | where attached images and documents land on disk, and the per-image size cap. Default `./data/uploads`, 8 MB. |
 | `DOCUMENT_MAX_MB` / `DOCUMENT_MAX_CHARS` | per-document size cap, and how much extracted text one document may keep (the rest is cut, and the user is told). Default 25 MB, 1,200,000 characters. |

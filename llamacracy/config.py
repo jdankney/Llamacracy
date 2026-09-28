@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     agent_tool_result_chars: int = 12000     # one tool result, cut past this (~3K tokens)
     agent_read_chars: int = 10000            # one part of a page or long document
     agent_page_max_mb: float = 5.0           # a web page (or online PDF) is cut past this
+    # Pictures in agent turns (models with a vision variant): look again at
+    # earlier photos, and with Search on find and view images on the web.
+    # Such turns run on the -vision entry; off keeps searches on the text one.
+    agent_images: bool = True
+    agent_image_max_mb: float = 8.0
     # documents on a branch are sent in full while they fit in this share of
     # the model's context; past that, a tools model looks things up in them
     doc_inline_fraction: float = 0.5

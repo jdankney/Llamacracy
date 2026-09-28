@@ -37,6 +37,12 @@
   and download as plain text; the folder button lists them all. Every write
   is kept as a version tied to its message, so files fork with the chat:
   an edited message's branch starts from the files as they were.
+- **Pictures in agent turns.** A tool-using model with a vision variant can
+  look again at a photo from earlier in the chat (it used to see a picture
+  only in the message it came with), and with Search on it can find pictures
+  on the web and look at them. Such turns run on the `-vision` entry, and
+  once that entry is loaded, plain turns stay on it instead of swapping the
+  model back. `AGENT_IMAGES=false` turns this off.
 
 ### Upgrading
 

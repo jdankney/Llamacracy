@@ -462,6 +462,7 @@ class QueueManager:
                 # templates that keep a turn's reasoning across its tool calls read this
                 turn["reasoning_content"] = "".join(reasoning)
             messages.append(turn)
+            seen: list[tuple[str, str]] = []       # (name the model used, data URL)
             for c in ordered:
                 if job._cancel.is_set():
                     return
@@ -474,10 +475,18 @@ class QueueManager:
                 res = await box.run(c["name"], c["arguments"])
                 step_rec = {"type": "tool", "id": c["id"], "name": c["name"], "label": label,
                             "args": args, "ok": res.ok, "summary": res.summary,
-                            "ms": round((now() - t_tool) * 1000)}
+                            "ms": round((now() - t_tool) * 1000), **res.extra}
+                seen += [(str(args.get("image") or "image"), u) for u in res.images]
                 job.trail.append(step_rec)
                 await self._emit(job, {**step_rec, "type": "tool_end", "sources": res.sources})
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": res.text})
+            if seen:
+                # a tool result is text only; pictures the model asked to see
+                # arrive as the next user turn, the one place images can go
+                messages.append({"role": "user", "content": [
+                    {"type": "text", "text": "The picture(s) you asked to see: "
+                                             + ", ".join(name for name, _ in seen)},
+                    *({"type": "image_url", "image_url": {"url": u}} for _, u in seen)]})
 
     async def _pump_raw(self, job: Job, t_start: float,
                         sampler: GpuPowerSampler) -> None:

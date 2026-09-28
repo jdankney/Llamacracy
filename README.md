@@ -70,7 +70,9 @@ payment processing.
   you ask for changes. Files fork with the conversation: edit an earlier
   message and that branch keeps the files as they were.
 - **Vision on demand**: attach an image and the turn routes to the model's
-  vision variant. Images live on disk, never base64 in the database.
+  vision variant. Images live on disk, never base64 in the database. A
+  tool-using vision model can look again at an earlier photo when you ask
+  about it, and with Search on find and view pictures on the web.
 - **Compact history**: fold the older part of a long conversation into a
   running summary, on request, billed like any other reply.
 - **Account page** per user: a 30-day usage chart, self-service API keys, and
