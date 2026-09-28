@@ -30,7 +30,7 @@ from .metering import Meter
 from .queue import Job, JobState, QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
 from .search import get_search
-from .tools import Toolbox, web_search_tool
+from .tools import DocRef, Toolbox, document_tools, read_page_tool, web_search_tool
 from .uploads import UploadRejected
 from .uploads import save as save_upload
 from .uploads import validate as validate_upload
@@ -135,6 +135,7 @@ async def me(principal: Principal = Depends(get_principal),
             "upload_max_mb": settings.upload_max_mb,
             "document_max_mb": settings.document_max_mb,
             "max_docs_per_message": documents.MAX_DOCS_PER_MESSAGE,
+            "doc_inline_fraction": settings.doc_inline_fraction,
             "compact_keep_recent": settings.compact_keep_recent,
         },
     }
@@ -687,13 +688,30 @@ async def chat(req: ChatRequest,
 
     if len(doc_ids) > documents.MAX_DOCS_PER_MESSAGE:
         raise HTTPException(400, f"at most {documents.MAX_DOCS_PER_MESSAGE} documents per message")
-    # every document this turn will send: the new ones and any still in play
-    # further up the branch, fetched in one go and owned by this user only
-    doc_blocks = await documents.load_prompt_blocks(
-        db, threads.document_ids(prior) + doc_ids, principal.user_id)
-    missing = [i for i in doc_ids if i not in doc_blocks]
-    if missing:
+    # Every document on this branch, fetched in one go and owned by this user
+    # only: those still in the verbatim part of the history plus the new ones
+    # ("in play"), and those a compaction has folded away.
+    in_play = threads.document_ids(threads.after_summary(prior)) + doc_ids
+    folded = [i for i in threads.document_ids(prior) if i not in in_play]
+    docs = await documents.load(db, in_play + folded, principal.user_id)
+    if any(i not in docs for i in doc_ids):
         raise HTTPException(404, "no such document")
+    # Documents go in whole while they fit comfortably. Past that, a model
+    # that is good with tools gets a short stand-in for the biggest ones and
+    # looks things up in them (outline / search / read) instead; so does any
+    # document a compaction folded away. Other models get everything whole,
+    # or a clear refusal below if that can't fit.
+    playing = [docs[i] for i in dict.fromkeys(in_play) if i in docs]
+    lookup: list[documents.Loaded] = []
+    if model.tools:
+        playing, lookup = documents.split_inline(
+            playing, int(model.ctx * settings.doc_inline_fraction))
+    refs = [DocRef(f"d{n}", d.filename, d.text, d.meta.get("units"), d.meta.get("unit"))
+            for n, d in enumerate(lookup + ([docs[i] for i in folded if i in docs]
+                                            if model.tools else []), 1)]
+    by_id = {d.id: r for d, r in zip(lookup, refs, strict=False)}
+    doc_blocks = {d.id: d.block() for d in playing}
+    doc_blocks.update({i: r.stub(docs[i].tokens) for i, r in by_id.items()})
     history = threads.history(prior, doc_blocks)
 
     # An attached image routes this turn to the paired -vision llama-swap
@@ -722,11 +740,25 @@ async def chat(req: ChatRequest,
     # the citations).
     search_outcome = None
     agent = None
-    if req.search and model.tools:
-        agent = Toolbox([web_search_tool(get_search(), settings.agent_search_results)],
-                        max_steps=settings.agent_max_steps,
+    web = req.search and model.tools
+    if web or refs:
+        tools = []
+        if web:
+            tools += [web_search_tool(get_search(), settings.agent_search_results),
+                      read_page_tool(read_chars=settings.agent_read_chars,
+                                     max_bytes=int(settings.agent_page_max_mb * 1024 * 1024),
+                                     scratch_dir=settings.upload_dir,
+                                     pdf_max_chars=settings.document_max_chars)]
+        if refs:
+            tools += document_tools(refs, read_chars=settings.agent_read_chars)
+        folded_refs = [r for r in refs if r not in by_id.values()]
+        notes = []
+        if folded_refs:
+            notes.append("Documents shared earlier in this conversation (before the summary):\n"
+                         + "".join(r.stub(documents.estimate_tokens(r.text)) for r in folded_refs).strip())
+        agent = Toolbox(tools, max_steps=settings.agent_max_steps,
                         deadline_s=settings.agent_max_seconds,
-                        result_chars=settings.agent_tool_result_chars)
+                        result_chars=settings.agent_tool_result_chars, notes=notes)
     elif req.search:
         search_outcome = await get_search().search(req.message, settings.search_max_results)
 
@@ -772,7 +804,8 @@ async def chat(req: ChatRequest,
             raise HTTPException(400, (
                 f"With its documents this chat is about {est:,} tokens, more than "
                 f"{model.display} can hold at once ({model.ctx:,}). Pick a model that "
-                "holds more (Help lists them), compact the chat, or attach less."))
+                "holds more, or one that looks things up in long files (Help lists "
+                "both), compact the chat, or attach less."))
     payload = {"messages": messages, "max_tokens": cap, **model.sampling}
     if model.thinking:
         payload["chat_template_kwargs"] = {"enable_thinking": think}

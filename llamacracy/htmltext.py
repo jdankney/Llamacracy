@@ -209,3 +209,25 @@ def html_to_markdown(html: str, *, base_url: str | None = None,
         pass
     body = "".join(conv.out)
     return conv.title, tidy(body)
+
+
+_REGION_RE = re.compile(r"<(main|article)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def page_to_markdown(html: str, url: str) -> tuple[str, str]:
+    """A web page as (title, markdown) for a model to read: page chrome
+    dropped, and when the page marks its main content (<main>, <article>)
+    and that is most of the page's text, just that."""
+    title, full = html_to_markdown(html, base_url=url, drop_chrome=True)
+    regions = [m.group(0) for m in _REGION_RE.finditer(html)]
+    if regions:
+        best = max(regions, key=lambda r: len(_TAG_RE.sub("", r)))
+        _, main = html_to_markdown(best, base_url=url, drop_chrome=True)
+        # a <main> that holds a fraction of the text is usually a wrapper
+        # around one widget, not the article: keep the whole page then
+        if len(main) >= 0.3 * len(full):
+            full = main
+    # linked icons and badges ("[[image: Edit]](...)") are noise to a reader
+    full = re.sub(r"\[\[image: [^\]]*\]\]\([^)]*\)", "", full)
+    return title, tidy(full)

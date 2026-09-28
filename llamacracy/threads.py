@@ -88,8 +88,8 @@ def history(path: list[dict], documents: dict[str, str] | None = None) -> list[d
     `documents` maps upload id -> the block documents.render_for_prompt made
     of it; a message's attached documents go back in ahead of its text, so
     they stay in the conversation for as long as the message itself does."""
-    boundary, summary = summary_point(path)
-    after = path if boundary is None else path[[r["id"] for r in path].index(boundary) + 1:]
+    _, summary = summary_point(path)
+    after = after_summary(path)
     out = [{"role": r["role"], "content": _with_documents(r, documents or {})}
            for r in after if r["content"]]
     if summary:
@@ -99,6 +99,12 @@ def history(path: list[dict], documents: dict[str, str] | None = None) -> list[d
                        "(context only -- don't refer to this note explicitly):\n" + summary,
         })
     return out
+
+
+def after_summary(path: list[dict]) -> list[dict]:
+    """The part of a path that is still sent verbatim (below any compaction)."""
+    boundary, _ = summary_point(path)
+    return path if boundary is None else path[[r["id"] for r in path].index(boundary) + 1:]
 
 
 def document_ids(path: list[dict]) -> list[str]:

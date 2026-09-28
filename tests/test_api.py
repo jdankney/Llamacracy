@@ -647,7 +647,7 @@ def test_agent_searches_then_answers_with_citations(agent_client):
     assert c.search.queries == ["llama release"]       # the model's words, not the message
     first, second = up.payloads
     assert first["messages"][0]["role"] == "system" and "Today is" in first["messages"][0]["content"]
-    assert [t["function"]["name"] for t in first["tools"]] == ["web_search"]
+    assert [t["function"]["name"] for t in first["tools"]] == ["web_search", "read_page"]
     call, result = second["messages"][-2:]
     assert call["tool_calls"][0]["function"]["arguments"] == '{"query": "llama release"}'
     assert result["role"] == "tool" and "[1] llama release guide" in result["content"]
@@ -734,3 +734,81 @@ def client_messages(c, conv_id) -> list[dict]:
     rows = c.db._conn.execute(
         "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conv_id,)).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# reading: web pages and long documents
+# --------------------------------------------------------------------------- #
+def test_agent_reads_a_page_in_parts(agent_client, monkeypatch):
+    import llamacracy.fetch as fetchmod
+    body = "<html><title>Big page</title><main>" + "".join(
+        f"<p>Paragraph {i} " + "word " * 40 + "</p>" for i in range(200)) + "</main></html>"
+    fetched = []
+
+    async def fake_fetch(url, *, max_bytes, **kw):
+        fetched.append(url)
+        return fetchmod.Fetched(url, "text/html", "utf-8", body.encode(), False)
+    monkeypatch.setattr(fetchmod, "fetch", fake_fetch)
+    up = agent_client.fake_upstream
+    url = "https://example.org/big"
+    up.agent_steps = [
+        {"tool_calls": [("read_page", {"url": url})]},
+        {"tool_calls": [("read_page", {"url": url, "start": 9000})]},
+        {"content": ["Summary [1]."]},
+    ]
+    ev = _chat(agent_client, model="small", message="summarise it", search=True)
+    ends = [e for e in ev if e["type"] == "tool_end"]
+    assert [e["summary"] for e in ends][0].startswith("part 1 of ")
+    assert [s["n"] for s in ends[0]["sources"]] == [1] and ends[1]["sources"] == []
+    assert fetched == [url]                          # fetched once, read twice
+    first_part = up.payloads[1]["messages"][-1]["content"]
+    assert first_part.startswith("[1] Big page\nhttps://example.org/big") and "Paragraph 0 " in first_part
+    assert "continues: read_page with url" in first_part
+    assert ends[0]["label"] == "Reading example.org/big"
+
+
+def test_big_document_becomes_a_lookup_for_a_tools_model(agent_client):
+    """No Search needed: a document too big to send whole is outlined,
+    searched and read through tools instead of refusing the send."""
+    reg = agent_client.registry
+    reg._models["small"] = replace(reg.require("small"), ctx=4096)
+    pages = "\n\n".join(f"[Page {i}]\n\n" + ("filler text " * 60) for i in range(1, 30))
+    pages = pages.replace("[Page 17]\n\n", "[Page 17]\n\nThe termination fee is 900 dollars. ")
+    d = _upload_doc(agent_client, "lease.txt", pages.encode())
+    up = agent_client.fake_upstream
+    up.agent_steps = [
+        {"tool_calls": [("doc_search", {"ref": "d1", "query": "termination fee"})]},
+        {"tool_calls": [("doc_read", {"ref": "d1", "page": 17})]},
+        {"content": ["It's 900 dollars (page 17)."]},
+    ]
+    ev = _chat(agent_client, model="small", message="What's the fee?", doc_ids=[d["id"]])
+    first = up.payloads[0]
+    assert {t["function"]["name"] for t in first["tools"]} == {"doc_outline", "doc_search", "doc_read"}
+    user = first["messages"][-1]["content"]
+    assert user.startswith('<document ref="d1" name="lease.txt"') and "filler" not in user
+    results = [m["content"] for m in up.payloads[2]["messages"] if m["role"] == "tool"]
+    assert "@" in results[0] and "(page 17)" in results[0] and "termination fee" in results[0]
+    assert results[1].startswith('d1 "lease.txt"') and "900 dollars" in results[1]
+    labels = [e["label"] for e in ev if e["type"] == "tool_start"]
+    assert labels == ["Looking in lease.txt for “termination fee”", "Reading lease.txt, page 17"]
+
+
+def test_small_documents_are_still_sent_whole_to_a_tools_model(agent_client):
+    d = _upload_doc(agent_client, "note.txt", b"short and sweet")
+    _chat(agent_client, model="small", message="read it", doc_ids=[d["id"]])
+    sent = agent_client.fake_upstream.seen_payload
+    assert "tools" not in sent and "short and sweet" in sent["messages"][-1]["content"]
+
+
+def test_compacted_documents_stay_reachable_for_a_tools_model(agent_client):
+    d = _upload_doc(agent_client, "plan.txt", b"The secret word is marmalade.")
+    conv = _chat(agent_client, model="small", message="one", doc_ids=[d["id"]])[0]["conversation_id"]
+    for m in ("two", "three", "four", "five"):
+        _chat(agent_client, model="small", message=m, conversation_id=conv)
+    assert agent_client.post(f"/api/conversations/{conv}/compact").status_code == 200
+    up = agent_client.fake_upstream
+    up.agent_steps = [{"content": ["ok"]}]
+    _chat(agent_client, model="small", message="what was the word?", conversation_id=conv)
+    system = up.payloads[-1]["messages"][0]["content"]
+    assert "Documents shared earlier" in system and 'ref="d1" name="plan.txt"' in system
+    assert "marmalade" not in json.dumps(up.payloads[-1]["messages"])

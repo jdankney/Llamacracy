@@ -685,16 +685,21 @@ function activeBubble() {
 /* ------------------------------------------------------------ agent trail */
 // What a model did on its way to an answer: "Searching “x”" rows (and any
 // short notes it wrote between them), folded under one summary line.
-const TOOL_ICON = { web_search: 'globe' };
+const TOOL_ICON = { web_search: 'search', read_page: 'globe', doc_outline: 'file', doc_search: 'file', doc_read: 'file' };
 function trailSummary(steps, live) {
   const tools = steps.filter(s => s.type === 'tool');
   const running = tools.find(s => s.running);
   if (live && running) return running.label + '…';
-  const searches = tools.filter(s => s.name === 'web_search').length;
+  const n = name => tools.filter(s => s.name === name).length;
+  const searches = n('web_search');
+  const pages = new Set(tools.filter(s => s.name === 'read_page').map(s => s.args?.url || s.label)).size;
+  const docs = new Set(tools.filter(s => s.name.startsWith('doc_')).map(s => s.args?.ref || s.label)).size;
   const bits = [];
   if (searches) bits.push(`Searched the web${searches > 1 ? ` ${searches} times` : ''}`);
-  const other = tools.length - searches;
-  if (other) bits.push(plural(other, 'step'));
+  if (pages) bits.push(`${bits.length ? 'read' : 'Read'} ${pages === 1 ? 'a page' : plural(pages, 'page')}`);
+  if (docs) bits.push(`${bits.length ? 'looked through' : 'Looked through'} ${docs === 1 ? 'a document' : plural(docs, 'document')}`);
+  const known = searches + n('read_page') + tools.filter(s => s.name.startsWith('doc_')).length;
+  if (tools.length > known) bits.push(plural(tools.length - known, 'other step'));
   return bits.join(' · ') || 'Worked it out';
 }
 function trailBlock(steps, { live = false, open = false, onToggle } = {}) {
@@ -804,16 +809,19 @@ function contextInfo() {
   }
   // documents ride along with their message on every turn, so each one still
   // on the branch counts in full (a message with exact usage already has them
-  // inside its prompt_tokens)
+  // inside its prompt_tokens) -- or as a short stand-in, if it is looked up
+  const inPlay = S.messages.filter(msg => msg.id == null || msg.id > boundary).flatMap(msg => msg.documents || []);
+  const lookup = lookupDocs(m, [...inPlay, ...S.pendingDocs]);
+  const docCost = docs => (docs || []).reduce((n, d) => n + (lookup.has(d.id) ? STUB_TOK : d.tokens || 0), 0);
   for (let i = from; i < S.messages.length; i++) {
     const msg = S.messages[i];
     if (msg.id != null && msg.id <= boundary) continue;
-    tail += docTokens(msg.documents);
+    tail += docCost(msg.documents);
   }
   const estimated = (!foundExact && S.messages.length > 0) || (!exact && S.messages.length > 0) || tail > 0;
 
   const draftTok = (S.draft ? estTok(S.draft) + 4 : 0) + (S.pendingImage ? IMG_TOK_ESTIMATE : 0)
-    + docTokens(S.pendingDocs);
+    + docCost(S.pendingDocs);
 
   const used = base + tail;
   const projected = used + draftTok;          // the prompt the next send will build
@@ -898,6 +906,18 @@ function renderHint() { const el = document.getElementById('compose-hint'); if (
 // Photos go to the model's vision variant; anything else is a document, read
 // into text on the server as soon as it's picked, so the send itself is quick.
 const docTokens = docs => (docs || []).reduce((n, d) => n + (d.tokens || 0), 0);
+const STUB_TOK = 80;      // the <document ref=...> stand-in for one that is looked up
+// Which documents a send would look up rather than include whole: the
+// server's rule (documents.split_inline), so the ring and the tray agree with
+// what is actually sent. Only models that use tools look things up.
+function lookupDocs(model, docs) {
+  if (!model?.tools || !docs.length) return new Set();
+  const budget = model.ctx * (S.me?.limits?.doc_inline_fraction ?? 0.5);
+  const inline = [...docs].sort((a, b) => (a.tokens || 0) - (b.tokens || 0));
+  const out = new Set();
+  while (inline.length && docTokens(inline) > budget) out.add(inline.pop().id);
+  return out;
+}
 const isImageFile = f => /^image\//.test(f.type);
 function onPickFiles(e) {
   const files = [...(e.target.files || [])]; e.target.value = '';
@@ -953,7 +973,10 @@ function docChip(d, { onRemove = null } = {}) {
 function attachTray() {
   if (!S.pendingImage && !S.pendingDocs.length && !S.reading.length) return null;
   const m = S.models.find(x => x.id === S.pickerModel);
-  const tok = docTokens(S.pendingDocs);
+  const inPlay = S.messages.filter(x => x.id == null || x.id > (S.conv?.compact_boundary_id || 0)).flatMap(x => x.documents || []);
+  const lookup = lookupDocs(m, [...inPlay, ...S.pendingDocs]);
+  const looked = S.pendingDocs.filter(d => lookup.has(d.id));
+  const tok = docTokens(S.pendingDocs.filter(d => !lookup.has(d.id)));
   // prompt processing is the slow part of a long document: say so up front
   const readS = m?.pp_tok_s && tok ? tok / m.pp_tok_s : 0;
   return h('div', { class: 'attach-tray' },
@@ -967,8 +990,10 @@ function attachTray() {
     S.pendingDocs.length || S.reading.length ? h('div', { class: 'doc-chips' },
       S.pendingDocs.map((d, i) => docChip(d, { onRemove: () => { S.pendingDocs.splice(i, 1); renderTray(); refreshCtx(0); } })),
       S.reading.map(n => h('span', { class: 'doc-chip is-reading' }, h('i', { class: 'pulse' }), h('span', { class: 'doc-name' }, n), h('span', { class: 'doc-meta' }, 'reading…')))) : null,
+    looked.length ? h('div', { class: 'attach-note' }, icon('info', 'icon-sm'),
+      `${looked.length > 1 ? 'Too long' : `${looked[0].filename} is too long`} to read in one go, so ${modelName(m.id)} will look things up in ${looked.length > 1 ? 'them' : 'it'} as it answers.`) : null,
     readS >= 15 ? h('div', { class: 'attach-note' }, icon('info', 'icon-sm'),
-      `${modelName(m.id)} will take about ${fmtDur(readS)} to read ${S.pendingDocs.length > 1 ? 'these' : 'this'} before it answers.`) : null);
+      `${modelName(m.id)} will take about ${fmtDur(readS)} to read ${S.pendingDocs.length - looked.length > 1 ? 'these' : 'this'} before it answers.`) : null);
 }
 function renderTray() {
   const el = document.getElementById('attach-slot');
@@ -1399,7 +1424,7 @@ function helpView() {
     // six columns would otherwise scroll off the right edge unnoticed
     h('div', { class: 'table-wrap model-wrap' }, h('table', { class: 'model-table' },
       h('thead', {}, h('tr', {},
-        h('th', {}, 'Model'), h('th', {}, 'Best for'), h('th', {}, 'Photos'), h('th', {}, 'Thinks'), h('th', {}, 'Searches'),
+        h('th', {}, 'Model'), h('th', {}, 'Best for'), h('th', {}, 'Photos'), h('th', {}, 'Thinks'), h('th', {}, 'Looks things up'),
         h('th', {}, 'Holds about'), h('th', {}, 'Types at'), h('th', {}, 'Wake-up'))),
       h('tbody', {}, ms.map(m => h('tr', {},
         h('td', { 'data-label': 'Model' }, h('span', { class: 'pick' }, m.display),
@@ -1411,16 +1436,17 @@ function helpView() {
         h('td', { 'data-label': 'Thinks' }, m.thinking
           ? h('span', { class: 'yes' }, icon('bulb', 'icon-sm'), 'Yes')
           : h('span', { class: 'no' }, '—')),
-        h('td', { 'data-label': 'Searches' }, m.tools
-          ? h('span', { class: 'yes', title: 'Decides what to look up itself' }, icon('globe', 'icon-sm'), 'Itself')
-          : h('span', { class: 'no', title: 'Gets one search made from your message' }, 'Once')),
+        h('td', { 'data-label': 'Looks things up' }, m.tools
+          ? h('span', { class: 'yes', title: 'Runs its own web searches and finds its way around long files' }, icon('search', 'icon-sm'), 'Yes')
+          : h('span', { class: 'no', title: 'Gets one search made from your message' }, '—')),
         h('td', { class: 'num', 'data-label': 'Holds about' }, `~${pagesFor(m.ctx)} pages`),
         h('td', { class: 'num', 'data-label': 'Types at' }, `~${wordsSec(m.tok_s)} words/sec`),
         h('td', { class: 'num muted', 'data-label': 'Wake-up' }, waitFor(m.cold_load_s)))))),
     ),
     h('div', { class: 'legend' },
       h('span', {}, h('strong', {}, 'Holds about'), ' — how much text it can keep in mind at once, you and it combined.'),
-      h('span', {}, h('strong', {}, 'Wake-up'), ' — the one-off pause when a model has to load. Only if it isn\'t already running.')),
+      h('span', {}, h('strong', {}, 'Wake-up'), ' — the one-off pause when a model has to load. Only if it isn\'t already running.'),
+      h('span', {}, h('strong', {}, 'Looks things up'), ' — with Search on, it decides what to search for, opens the pages it needs and cites them; it can also find its way around a file too long to read at once.')),
 
     h('h2', {}, 'Documents and photos'),
     h('p', {},
@@ -1429,11 +1455,17 @@ function helpView() {
       'plain text, Markdown, CSV, web pages and code. Up to five at a time. Click a file\'s name ' +
       'to see exactly what the model reads.'),
     h('p', {},
-      'A document stays part of the conversation, so you can keep asking about it. The limit is ' +
-      'the "holds about" column above: a long report needs a model with a big number there, and ' +
-      'the little circle by the message box shows how full the chat is. Reading a long document ' +
-      'also takes a while (it tells you roughly how long before you send), and that reading ' +
-      'counts as work, so it uses credits.'),
+      'A document stays part of the conversation, so you can keep asking about it. Reading one ' +
+      'takes a while (it tells you roughly how long before you send), and that reading counts as ' +
+      'work, so it uses credits.'),
+    h('p', {},
+      ms.some(m => m.tools)
+        ? 'Long documents work best on the models marked Yes under "Looks things up": when a file ' +
+          'is too big to read in one go, they look through it instead, finding and reading just the ' +
+          'parts your question needs, and they tell you which pages they used. Other models read the ' +
+          'whole thing at once, so the file has to fit the "holds about" column.'
+        : 'The limit is the "holds about" column above: a long report needs a model with a big ' +
+          'number there, and the little circle by the message box shows how full the chat is.'),
     h('p', { class: 'muted' },
       'Old .doc, .xls and .ppt files can\'t be read: save them as PDF or .docx first. A scanned ' +
       'PDF is just pictures of pages with no text inside, so attach a photo of the page to a ' +
@@ -1472,7 +1504,7 @@ function helpView() {
     h('h2', {}, 'The buttons around the message box'),
     h('div', { class: 'table-wrap' }, h('table', {},
       h('tbody', {},
-        tool('globe', 'Search', 'Lets the model use the web. Models marked "searches" decide for themselves what to look up, can look again if the first try misses, and number their sources so you can check them. The others get one search made from your message. Off unless you turn it on; the model pays, in credits, for the time it spends reading.'),
+        tool('globe', 'Search', 'Lets the model use the web. Models that look things up decide for themselves what to search for, open the pages they need, try again if the first search misses, and number their sources so you can check them. The others get one search made from your message. Off unless you turn it on; the time spent searching and reading counts towards your credits.'),
         tool('bulb', 'Think', 'Lets the model work the problem through before answering. Slower and uses more credits, so save it for tricky questions. Greyed out on models that can\'t.'),
         tool('clip', 'Attach', 'Adds a document (any model) or a photo (models that can see). Dragging a file onto the message box, or pasting a screenshot, does the same.'),
         tool('compress', 'Compact', 'In a very long chat, folds the older part into a short summary so there\'s room to keep going. Nothing is deleted.'),
@@ -1754,7 +1786,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
       }
       else if (ev.type === 'tool_end') {
         const a = S.active, st = a.trail?.find(x => x.id === ev.id && x.running);
-        if (st) Object.assign(st, { running: false, ok: ev.ok, summary: ev.summary, ms: ev.ms });
+        if (st) Object.assign(st, { running: false, ok: ev.ok, summary: ev.summary, ms: ev.ms, args: ev.args });
         if (ev.sources?.length) a.sources = [...(a.sources || []), ...ev.sources];
         render(); scrollThread();
       }

@@ -54,14 +54,17 @@ payment processing.
   rewritten. The original and its reply are kept, and `‹ 1 / 2 ›` arrows flip
   between versions, each with its own follow-ups.
 - **Web search that the model drives**: with Search on, a model marked
-  `tools: true` decides what to look up, searches again when the first try
-  misses, and cites numbered sources you can click; a live trail shows each
-  step. The whole turn is one queued job. Other models get one SearXNG
-  search added to the message.
+  `tools: true` decides what to look up, opens the pages it needs (public
+  addresses only), searches again when the first try misses, and cites
+  numbered sources you can click; a live trail shows each step. The whole
+  turn is one queued job. Other models get one SearXNG search added to the
+  message.
 - **Documents**: attach (or drag in) PDFs, Word, LibreOffice, Excel and
   PowerPoint files, text, CSV, HTML and code, on any model. The text is
   extracted once at upload, in a sandboxed child process, and stays part of
-  the conversation; click a file to see exactly what the model reads.
+  the conversation; click a file to see exactly what the model reads. A file
+  too long to send whole is looked through instead (outline, search, read a
+  part) by the models that use tools.
 - **Vision on demand**: attach an image and the turn routes to the model's
   vision variant. Images live on disk, never base64 in the database.
 - **Compact history**: fold the older part of a long conversation into a

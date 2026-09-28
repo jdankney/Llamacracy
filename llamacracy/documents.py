@@ -184,8 +184,23 @@ def render_for_prompt(filename: str, text: str, meta: dict) -> str:
     return f"<document {attrs}>\n{body}\n</document>\n\n"
 
 
-async def load_prompt_blocks(db, upload_ids: list[str], user_id: int) -> dict[str, str]:
-    """upload id -> its rendered block, for the documents this user owns."""
+@dataclass
+class Loaded:
+    id: str
+    filename: str
+    text: str
+    meta: dict
+
+    @property
+    def tokens(self) -> int:
+        return self.meta.get("tokens") or estimate_tokens(self.text)
+
+    def block(self) -> str:
+        return render_for_prompt(self.filename, self.text, self.meta)
+
+
+async def load(db, upload_ids: list[str], user_id: int) -> dict[str, Loaded]:
+    """upload id -> its text and details, for the documents this user owns."""
     if not upload_ids:
         return {}
     marks = ",".join("?" * len(upload_ids))
@@ -200,8 +215,19 @@ async def load_prompt_blocks(db, upload_ids: list[str], user_id: int) -> dict[st
         except OSError:
             log.warning("extracted text missing for upload %s", r["id"])
             text = "(this document's text is no longer available)"
-        out[r["id"]] = render_for_prompt(r["filename"], text, json.loads(r["meta_json"] or "{}"))
+        out[r["id"]] = Loaded(r["id"], r["filename"], text, json.loads(r["meta_json"] or "{}"))
     return out
+
+
+def split_inline(docs: list[Loaded], budget_tokens: int) -> tuple[list[Loaded], list[Loaded]]:
+    """(sent in full, looked up with tools): the biggest documents are moved
+    out until the rest fit the budget."""
+    inline = sorted(docs, key=lambda d: d.tokens)
+    lookup: list[Loaded] = []
+    while inline and sum(d.tokens for d in inline) > budget_tokens:
+        lookup.append(inline.pop())
+    keep = {d.id for d in inline}
+    return [d for d in docs if d.id in keep], [d for d in docs if d.id not in keep]
 
 
 def doc_ids(message: dict) -> list[str]:

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     agent_max_steps: int = 6                 # rounds of tool calls before it must answer
     agent_max_seconds: float = 240           # wall clock, then it must answer
     agent_tool_result_chars: int = 12000     # one tool result, cut past this (~3K tokens)
+    agent_read_chars: int = 10000            # one part of a page or long document
+    agent_page_max_mb: float = 5.0           # a web page (or online PDF) is cut past this
+    # documents on a branch are sent in full while they fit in this share of
+    # the model's context; past that, a tools model looks things up in them
+    doc_inline_fraction: float = 0.5
 
     # --- uploads -- on-disk, never base64-in-DB -----------
     upload_dir: str = str(REPO_ROOT / "data" / "uploads")

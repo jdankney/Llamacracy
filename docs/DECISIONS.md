@@ -153,7 +153,8 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   while the model stays loaded. Compaction folds documents away with their
   messages; the summary is told their names. A send whose documents would not
   fit the model's context is refused up front, in words, rather than failed
-  by llama.cpp after a queue wait. Originals are only ever served as
+  by llama.cpp after a queue wait, unless the model can look things up (next
+  point). Originals are only ever served as
   downloads (`application/octet-stream`, `nosniff`), since an uploaded .html
   or .svg rendered inline would run as this site.
 - **The `/v1` chat endpoint is a raw passthrough, not a modelled one.** The
@@ -196,6 +197,30 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   from the web or a file, returned to the model as a `tool` message and
   framed in the system prompt as facts to weigh, not instructions; no tool
   can reach anything that would make an injected instruction dangerous.
+- **Long documents are looked up, not truncated.** A model with `tools`
+  gets its documents whole while they fit in `DOC_INLINE_FRACTION` (half) of
+  its context; past that the biggest are replaced by a short
+  `<document ref="d1" …>` stand-in and the model gets `doc_outline`,
+  `doc_search` and `doc_read`. It is the pattern coding agents use on a
+  repository: find, then read the part that matters. A question about
+  section 4 of a 100-page PDF then costs a few thousand prompt tokens
+  instead of 50,000 (three-plus minutes of prompt processing on a MoE model
+  here). Search is keyword scoring over paragraphs, not embeddings: an
+  embedding model would need the GPU, and so a model swap, mid-turn.
+  Documents a compaction folded away stay reachable the same way, listed in
+  the system prompt. Truncating a long document silently was never an
+  option: the model would answer confidently about text it never saw.
+- **`read_page` fetches public addresses only, pinned per hop.** A model
+  choosing URLs is a server-side request forgery risk by construction, on a
+  machine that sits in a home network. Each hop's host is resolved, every
+  address must be global unicast (loopback, private, link-local, CGNAT,
+  multicast and reserved ranges are refused, v4 and v6, including
+  v4-mapped), and the request then goes to that checked IP with Host and SNI
+  keeping the name, so a second DNS answer can't differ from the checked
+  one. Redirects are followed by hand and each is checked again; the
+  environment's proxy settings are ignored; the body is capped. Online PDFs
+  go through the same sandboxed extractor as uploads. A page is fetched once
+  per turn and read in parts, like a long document.
 - **On `/v1` the client's sampling wins and the output cap is larger.** In
   the web UI nobody picks a temperature, so the inventory's values are
   final. An editor sets them on purpose (a low temperature for its apply

@@ -19,8 +19,17 @@
   go to the page). A live trail shows each step, and stays folded above the
   reply afterwards. The whole turn is one queued job, bounded by
   `AGENT_MAX_STEPS` (6) and `AGENT_MAX_SECONDS` (240). Models without the
-  flag keep the one-search behaviour. The Help page has a new Searches
-  column.
+  flag keep the one-search behaviour. The Help page has a new "Looks things
+  up" column.
+- **Reading pages and long documents.** With Search on, those models can
+  also open a result (or any link, including an online PDF) and read it, a
+  part at a time. Pages are fetched only from public addresses, checked on
+  every redirect, so a model can't be steered into the local network. A
+  document too big to send whole (over `DOC_INLINE_FRACTION` of the model's
+  context, default half) now works on those models instead of being refused:
+  they get a short stand-in and look through it with outline, search and
+  read tools, quoting page numbers. Documents a compaction folded away stay
+  reachable the same way.
 
 ### Upgrading
 
