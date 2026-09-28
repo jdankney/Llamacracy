@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS messages (
     usage_estimated   INTEGER NOT NULL DEFAULT 0,
     search_json       TEXT,                  -- SearXNG outcome for this (user) turn, if requested
     image_upload_id   TEXT REFERENCES uploads(id),  -- attached image for this (user) turn, if any
+    doc_ids_json      TEXT,                  -- JSON list of attached document upload ids, if any
     reasoning         TEXT,                  -- the model's thinking before this (assistant) reply, if it thought
     thinking_seconds  REAL,                  -- first thinking token -> first answer token
     -- Conversations are trees (editing a message forks it; see threads.py).
@@ -65,7 +66,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation ON messages(conversation_id, id);
 
--- uploaded images -- on disk under UPLOAD_DIR, never base64-in-DB.
+-- uploaded images and documents -- on disk under UPLOAD_DIR, never in the DB.
 -- Scoped to the uploader; served back only to them (see /api/uploads/{id}).
 CREATE TABLE IF NOT EXISTS uploads (
     id           TEXT PRIMARY KEY,       -- uuid hex, also the on-disk filename stem
@@ -73,6 +74,10 @@ CREATE TABLE IF NOT EXISTS uploads (
     path         TEXT NOT NULL,
     mime         TEXT NOT NULL,
     bytes        INTEGER NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'image',   -- image|document
+    filename     TEXT,                   -- as uploaded (documents); display only, never a path
+    text_path    TEXT,                   -- documents: the extracted Markdown on disk
+    meta_json    TEXT,                   -- documents: {tokens, units, unit, warnings}
     created_at   REAL NOT NULL
 );
 

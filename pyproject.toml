@@ -5,10 +5,13 @@ requires-python = ">=3.14"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 dependencies = [
+    "defusedxml>=0.7.1",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
+    "openpyxl>=3.1.5",
     "pydantic>=2",
     "pydantic-settings>=2.15.0",
+    "pypdf>=6.19.0",
     "python-multipart>=0.0.32",
     "uvicorn[standard]>=0.52.4",
 ]

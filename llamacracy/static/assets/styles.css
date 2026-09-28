@@ -331,6 +331,27 @@ code, pre, kbd { font-family: var(--mono); }
 .compose-tools .tool-label { display: inline; }
 .attach-preview { display: flex; align-items: center; gap: 10px; padding: 8px 12px 0; font-size: 12px; color: var(--text-2); }
 .attach-preview img { width: 48px; height: 48px; object-fit: cover; border-radius: var(--r-sm); border: 1px solid var(--line); }
+.attach-tray .doc-chips { padding: 8px 10px 0; }
+.attach-note { display: flex; align-items: center; gap: 6px; padding: 6px 12px 0; font-size: 12px; color: var(--text-3); }
+.compose-card.is-drop { border-color: var(--accent); border-style: dashed; box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* attached documents: a chip per file, in the tray and on the sent message */
+.doc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.msg-user .bubble .doc-chips { margin-bottom: 8px; justify-content: flex-end; }
+.doc-chip {
+  display: inline-flex; align-items: center; max-width: 100%; min-width: 0;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-md);
+  font-size: 12px; color: var(--text-2);
+}
+.doc-chip.is-warn { border-color: var(--warn); }
+.doc-chip.is-reading { gap: 6px; padding: 5px 10px; }
+.doc-chip .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite; flex: none; }
+.doc-open { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; min-width: 0; color: inherit; border-radius: var(--r-md); text-align: left; }
+.doc-open:hover { color: var(--text); background: var(--panel-3); }
+.doc-name { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 16rem; }
+.doc-meta { color: var(--text-3); white-space: nowrap; }
+.doc-x { display: inline-flex; align-items: center; justify-content: center; width: 26px; align-self: stretch; color: var(--text-3); border-left: 1px solid var(--line); border-radius: 0 var(--r-md) var(--r-md) 0; }
+.doc-x:hover { color: var(--danger); background: var(--danger-soft); }
 .compose-hint { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-3); padding: 6px 4px 0; min-height: 22px; flex-wrap: wrap; }
 .compose-hint .sep { color: var(--text-4); }
 .compose-hint .kbd { margin-left: auto; color: var(--text-4); }
@@ -489,6 +510,12 @@ code.inline { background: var(--panel-2); border: 1px solid var(--line); border-
 .modal h3 { margin: 0 0 8px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
 .modal p { margin: 4px 0; color: var(--text-2); font-size: 13.5px; }
 .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.modal.modal-wide { max-width: 46rem; display: flex; flex-direction: column; max-height: calc(100dvh - 48px); }
+.modal h3 .doc-name { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+.doc-preview-body { overflow: auto; min-height: 6rem; margin-top: 10px; padding: 12px 14px; background: var(--ink); border: 1px solid var(--line); border-radius: var(--r-md); }
+.doc-preview-body .prose-chat { font-size: 13.5px; }
+.modal .doc-preview-body .prose-chat p { color: var(--text); font-size: inherit; margin: 0 0 .7em; }
+a.btn { text-decoration: none; }
 
 /* --------------------------------------------------------- prose (md) */
 .prose-chat { line-height: 1.6; font-size: var(--chat-size); overflow-wrap: anywhere; }

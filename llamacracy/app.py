@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,7 +20,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import threads
+from . import documents, threads
 from .admin import router as admin_router
 from .apikeys import generate as generate_api_key
 from .config import Settings, get_settings
@@ -131,6 +132,8 @@ async def me(principal: Principal = Depends(get_principal),
             "max_tokens_per_request": settings.max_tokens_per_request,
             "thinking_max_tokens": settings.thinking_max_tokens,
             "upload_max_mb": settings.upload_max_mb,
+            "document_max_mb": settings.document_max_mb,
+            "max_docs_per_message": documents.MAX_DOCS_PER_MESSAGE,
             "compact_keep_recent": settings.compact_keep_recent,
         },
     }
@@ -255,6 +258,7 @@ async def list_models(principal: Principal = Depends(get_principal),
             "reasoning": m.reasoning,
             "thinking": m.thinking,
             "tok_s": m.seed_tg_tok_s,
+            "pp_tok_s": m.seed_pp_tok_s,     # how fast it reads: attached documents
             "cold_load_s": qm.load_estimate(m.key),
             "resident": m.key == loaded,
             "max_tokens_default": min(m.max_tokens_default,
@@ -316,14 +320,27 @@ async def _conversation_payload(db: Database, conv) -> dict:
     path = threads.active_path(conv["active_root_id"], rows)
     sibs = threads.siblings(rows)
     boundary, summary = threads.summary_point(path)
+    docs = await _describe_documents(db, threads.document_ids(path), conv["user_id"])
     messages = []
     for r in path:
-        m = {k: v for k, v in r.items() if k not in ("active_child_id", "context_summary")}
+        m = {k: v for k, v in r.items()
+             if k not in ("active_child_id", "context_summary", "doc_ids_json")}
         m["siblings"] = sibs.get(r["parent_id"], [r["id"]])
+        m["documents"] = [docs[i] for i in documents.doc_ids(r) if i in docs]
         messages.append(m)
     conversation = {k: conv[k] for k in conv.keys() if k != "active_root_id"}
     conversation.update(compact_boundary_id=boundary, context_summary=summary)
     return {"conversation": conversation, "messages": messages}
+
+
+async def _describe_documents(db: Database, ids: list[str], user_id: int) -> dict[str, dict]:
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    rows = await db.fetch_all(
+        f"SELECT id, filename, bytes, meta_json FROM uploads "
+        f"WHERE user_id = ? AND kind = 'document' AND id IN ({marks})", (user_id, *ids))
+    return {r["id"]: documents.describe(r) for r in rows}
 
 
 @app.get("/api/conversations/{conv_id}")
@@ -371,12 +388,15 @@ async def delete_conversation(conv_id: str,
     )
     if conv is None:
         raise HTTPException(404, "no such conversation")
-    # any attached images belong only to this conversation's messages -- clean
-    # up their rows *and* the on-disk files so deleted chats don't leave orphans
+    # attached images and documents belong only to this conversation's
+    # messages -- clean up their rows *and* the on-disk files (a document's
+    # extracted text too) so deleted chats don't leave orphans
     uploads = await db.fetch_all(
-        "SELECT DISTINCT u.id, u.path FROM uploads u "
-        "JOIN messages m ON m.image_upload_id = u.id WHERE m.conversation_id = ?",
-        (conv_id,),
+        "SELECT id, path, text_path FROM uploads WHERE user_id = ? AND ("
+        "  id IN (SELECT image_upload_id FROM messages WHERE conversation_id = ?)"
+        "  OR id IN (SELECT j.value FROM messages m, json_each(m.doc_ids_json) j"
+        "            WHERE m.conversation_id = ? AND json_valid(m.doc_ids_json)))",
+        (principal.user_id, conv_id, conv_id),
     )
     await db.transaction([
         ("DELETE FROM messages WHERE conversation_id = ?", (conv_id,)),
@@ -385,10 +405,13 @@ async def delete_conversation(conv_id: str,
         *[("DELETE FROM uploads WHERE id = ?", (u["id"],)) for u in uploads],
     ])
     for u in uploads:
-        try:
-            Path(u["path"]).unlink(missing_ok=True)
-        except OSError:
-            log.warning("failed to remove upload file %s", u["path"])
+        for f in (u["path"], u["text_path"]):
+            if not f:
+                continue
+            try:
+                Path(f).unlink(missing_ok=True)
+            except OSError:
+                log.warning("failed to remove upload file %s", f)
     return {"deleted": conv_id}
 
 
@@ -411,9 +434,16 @@ _COMPACT_SYSTEM_PROMPT = (
 )
 
 
-def _render_turns(msgs: list[dict]) -> str:
+def _render_turns(msgs: list[dict], doc_names: dict[str, str] | None = None) -> str:
+    """The transcript a summary is written from. Attached documents are named,
+    not included: the summary can say what was shared without re-reading it."""
     who = {"user": "User", "assistant": "Assistant", "system": "Note"}
-    return "\n".join(f"{who.get(m['role'], m['role'])}: {m['content']}" for m in msgs)
+    lines = []
+    for m in msgs:
+        names = [doc_names[i] for i in documents.doc_ids(m) if doc_names and i in doc_names]
+        att = f"[attached: {', '.join(names)}] " if names else ""
+        lines.append(f"{who.get(m['role'], m['role'])}: {att}{m['content']}")
+    return "\n".join(lines)
 
 
 @app.post("/api/conversations/{conv_id}/compact")
@@ -439,7 +469,9 @@ async def compact_conversation(conv_id: str,
     if model is None or model.kind != "chat":
         raise HTTPException(400, f"unknown model for this conversation: {conv['model_id']}")
 
-    prompt = _render_turns(to_compact)
+    doc_names = {i: d["filename"] for i, d in (await _describe_documents(
+        db, threads.document_ids(to_compact), principal.user_id)).items()}
+    prompt = _render_turns(to_compact, doc_names)
     if prior:
         prompt = f"Earlier summary:\n{prior}\n\nAdditional conversation since then:\n{prompt}"
 
@@ -485,25 +517,74 @@ async def compact_conversation(conv_id: str,
 
 
 # --------------------------------------------------------------------------- #
-# vision uploads -- on disk, scoped to the uploader
+# uploads -- images (vision) and documents, on disk, scoped to the uploader
 # --------------------------------------------------------------------------- #
 @app.post("/api/uploads")
-async def upload_image(file: UploadFile = File(...),
-                       principal: Principal = Depends(get_principal),
-                       settings: Settings = Depends(get_settings),
-                       db: Database = Depends(get_db)):
-    data = await file.read()
+async def upload(file: UploadFile = File(...),
+                 principal: Principal = Depends(get_principal),
+                 settings: Settings = Depends(get_settings),
+                 db: Database = Depends(get_db)):
+    ctype = (file.content_type or "").split(";")[0].strip().lower()
+    if ctype.startswith("image/"):
+        data = await file.read()
+        try:
+            ext = validate_upload(file.content_type, len(data), settings.upload_max_mb)
+        except UploadRejected as e:
+            raise HTTPException(400, str(e)) from e
+        file_id, path = save_upload(settings.upload_dir, data, ext)
+        await db.execute(
+            "INSERT INTO uploads (id, user_id, path, mime, bytes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (file_id, principal.user_id, path, file.content_type, len(data), now()),
+        )
+        return {"id": file_id, "kind": "image", "mime": file.content_type, "bytes": len(data)}
+    return await _upload_document(file, principal, settings, db)
+
+
+async def _upload_document(file: UploadFile, principal: Principal,
+                           settings: Settings, db: Database) -> dict:
+    """Extract now, outside the queue: a document is text by the time anyone
+    sends it, so a send never waits on a parser and never holds the GPU."""
+    limit = int(settings.document_max_mb * 1024 * 1024)
+    data = await file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(400, f"file too large (max {settings.document_max_mb:.0f} MB)")
+    if not data:
+        raise HTTPException(400, "empty file")
+    filename = documents.clean_filename(file.filename)
     try:
-        ext = validate_upload(file.content_type, len(data), settings.upload_max_mb)
-    except UploadRejected as e:
+        kind = documents.classify(filename, data[:8])
+    except documents.DocumentRejected as e:
         raise HTTPException(400, str(e)) from e
-    file_id, path = save_upload(settings.upload_dir, data, ext)
+
+    # the extractor reads from disk: park the bytes where they'll live anyway
+    # (keeping the extension, which some readers insist on)
+    ext = re.sub(r"[^a-z0-9.]", "", Path(filename).suffix.lower())[:12]
+    tmp = Path(settings.upload_dir) / f".incoming-{uuid.uuid4().hex}{ext}"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_bytes(data)
+    try:
+        ex = await documents.extract(str(tmp), kind, settings.document_max_chars)
+    except documents.DocumentRejected as e:
+        raise HTTPException(400, f"{filename}: {e}") from e
+    finally:
+        tmp.unlink(missing_ok=True)
+    if "no_text_layer" in ex.warnings and len(re.sub(r"\[Page \d+\]", "", ex.markdown).strip()) < 200:
+        raise HTTPException(400, f"{filename} looks like a scan: its pages are pictures with "
+                                 "no text in them. Attach a photo of the page to a vision "
+                                 "model instead.")
+    if not ex.markdown.strip():
+        raise HTTPException(400, f"{filename} has no text in it to read")
+
+    file_id, path, text_path = documents.save(settings.upload_dir, data, filename, ex.markdown)
+    meta = {"tokens": ex.tokens, "units": ex.units, "unit": ex.unit, "warnings": ex.warnings}
     await db.execute(
-        "INSERT INTO uploads (id, user_id, path, mime, bytes, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (file_id, principal.user_id, path, file.content_type, len(data), now()),
+        "INSERT INTO uploads (id, user_id, path, mime, bytes, kind, filename, text_path, "
+        "  meta_json, created_at) VALUES (?, ?, ?, ?, ?, 'document', ?, ?, ?, ?)",
+        (file_id, principal.user_id, path, "application/octet-stream", len(data),
+         filename, text_path, json.dumps(meta), now()),
     )
-    return {"id": file_id, "mime": file.content_type, "bytes": len(data)}
+    return {"kind": "document", "id": file_id, "filename": filename, "bytes": len(data), **meta}
 
 
 @app.get("/api/uploads/{upload_id}")
@@ -511,12 +592,37 @@ async def get_upload(upload_id: str,
                      principal: Principal = Depends(get_principal),
                      db: Database = Depends(get_db)):
     row = await db.fetch_one(
-        "SELECT path, mime FROM uploads WHERE id = ? AND user_id = ?",
+        "SELECT path, mime, kind, filename FROM uploads WHERE id = ? AND user_id = ?",
         (upload_id, principal.user_id),
     )
     if row is None:
         raise HTTPException(404, "no such upload")
+    if row["kind"] == "document":
+        # always a download, never rendered: an uploaded .html or .svg shown
+        # inline would run as this site
+        return FileResponse(row["path"], media_type="application/octet-stream",
+                            filename=row["filename"],
+                            headers={"X-Content-Type-Options": "nosniff"})
     return FileResponse(row["path"], media_type=row["mime"])
+
+
+@app.get("/api/uploads/{upload_id}/text")
+async def get_upload_text(upload_id: str,
+                          principal: Principal = Depends(get_principal),
+                          db: Database = Depends(get_db)):
+    """The text the model is given for a document: what the UI previews."""
+    row = await db.fetch_one(
+        "SELECT id, filename, bytes, text_path, meta_json FROM uploads "
+        "WHERE id = ? AND user_id = ? AND kind = 'document'",
+        (upload_id, principal.user_id),
+    )
+    if row is None:
+        raise HTTPException(404, "no such document")
+    try:
+        text = Path(row["text_path"]).read_text(encoding="utf-8")
+    except OSError:
+        raise HTTPException(410, "this document's text is no longer available") from None
+    return {**documents.describe(row), "text": text}
 
 
 # --------------------------------------------------------------------------- #
@@ -530,6 +636,7 @@ class ChatRequest(BaseModel):
     search: bool = False
     think: bool = False          # the Think toggle; ignored for models that can't
     image_id: str | None = None
+    doc_ids: list[str] | None = None   # attached documents (upload ids)
     # Editing: the id of an earlier user message this one replaces. The
     # original is kept; this becomes its sibling (a new branch) and gets a
     # fresh reply. Omitted, the message continues the branch being shown.
@@ -554,6 +661,8 @@ async def chat(req: ChatRequest,
     conv_id = req.conversation_id
     parent_id: int | None = None
     image_id = req.image_id
+    doc_ids = list(dict.fromkeys(req.doc_ids or []))
+    prior: list[dict] = []
     if conv_id:
         conv = await _owned_conversation(db, conv_id, principal.user_id)
         rows = await threads.load(db, conv_id)
@@ -562,16 +671,28 @@ async def chat(req: ChatRequest,
             if orig is None or orig["role"] != "user":
                 raise HTTPException(404, "no such message of yours in this conversation")
             parent_id = orig["parent_id"]
-            # editing the words shouldn't silently drop the photo they were about
+            # editing the words shouldn't silently drop the photo or the
+            # documents they were about
             image_id = image_id or orig["image_upload_id"]
+            if req.doc_ids is None:
+                doc_ids = documents.doc_ids(orig)
         else:
             path = threads.active_path(conv["active_root_id"], rows)
             parent_id = path[-1]["id"] if path else None
-        history = threads.history(threads.path_to(parent_id, rows))
-    else:
-        if req.edit_of is not None:
-            raise HTTPException(400, "edit_of needs the conversation_id it belongs to")
-        history = []
+        prior = threads.path_to(parent_id, rows)
+    elif req.edit_of is not None:
+        raise HTTPException(400, "edit_of needs the conversation_id it belongs to")
+
+    if len(doc_ids) > documents.MAX_DOCS_PER_MESSAGE:
+        raise HTTPException(400, f"at most {documents.MAX_DOCS_PER_MESSAGE} documents per message")
+    # every document this turn will send: the new ones and any still in play
+    # further up the branch, fetched in one go and owned by this user only
+    doc_blocks = await documents.load_prompt_blocks(
+        db, threads.document_ids(prior) + doc_ids, principal.user_id)
+    missing = [i for i in doc_ids if i not in doc_blocks]
+    if missing:
+        raise HTTPException(404, "no such document")
+    history = threads.history(prior, doc_blocks)
 
     # An attached image routes this turn to the paired -vision llama-swap
     # entry (same weights + --mmproj) instead of the picked text model. The
@@ -601,6 +722,7 @@ async def chat(req: ChatRequest,
     prompt_content = req.message
     if search_outcome and search_outcome.ok and search_outcome.results:
         prompt_content = search_outcome.to_prompt_block() + req.message
+    prompt_content = "".join(doc_blocks[i] for i in doc_ids) + prompt_content
 
     # The image is sent for THIS turn only -- past turns' images aren't
     # resent on every follow-up (that would re-pay their full prompt-eval
@@ -622,6 +744,16 @@ async def chat(req: ChatRequest,
     budget = (settings.thinking_max_tokens if think
               else min(model.max_tokens_default, settings.max_tokens_per_request))
     cap = min(req.max_tokens or budget, budget)
+    if doc_blocks:
+        # Documents are the one way a single send can blow straight past the
+        # context window. Say so now, in words, instead of letting llama.cpp
+        # fail the job after a queue wait.
+        est = sum(documents.estimate_tokens(_text_of(m["content"])) + 4 for m in messages)
+        if est + min(cap, 1024) > model.ctx:
+            raise HTTPException(400, (
+                f"With its documents this chat is about {est:,} tokens, more than "
+                f"{model.display} can hold at once ({model.ctx:,}). Pick a model that "
+                "holds more (Help lists them), compact the chat, or attach less."))
     payload = {"messages": messages, "max_tokens": cap, **model.sampling}
     if model.thinking:
         payload["chat_template_kwargs"] = {"enable_thinking": think}
@@ -649,11 +781,11 @@ async def chat(req: ChatRequest,
         )
     user_msg_id = await db.insert(
         "INSERT INTO messages (conversation_id, role, content, search_json, "
-        "  image_upload_id, parent_id, created_at) "
-        "VALUES (?, 'user', ?, ?, ?, ?, ?)",
+        "  image_upload_id, doc_ids_json, parent_id, created_at) "
+        "VALUES (?, 'user', ?, ?, ?, ?, ?, ?)",
         (conv_id, req.message,
          json.dumps(search_outcome.as_dict()) if search_outcome else None,
-         image_id, parent_id, ts),
+         image_id, json.dumps(doc_ids) if doc_ids else None, parent_id, ts),
     )
     # ...and make it the version on screen: its parent (or, for a first
     # message, the conversation) now points at it
@@ -688,6 +820,12 @@ async def chat(req: ChatRequest,
     return StreamingResponse(event_stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+def _text_of(content) -> str:
+    if isinstance(content, str):
+        return content
+    return "".join(p.get("text", "") for p in content if isinstance(p, dict))
 
 
 @app.post("/api/jobs/{job_id}/cancel")

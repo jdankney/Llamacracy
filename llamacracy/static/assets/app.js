@@ -90,6 +90,8 @@ const ICONS = {
   zap: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
   code: 'M16 18l6-6-6-6M8 6l-6 6 6 6',
   bulb: 'M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.74V17h8v-2.26A7 7 0 0 0 12 2z',
+  file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8',
+  download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
 };
 const icon = (name, cls = '') => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -299,6 +301,9 @@ const S = {
   conv: null, messages: [], active: null, queue: { jobs: [], depth: 0 },
   usage: null, view: 'chat', pickerModel: null, sidebarOpen: false, ctxOpen: false,
   searchOn: false, thinkOn: false, pendingImage: null,
+  pendingDocs: [],      // documents attached to the next message (already uploaded + read)
+  reading: [],          // file names still being uploaded and read
+  dragging: false,
   editing: null,        // { id, text } while a sent message is being edited in place
   apiKeys: [], newApiKey: null, apiKeyLabel: '',
   compacting: false,
@@ -507,6 +512,7 @@ function emptyState() {
     h('p', {}, m ? `${m.display} is selected. Pick another model below, or just start typing.` : 'Pick a model below and say something.'),
     h('div', { class: 'hints' },
       h('span', { class: 'hint' }, icon('globe', 'icon-sm'), 'Search adds live web results to a message'),
+      h('span', { class: 'hint' }, icon('file', 'icon-sm'), 'Drop in a PDF, Word or spreadsheet file to ask about it'),
       h('span', { class: 'hint' }, icon('eye', 'icon-sm'), 'Vision models can read an attached image'),
       h('span', { class: 'hint' }, h('kbd', {}, 'Enter'), 'send', h('kbd', {}, 'Shift+Enter'), 'newline'),
       h('button', { class: 'hint hint-link', onclick: () => setView('help') },
@@ -579,8 +585,8 @@ function editBubble(m) {
         },
       }),
       h('div', { class: 'edit-actions' },
-        h('span', { class: 'hint' }, m.image
-          ? 'Your original stays, and the photo comes along. Flip back any time.'
+        h('span', { class: 'hint' }, m.image || m.documents?.length
+          ? `Your original stays, and the ${m.image ? 'photo' : m.documents.length > 1 ? 'files' : 'file'} come${m.image || m.documents.length > 1 ? '' : 's'} along. Flip back any time.`
           : 'Your original stays. You can flip back to it any time.'),
         h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: cancel }, 'Cancel'),
         h('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: submit }, 'Send'))));
@@ -599,6 +605,7 @@ function msgBubble(m) {
     return h('div', { class: 'msg msg-user' },
       h('div', { class: 'bubble' },
         m.image ? h('img', { class: 'attach', src: m.image.url, alt: 'Attached image' }) : null,
+        m.documents?.length ? h('div', { class: 'doc-chips' }, m.documents.map(d => docChip(d))) : null,
         mdBlock(m.content)),
       searchChip(m.search),
       h('div', { class: 'msg-foot' },
@@ -733,9 +740,18 @@ function contextInfo() {
     if (msg.id != null && msg.id <= boundary) continue;   // folded into the summary, not resent
     tail += estTok(msg.content) + 4 + (msg.image || msg.image_upload_id ? IMG_TOK_ESTIMATE : 0);
   }
+  // documents ride along with their message on every turn, so each one still
+  // on the branch counts in full (a message with exact usage already has them
+  // inside its prompt_tokens)
+  for (let i = from; i < S.messages.length; i++) {
+    const msg = S.messages[i];
+    if (msg.id != null && msg.id <= boundary) continue;
+    tail += docTokens(msg.documents);
+  }
   const estimated = (!foundExact && S.messages.length > 0) || (!exact && S.messages.length > 0) || tail > 0;
 
-  const draftTok = (S.draft ? estTok(S.draft) + 4 : 0) + (S.pendingImage ? IMG_TOK_ESTIMATE : 0);
+  const draftTok = (S.draft ? estTok(S.draft) + 4 : 0) + (S.pendingImage ? IMG_TOK_ESTIMATE : 0)
+    + docTokens(S.pendingDocs);
 
   const used = base + tail;
   const projected = used + draftTok;          // the prompt the next send will build
@@ -785,7 +801,7 @@ function contextBreakdown(ci) {
         (ci.estimated ? ' · ~estimate' : '')),
       h('span', { class: 'mono' }, `${fmtTok(ci.projected)} used`)),
     row(RING.used, 'Conversation', ci.used),
-    ci.draftTok ? row(RING.draft, 'Your draft', ci.draftTok) : null,
+    ci.draftTok ? row(RING.draft, S.pendingDocs.length ? 'Your draft + files' : 'Your draft', ci.draftTok) : null,
     row(RING.reply, ci.thinking ? 'Reserved for thinking + reply' : 'Reserved for reply', ci.reply),
     row(RING.free, 'Free', free),
     ci.over ? h('div', { class: 'ctx-note danger' },
@@ -816,16 +832,103 @@ function refreshCtx(delay = 120) {
 }
 function renderHint() { const el = document.getElementById('compose-hint'); if (el) el.replaceChildren(...composeHintKids()); }
 
-async function onPickImage(e) {
-  const file = e.target.files[0]; e.target.value = '';
-  if (!file) return;
-  const maxMb = S.me?.limits?.upload_max_mb || 8;
-  if (file.size > maxMb * 1024 * 1024) { flashError(`Image too large (max ${maxMb} MB)`); return; }
+/* ------------------------------------------------------------ attachments */
+// Photos go to the model's vision variant; anything else is a document, read
+// into text on the server as soon as it's picked, so the send itself is quick.
+const docTokens = docs => (docs || []).reduce((n, d) => n + (d.tokens || 0), 0);
+const isImageFile = f => /^image\//.test(f.type);
+function onPickFiles(e) {
+  const files = [...(e.target.files || [])]; e.target.value = '';
+  addFiles(files);
+}
+async function addFiles(files) {
+  const m = S.models.find(x => x.id === S.pickerModel);
+  const lim = S.me?.limits || {};
+  for (const file of files) {
+    if (isImageFile(file)) {
+      if (!m?.vision) { flashError(`${m?.display || 'This model'} can't see pictures. Pick one marked "vision" to attach a photo.`); continue; }
+      const maxMb = lim.upload_max_mb || 8;
+      if (file.size > maxMb * 1024 * 1024) { flashError(`Image too large (max ${maxMb} MB)`); continue; }
+      try {
+        const up = await api.upload(file);
+        S.pendingImage = { id: up.id, url: URL.createObjectURL(file) };
+        render();
+      } catch (e2) { flashError(e2.message); }
+      continue;
+    }
+    const maxDocs = lim.max_docs_per_message || 5;
+    if (S.pendingDocs.length + S.reading.length >= maxDocs) { flashError(`Up to ${maxDocs} files per message.`); break; }
+    const maxMb = lim.document_max_mb || 25;
+    if (file.size > maxMb * 1024 * 1024) { flashError(`${file.name} is too large (max ${maxMb} MB)`); continue; }
+    S.reading.push(file.name); renderTray();
+    try {
+      const up = await api.upload(file);
+      S.pendingDocs.push(up);
+      if (up.warnings?.includes('truncated')) flashInfo(`${up.filename} is very long, so only the start of it was kept.`);
+      if (up.warnings?.includes('no_text_layer')) flashInfo(`Parts of ${up.filename} look scanned: those pages have no text to read.`);
+    } catch (e2) { flashError(e2.message); }
+    finally { S.reading.splice(S.reading.indexOf(file.name), 1); renderTray(); refreshCtx(0); }
+  }
+}
+// "12 pages · ~9K tokens"
+function docMeta(d) {
+  const bits = [];
+  if (d.units) bits.push(plural(d.units, d.unit || 'part'));
+  if (d.tokens) bits.push(`~${fmtTok(d.tokens)} tokens`);
+  return bits.join(' · ');
+}
+function docChip(d, { onRemove = null } = {}) {
+  const warn = d.warnings?.some(w => w === 'truncated' || w === 'no_text_layer');
+  return h('span', { class: 'doc-chip' + (warn ? ' is-warn' : '') },
+    h('button', { type: 'button', class: 'doc-open', title: 'See the text the model reads', onclick: () => previewDoc(d) },
+      icon('file', 'icon-sm'),
+      h('span', { class: 'doc-name' }, d.filename),
+      h('span', { class: 'doc-meta' }, docMeta(d))),
+    onRemove ? h('button', { type: 'button', class: 'doc-x', 'aria-label': `Remove ${d.filename}`, onclick: onRemove },
+      icon('x', 'icon-sm')) : null);
+}
+// the tray above the message box: what the next send carries
+function attachTray() {
+  if (!S.pendingImage && !S.pendingDocs.length && !S.reading.length) return null;
+  const m = S.models.find(x => x.id === S.pickerModel);
+  const tok = docTokens(S.pendingDocs);
+  // prompt processing is the slow part of a long document: say so up front
+  const readS = m?.pp_tok_s && tok ? tok / m.pp_tok_s : 0;
+  return h('div', { class: 'attach-tray' },
+    S.pendingImage ? h('div', { class: 'attach-preview' },
+      h('img', { src: S.pendingImage.url, alt: 'Pending attachment' }),
+      h('span', { style: 'flex:1' }, 'Image attached — sent with your next message (routes to the vision variant).'),
+      h('button', {
+        type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Remove image',
+        onclick: () => { S.pendingImage = null; render(); },
+      }, icon('x', 'icon-sm'))) : null,
+    S.pendingDocs.length || S.reading.length ? h('div', { class: 'doc-chips' },
+      S.pendingDocs.map((d, i) => docChip(d, { onRemove: () => { S.pendingDocs.splice(i, 1); renderTray(); refreshCtx(0); } })),
+      S.reading.map(n => h('span', { class: 'doc-chip is-reading' }, h('i', { class: 'pulse' }), h('span', { class: 'doc-name' }, n), h('span', { class: 'doc-meta' }, 'reading…')))) : null,
+    readS >= 15 ? h('div', { class: 'attach-note' }, icon('info', 'icon-sm'),
+      `${modelName(m.id)} will take about ${fmtDur(readS)} to read ${S.pendingDocs.length > 1 ? 'these' : 'this'} before it answers.`) : null);
+}
+function renderTray() {
+  const el = document.getElementById('attach-slot');
+  if (el) el.replaceChildren(attachTray() || '');
+}
+async function previewDoc(d) {
+  const body = h('div', { class: 'doc-preview-body' }, h('div', { class: 'muted small' }, 'Loading…'));
+  const close = modal([
+    h('h3', {}, icon('file'), h('span', { class: 'doc-name' }, d.filename)),
+    h('p', { class: 'small' }, [docMeta(d), 'This is the text the model reads.'].filter(Boolean).join(' · ')),
+    body,
+    h('div', { class: 'actions' },
+      h('a', { class: 'btn btn-ghost', href: `/api/uploads/${d.id}`, download: d.filename }, icon('download', 'icon-sm'), 'Original'),
+      h('button', { class: 'btn btn-primary', autofocus: true, onclick: () => close() }, 'Close')),
+  ], null, 'modal-wide');
   try {
-    const up = await api.upload(file);
-    S.pendingImage = { id: up.id, url: URL.createObjectURL(file) };
-    render();
-  } catch (e2) { flashError(e2.message); }
+    const r = await api.get(`/api/uploads/${d.id}/text`);
+    const MAX = 150000;     // rendering megabytes of Markdown would lock the page up
+    const text = r.text.length > MAX ? r.text.slice(0, MAX) : r.text;
+    body.replaceChildren(mdBlock(text), ...(r.text.length > MAX
+      ? [h('p', { class: 'muted small' }, `Showing the first ${Math.round(MAX / 1000)}K characters of ${Math.round(r.text.length / 1000)}K.`)] : []));
+  } catch (e) { body.replaceChildren(h('p', { class: 'muted' }, e.message)); }
 }
 
 function composeHintKids() {
@@ -848,19 +951,21 @@ function composer() {
   return h('div', { class: 'composer' },
     h('div', { class: 'composer-inner' },
       h('div', { id: 'ctx-breakdown' }, contextBreakdown(contextInfo())),
-      h('form', { class: 'compose-card', onsubmit: sendMessage },
-        S.pendingImage ? h('div', { class: 'attach-preview' },
-          h('img', { src: S.pendingImage.url, alt: 'Pending attachment' }),
-          h('span', { style: 'flex:1' }, 'Image attached — sent with your next message (routes to the vision variant).'),
-          h('button', {
-            type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Remove image',
-            onclick: () => { S.pendingImage = null; render(); },
-          }, icon('x', 'icon-sm'))) : null,
+      h('form', {
+        class: 'compose-card' + (S.dragging ? ' is-drop' : ''), onsubmit: sendMessage,
+        // drag files anywhere onto the box to attach them
+        ondragover: e => { if (![...(e.dataTransfer?.types || [])].includes('Files')) return; e.preventDefault(); if (!S.dragging) { S.dragging = true; e.currentTarget.classList.add('is-drop'); } },
+        ondragleave: e => { if (e.currentTarget.contains(e.relatedTarget)) return; S.dragging = false; e.currentTarget.classList.remove('is-drop'); },
+        ondrop: e => { e.preventDefault(); S.dragging = false; e.currentTarget.classList.remove('is-drop'); addFiles([...(e.dataTransfer?.files || [])]); },
+      },
+        h('div', { id: 'attach-slot' }, attachTray()),
         h('textarea', {
           id: 'composer', rows: 1, placeholder: 'Message Llamacracy…', value: S.draft,
           'aria-label': 'Message',
           oninput: e => { S.draft = e.target.value; autosize(e.target); refreshCtx(); },
           onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(e); } },
+          // a pasted screenshot or file attaches instead of vanishing
+          onpaste: e => { const f = [...(e.clipboardData?.files || [])]; if (f.length) { e.preventDefault(); addFiles(f); } },
         }),
         h('div', { class: 'compose-tools' },
           h('span', { class: 'select-wrap' },
@@ -891,16 +996,14 @@ function composer() {
             'aria-pressed': S.thinkOn && m?.thinking ? 'true' : 'false',
             onclick: () => { S.thinkOn = !S.thinkOn; render(); },
           }, icon('bulb', 'icon-sm'), h('span', { class: 'tool-label' }, 'Think')),
-          h('input', {
-            type: 'file', id: 'img-input', hidden: true,
-            accept: 'image/png,image/jpeg,image/webp', onchange: onPickImage,
-          }),
+          // no `accept`: phones then offer Files as well as Photos
+          h('input', { type: 'file', id: 'file-input', hidden: true, multiple: true, onchange: onPickFiles }),
           h('button', {
             type: 'button',
-            title: m?.vision ? 'Attach an image' : 'Switch to a vision model to attach images',
-            'aria-label': 'Attach image', disabled: !m?.vision,
-            class: 'btn btn-sm btn-icon' + (S.pendingImage ? ' is-on' : ''),
-            onclick: () => document.getElementById('img-input').click(),
+            title: m?.vision ? 'Attach files or a photo' : 'Attach files (PDF, Word, spreadsheets, text…). Photos need a vision model',
+            'aria-label': 'Attach files',
+            class: 'btn btn-sm btn-icon' + (S.pendingImage || S.pendingDocs.length ? ' is-on' : ''),
+            onclick: () => document.getElementById('file-input').click(),
           }, icon('clip', 'icon-sm')),
           h('div', { class: 'spacer' }),
           h('span', { id: 'ctx-slot' }, contextRing(contextInfo())),
@@ -1252,19 +1355,29 @@ function helpView() {
       h('span', {}, h('strong', {}, 'Holds about'), ' — how much text it can keep in mind at once, you and it combined.'),
       h('span', {}, h('strong', {}, 'Wake-up'), ' — the one-off pause when a model has to load. Only if it isn\'t already running.')),
 
-    h('h2', {}, 'Photos and documents'),
+    h('h2', {}, 'Documents and photos'),
+    h('p', {},
+      'Any model can read a document. Use the paperclip, or drag the file onto the message box: ' +
+      'PDFs, Word (.docx), LibreOffice (.odt, .ods, .odp), Excel (.xlsx), PowerPoint (.pptx), ' +
+      'plain text, Markdown, CSV, web pages and code. Up to five at a time. Click a file\'s name ' +
+      'to see exactly what the model reads.'),
+    h('p', {},
+      'A document stays part of the conversation, so you can keep asking about it. The limit is ' +
+      'the "holds about" column above: a long report needs a model with a big number there, and ' +
+      'the little circle by the message box shows how full the chat is. Reading a long document ' +
+      'also takes a while (it tells you roughly how long before you send), and that reading ' +
+      'counts as work, so it uses credits.'),
+    h('p', { class: 'muted' },
+      'Old .doc, .xls and .ppt files can\'t be read: save them as PDF or .docx first. A scanned ' +
+      'PDF is just pictures of pages with no text inside, so attach a photo of the page to a ' +
+      'vision model instead.'),
     h('p', {},
       seers.length
-        ? `${seers.length} of the ${ms.length} models can see pictures — the ones marked Yes ` +
-          'in the table above. Pick one of those, then use the paperclip to attach a photo, ' +
-          'a screenshot, or a picture of a page, and ask about it.'
+        ? `${seers.length} of the ${ms.length} models can also see pictures — the ones marked Yes ` +
+          'under Photos. Pick one of those to attach a photo, a screenshot, or a picture of a page.'
         : 'None of the models loaded right now can see pictures.'),
-    h('p', {},
-      'There is no file upload for documents — paste the text straight into the message box. ' +
-      'The only real limit is the "holds about" column above, so for anything long, pick a ' +
-      'model with a big number there. A photo of a document works too, on the models marked Yes.'),
     h('p', { class: 'muted' },
-      'One quirk worth knowing: a model only looks at the picture in the message you attached ' +
+      'One quirk worth knowing: a model only looks at a picture in the message you attached ' +
       'it to. Ask your follow-up questions about it in that same message, or attach it again.'),
 
     h('h2', {}, 'Letting it think'),
@@ -1294,7 +1407,7 @@ function helpView() {
       h('tbody', {},
         tool('globe', 'Search', 'Searches the web first and hands the results to the model before it answers. Off unless you turn it on. The search itself is free; the model just has a little more to read.'),
         tool('bulb', 'Think', 'Lets the model work the problem through before answering. Slower and uses more credits, so save it for tricky questions. Greyed out on models that can\'t.'),
-        tool('clip', 'Attach', 'Adds a photo. Greyed out unless the model you\'ve picked can see.'),
+        tool('clip', 'Attach', 'Adds a document (any model) or a photo (models that can see). Dragging a file onto the message box, or pasting a screenshot, does the same.'),
         tool('compress', 'Compact', 'In a very long chat, folds the older part into a short summary so there\'s room to keep going. Nothing is deleted.'),
         tool('stop', 'Stop', 'Cuts a reply short and hands the computer straight back to whoever\'s next.')))),
     h('p', { class: 'muted' },
@@ -1494,14 +1607,15 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
   if (S.active) return;
   const editing = editOf != null;
   const text = (editing ? editText : S.draft).trim(); if (!text) return;
-  let img = null;
+  if (S.reading.length) { flashInfo('Still reading your file. One moment…'); return; }
+  let img = null, docs = [];
   if (editing) {
     // the edit replaces that message and everything after it on screen; the
     // server keeps the original branch, reachable with the "< 1 / 2 >" arrows
     const i = S.messages.findIndex(x => x.id === editOf);
     const orig = S.messages[i];
     S.messages = S.messages.slice(0, i);
-    S.messages.push({ role: 'user', content: text, image: orig?.image });
+    S.messages.push({ role: 'user', content: text, image: orig?.image, documents: orig?.documents });
     // a fork from above the compaction line has no summary: all of it is sent
     if (S.conv?.compact_boundary_id && editOf <= S.conv.compact_boundary_id) {
       S.conv.compact_boundary_id = null; S.conv.context_summary = null;
@@ -1509,7 +1623,8 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
   } else {
     S.draft = '';
     img = S.pendingImage; S.pendingImage = null;
-    S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined });
+    docs = S.pendingDocs; S.pendingDocs = [];
+    S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined, documents: docs });
   }
   S.active = { state: 'queued', position: '?', model: S.pickerModel, text: '' };
   S.stick = true;
@@ -1520,6 +1635,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
   const pm = S.models.find(x => x.id === S.pickerModel);
   const body = { model: S.pickerModel, message: text, search: S.searchOn, think: !!(S.thinkOn && pm?.thinking) };
   if (img) body.image_id = img.id;
+  if (docs.length) body.doc_ids = docs.map(d => d.id);
   if (S.conv) body.conversation_id = S.conv.id;
   if (editing) body.edit_of = editOf;
   let accepted = false;
@@ -1574,7 +1690,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
       // the send never made it into the queue: hand the text back so it
       // isn't lost, and drop the optimistic bubble
       if (!accepted && !editing) {
-        S.messages.pop(); S.draft = text; S.pendingImage = img;
+        S.messages.pop(); S.draft = text; S.pendingImage = img; S.pendingDocs = docs;
       }
       if (!accepted && editing) {
         // put the branch back as it was and reopen the edit, text intact
@@ -1803,9 +1919,9 @@ function toast(kind, msg) {
 const flashError = msg => toast('error', msg);
 const flashInfo = msg => toast('info', msg);
 
-function modal(kids, onClose) {
+function modal(kids, onClose, cls = '') {
   const overlay = h('div', { class: 'overlay', onclick: e => { if (e.target === overlay) close(); } },
-    h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, ...kids));
+    h('div', { class: 'modal ' + cls, role: 'dialog', 'aria-modal': 'true' }, ...kids));
   const onKey = e => { if (e.key === 'Escape') close(); };
   const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); onClose?.(); };
   document.addEventListener('keydown', onKey);

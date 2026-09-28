@@ -21,11 +21,12 @@ checks.
 
 from __future__ import annotations
 
+from . import documents
 from .db import Database
 
 _COLS = (
     "id, role, content, model_id, prompt_tokens, completion_tokens, usage_estimated, "
-    "search_json, image_upload_id, reasoning, thinking_seconds, parent_id, "
+    "search_json, image_upload_id, doc_ids_json, reasoning, thinking_seconds, parent_id, "
     "active_child_id, context_summary, created_at"
 )
 
@@ -79,13 +80,18 @@ def summary_point(path: list[dict]) -> tuple[int | None, str | None]:
     return None, None
 
 
-def history(path: list[dict]) -> list[dict]:
+def history(path: list[dict], documents: dict[str, str] | None = None) -> list[dict]:
     """What the model is sent for a path: the latest summary on it (if any)
     standing in for everything up to its boundary, then the rest verbatim.
-    A reply with no text (all thinking, nothing answered) is left out."""
+    A reply with no text (all thinking, nothing answered) is left out.
+
+    `documents` maps upload id -> the block documents.render_for_prompt made
+    of it; a message's attached documents go back in ahead of its text, so
+    they stay in the conversation for as long as the message itself does."""
     boundary, summary = summary_point(path)
     after = path if boundary is None else path[[r["id"] for r in path].index(boundary) + 1:]
-    out = [{"role": r["role"], "content": r["content"]} for r in after if r["content"]]
+    out = [{"role": r["role"], "content": _with_documents(r, documents or {})}
+           for r in after if r["content"]]
     if summary:
         out.insert(0, {
             "role": "system",
@@ -93,3 +99,19 @@ def history(path: list[dict]) -> list[dict]:
                        "(context only -- don't refer to this note explicitly):\n" + summary,
         })
     return out
+
+
+def document_ids(path: list[dict]) -> list[str]:
+    """Every document attached along a path, in order, without repeats."""
+    seen: dict[str, None] = {}
+    for r in path:
+        for i in documents.doc_ids(r):
+            seen.setdefault(i, None)
+    return list(seen)
+
+
+def _with_documents(row: dict, blocks: dict[str, str]) -> str:
+    ids = documents.doc_ids(row)
+    if not ids:
+        return row["content"]
+    return "".join(blocks.get(i, "") for i in ids) + row["content"]

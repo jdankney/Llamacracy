@@ -47,9 +47,13 @@ class Settings(BaseSettings):
     searxng_url: str = "http://127.0.0.1:8085"
     search_max_results: int = 4
 
-    # --- vision uploads -- on-disk, never base64-in-DB -----------
+    # --- uploads -- on-disk, never base64-in-DB -----------
     upload_dir: str = str(REPO_ROOT / "data" / "uploads")
-    upload_max_mb: float = 8.0
+    upload_max_mb: float = 8.0               # images
+    document_max_mb: float = 25.0            # PDFs, office files, text
+    # Cap on the text kept from one document (~330K tokens), well past what
+    # any model here can hold at once; the rest is cut off with a warning.
+    document_max_chars: int = 1_200_000
 
     # --- compact context -- summarize older turns to free the context window -
     compact_keep_recent: int = 6          # most-recent messages always kept verbatim

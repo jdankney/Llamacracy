@@ -133,6 +133,29 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   flows through billing, swap groups and display names, that one
   substitution gets everything else right for free. Only the current turn's
   image is sent; earlier images are not resent on every follow-up.
+- **Documents are text by the time anyone sends them.** An upload is
+  extracted to Markdown immediately (headings, lists and tables kept, pages
+  and slides marked) and the text is stored beside the original. Like search,
+  that is CPU work outside the queue, so a send never waits on a parser and
+  extraction costs no credits; the model pays only, in prompt-processing
+  seconds, for what it is sent. Parsing runs in a child process that caps its
+  own memory and CPU, reads XML through defusedxml and refuses zip archives
+  that would inflate past 300 MB, under a wall-clock timeout: the web process
+  never parses an untrusted file. The parsers are pure Python (pypdf,
+  openpyxl, and hand-written readers for docx/pptx/ODF) so a plain `uv sync`
+  is the whole install. Legacy binary formats (.doc, .xls, .ppt) are refused
+  with a "save it as PDF or .docx" message rather than handed to LibreOffice.
+- **A document stays in the conversation.** It is sent ahead of its message
+  on every later turn of that branch, the way the message text is, because a
+  follow-up about page 3 needs page 3. (Images are only sent with their own
+  turn: re-encoding them every turn is expensive and the answer about them is
+  already in the history.) llama.cpp's prompt cache makes the repeat cheap
+  while the model stays loaded. Compaction folds documents away with their
+  messages; the summary is told their names. A send whose documents would not
+  fit the model's context is refused up front, in words, rather than failed
+  by llama.cpp after a queue wait. Originals are only ever served as
+  downloads (`application/octet-stream`, `nosniff`), since an uploaded .html
+  or .svg rendered inline would run as this site.
 - **The `/v1` chat endpoint is a raw passthrough, not a modelled one.** The
   request body is forwarded as it arrived, with only the `max_tokens` cap
   applied and the model's sampling defaults filled in where the client left

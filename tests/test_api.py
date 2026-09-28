@@ -32,13 +32,14 @@ def _registry() -> Registry:
 
 
 @pytest.fixture
-def client(tmp_db_path, monkeypatch, request):
+def client(tmp_db_path, tmp_path, monkeypatch, request):
     """A TestClient whose app talks to a temp SQLite file, a scripted upstream
     and an in-code registry. `pytest.mark.env(...)` on the test sets extra
     environment (e.g. a tiny credit cap) before settings are built."""
     monkeypatch.setenv("DEV_MODE", "1")
     monkeypatch.setenv("DEV_EMAIL", "dev@localhost")
     monkeypatch.setenv("ADMIN_EMAILS", "dev@localhost")
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     marker = request.node.get_closest_marker("env")
     for k, v in (marker.kwargs if marker else {}).items():
         monkeypatch.setenv(k, str(v))
@@ -487,3 +488,113 @@ def test_compaction_belongs_to_its_branch(client):
     # ...and switching back brings the original branch's summary with it
     back = client.post(f"/api/conversations/{cid}/switch", json={"message_id": msgs[2]["id"]}).json()
     assert back["conversation"]["context_summary"] == "SUMMARY"
+
+
+# --------------------------------------------------------------------------- #
+# documents
+# --------------------------------------------------------------------------- #
+def _upload_doc(client, name: str, data: bytes) -> dict:
+    r = client.post("/api/uploads", files={"file": (name, data, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_document_upload_describes_itself(client):
+    from tests import docfixtures as fx
+    d = _upload_doc(client, "paper.pdf", fx.pdf(["Hello page one", "Page two"]))
+    assert d["kind"] == "document" and d["filename"] == "paper.pdf"
+    assert (d["units"], d["unit"]) == (2, "page") and d["tokens"] > 0
+
+    text = client.get(f"/api/uploads/{d['id']}/text").json()
+    assert "[Page 1]\n\nHello page one" in text["text"]
+    # the original always downloads, never renders in the page
+    r = client.get(f"/api/uploads/{d['id']}")
+    assert r.headers["content-type"] == "application/octet-stream"
+    assert "attachment" in r.headers["content-disposition"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_every_format_uploads(client):
+    from tests import docfixtures as fx
+    for name, data in (("a.docx", fx.docx()), ("a.xlsx", fx.xlsx()), ("a.odt", fx.odt()),
+                       ("a.ods", fx.ods()), ("a.pptx", fx.pptx()), ("a.odp", fx.odp())):
+        r = client.post("/api/uploads", files={"file": (name, data, "application/octet-stream")})
+        assert r.status_code == 200, (name, r.text)
+
+
+def test_document_uploads_refuse_with_a_reason(client):
+    from tests import docfixtures as fx
+    r = client.post("/api/uploads", files={"file": ("old.doc", b"\xd0\xcf\x11\xe0junk", "application/msword")})
+    assert r.status_code == 400 and "Save it as PDF" in r.json()["detail"]
+    r = client.post("/api/uploads", files={"file": ("scan.pdf", fx.blank_pdf(4), "application/pdf")})
+    assert r.status_code == 400 and "looks like a scan" in r.json()["detail"]
+    r = client.post("/api/uploads", files={"file": ("x.gif", b"GIF89a", "image/gif")})
+    assert r.status_code == 400 and "unsupported image type" in r.json()["detail"]
+
+
+def test_documents_ride_along_with_their_message(client):
+    """Sent ahead of the message that brought them, and again on every later
+    turn of the branch: a follow-up about the document still has it."""
+    d = _upload_doc(client, "notes.md", b"The launch code is PLUM-42.")
+    ev = _chat(client, model="small", message="What's the code?", doc_ids=[d["id"]])
+    conv = ev[0]["conversation_id"]
+    first = client.fake_upstream.seen_payload["messages"][-1]["content"]
+    assert first.startswith('<document name="notes.md">\nThe launch code is PLUM-42.\n</document>')
+    assert first.endswith("What's the code?")
+
+    _chat(client, model="small", message="And again?", conversation_id=conv)
+    sent = client.fake_upstream.seen_payload["messages"]
+    assert "PLUM-42" in sent[0]["content"] and sent[-1]["content"] == "And again?"
+
+    detail = client.get(f"/api/conversations/{conv}").json()
+    user = detail["messages"][0]
+    assert user["content"] == "What's the code?"        # stored clean
+    assert [x["filename"] for x in user["documents"]] == ["notes.md"]
+    assert "doc_ids_json" not in user
+
+
+def test_editing_keeps_the_documents(client):
+    d = _upload_doc(client, "a.txt", b"alpha")
+    ev = _chat(client, model="small", message="first", doc_ids=[d["id"]])
+    conv, msg = ev[0]["conversation_id"], ev[0]["message_id"]
+    _chat(client, model="small", message="edited", conversation_id=conv, edit_of=msg)
+    assert "alpha" in client.fake_upstream.seen_payload["messages"][-1]["content"]
+
+
+def test_document_too_big_for_the_model_is_refused_up_front(client):
+    reg = client.registry
+    reg._models["small"] = replace(reg.require("small"), ctx=2048)
+    d = _upload_doc(client, "big.txt", b"lorem ipsum " * 2000)
+    r = client.post("/api/chat", json={"model": "small", "message": "sum up", "doc_ids": [d["id"]]})
+    assert r.status_code == 400 and "can hold at once" in r.json()["detail"]
+    assert _count(client.db, "messages") == 0 and _count(client.db, "jobs") == 0
+
+
+def test_unknown_or_foreign_documents_are_refused(client):
+    r = client.post("/api/chat", json={"model": "small", "message": "x", "doc_ids": ["nope"]})
+    assert r.status_code == 404
+    ids = [_upload_doc(client, f"{i}.txt", b"x")["id"] for i in range(6)]
+    r = client.post("/api/chat", json={"model": "small", "message": "x", "doc_ids": ids})
+    assert r.status_code == 400
+
+
+def test_deleting_a_conversation_removes_its_documents(client):
+    from pathlib import Path
+    d = _upload_doc(client, "a.txt", b"alpha")
+    row = client.db._conn.execute("SELECT path, text_path FROM uploads WHERE id = ?", (d["id"],)).fetchone()
+    conv = _chat(client, model="small", message="hi", doc_ids=[d["id"]])[0]["conversation_id"]
+    assert client.delete(f"/api/conversations/{conv}").status_code == 200
+    assert _count(client.db, "uploads") == 0
+    assert not Path(row["path"]).exists() and not Path(row["text_path"]).exists()
+
+
+def test_compaction_names_documents_instead_of_resending_them(client):
+    d = _upload_doc(client, "plan.txt", b"secret plan body")
+    conv = _chat(client, model="small", message="one", doc_ids=[d["id"]])[0]["conversation_id"]
+    for m in ("two", "three", "four", "five"):
+        _chat(client, model="small", message=m, conversation_id=conv)
+    r = client.post(f"/api/conversations/{conv}/compact")
+    assert r.status_code == 200, r.text
+    prompt = client.fake_upstream.seen_payload["messages"][-1]["content"]
+    assert "[attached: plan.txt] one" in prompt
+    assert "secret plan body" not in prompt

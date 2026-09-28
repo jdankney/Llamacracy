@@ -33,6 +33,11 @@ _MIGRATIONS = [
     "ALTER TABLE messages ADD COLUMN active_child_id INTEGER",
     "ALTER TABLE messages ADD COLUMN context_summary TEXT",
     "ALTER TABLE conversations ADD COLUMN active_root_id INTEGER",
+    "ALTER TABLE uploads ADD COLUMN kind TEXT NOT NULL DEFAULT 'image'",
+    "ALTER TABLE uploads ADD COLUMN filename TEXT",
+    "ALTER TABLE uploads ADD COLUMN text_path TEXT",
+    "ALTER TABLE uploads ADD COLUMN meta_json TEXT",
+    "ALTER TABLE messages ADD COLUMN doc_ids_json TEXT",
 ]
 
 # Conversations became trees (message editing). A conversation from before

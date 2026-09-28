@@ -163,7 +163,8 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 | `IDLE_TTL_MINUTES` | unload the resident model after this long idle. Default 15. |
 | `IDLE_TTL_SECONDS` | seconds-granularity idle unload; wins over `IDLE_TTL_MINUTES` when set. Short = frees VRAM fast but quick follow-ups re-pay the cold load. |
 | `SEARXNG_URL` / `SEARCH_MAX_RESULTS` | local SearXNG instance + how many snippets get prepended when a user flips the search toggle on. Not metered. |
-| `UPLOAD_DIR` / `UPLOAD_MAX_MB` | where attached images land on disk and the per-file size cap. Default `./data/uploads`, 8 MB. |
+| `UPLOAD_DIR` / `UPLOAD_MAX_MB` | where attached images and documents land on disk, and the per-image size cap. Default `./data/uploads`, 8 MB. |
+| `DOCUMENT_MAX_MB` / `DOCUMENT_MAX_CHARS` | per-document size cap, and how much extracted text one document may keep (the rest is cut, and the user is told). Default 25 MB, 1,200,000 characters. |
 | `COMPACT_KEEP_RECENT` | messages always left verbatim when a user compacts a conversation. Default 6. |
 | `COMPACT_SUMMARY_MAX_TOKENS` | cap on the length of the generated summary itself. Default 600. |
 

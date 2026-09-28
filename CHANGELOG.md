@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Documents.** Attach PDFs, Word (.docx), LibreOffice (.odt, .ods, .odp),
+  Excel (.xlsx), PowerPoint (.pptx), text, Markdown, CSV, HTML and source
+  files, up to five per message, on any model. Use the paperclip, drag them
+  onto the message box, or paste. The text is extracted once, at upload,
+  in a sandboxed child process. A document stays part of the conversation,
+  and clicking its name shows exactly the text the model reads. Before you
+  send, the context ring counts it and a note says roughly how long the model
+  will take to read it. New settings: `DOCUMENT_MAX_MB` (25) and
+  `DOCUMENT_MAX_CHARS` (1,200,000).
+
+### Upgrading
+
+- New dependencies (pypdf, openpyxl, defusedxml): run `uv sync`. The
+  database migrates itself on start.
+
 ## 0.2.0 (2026-09-23)
 
 ### Added
