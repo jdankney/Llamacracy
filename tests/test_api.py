@@ -237,6 +237,32 @@ def test_v1_clamps_max_tokens_and_fills_in_sampling(client):
     assert sent["top_p"] == 0.9              # ...the inventory fills in the rest
 
 
+def test_v1_routes_images_to_the_vision_entry(client):
+    """An image_url part anywhere in the history needs the -vision entry: the
+    text-only one has no --mmproj. A model without one refuses up front."""
+    reg = client.registry
+    reg._models["small-vision"] = replace(reg.require("small"), key="small-vision",
+                                          in_picker=False)
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    h = {"Authorization": f"Bearer {key}"}
+    image_turn = {"role": "user", "content": [
+        {"type": "text", "text": "what is this?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}
+    body = {"model": "small", "messages": [image_turn,
+                                           {"role": "assistant", "content": "a cat"},
+                                           {"role": "user", "content": "sure?"}]}
+
+    assert client.post("/v1/chat/completions", headers=h, json=body).status_code == 400
+
+    reg._models["small"] = replace(reg.require("small"), vision_key="small-vision")
+    assert client.post("/v1/chat/completions", headers=h, json=body).status_code == 200
+    assert client.fake_upstream.seen_payload["model"] == "small-vision"
+
+    client.post("/v1/chat/completions", headers=h, json={
+        "model": "small", "messages": [{"role": "user", "content": "text only"}]})
+    assert client.fake_upstream.seen_payload["model"] == "small"
+
+
 def test_v1_rejects_bad_requests(client):
     key = client.post("/api/keys", json={"label": "t"}).json()["key"]
     h = {"Authorization": f"Bearer {key}"}

@@ -790,6 +790,15 @@ async def _v1_drain(job: Job, qm: QueueManager, request: Request):
         await qm.cancel(job.id, job.user_id)
 
 
+def _has_image(messages: list) -> bool:
+    """True if any OpenAI-style message carries an image_url content part."""
+    return any(
+        isinstance(m, dict) and isinstance(m.get("content"), list)
+        and any(isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"])
+        for m in messages
+    )
+
+
 @app.post("/v1/chat/completions")
 async def v1_chat_completions(request: Request,
                               principal: Principal = Depends(get_principal_api_key),
@@ -816,6 +825,15 @@ async def v1_chat_completions(request: Request,
         raise HTTPException(400, f"unknown model: {model_id}")
     if not isinstance(body.get("messages"), list) or not body["messages"]:
         raise HTTPException(400, "messages must be a non-empty array")
+    # An image anywhere in the history routes the job to the paired -vision
+    # llama-swap entry, as /api/chat does: the text-only entry has no --mmproj
+    # and llama.cpp rejects the whole request.
+    dispatch_model_id = model_id
+    if _has_image(body["messages"]):
+        vision = reg.vision_variant(model_id)
+        if vision is None:
+            raise HTTPException(400, f"{model.display} doesn't support images yet")
+        dispatch_model_id = vision.key
 
     try:
         asked = int(body["max_tokens"]) if body.get("max_tokens") is not None else None
@@ -846,7 +864,7 @@ async def v1_chat_completions(request: Request,
         user_id=principal.user_id,
         owner_name=principal.display_name,
         owner_email=principal.email,
-        model_id=model_id,
+        model_id=dispatch_model_id,
         payload=payload,
         conversation_id=None,   # the client owns history; nothing to persist here
         raw_passthrough=True,
