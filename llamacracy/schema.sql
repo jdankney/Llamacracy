@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS messages (
     doc_ids_json      TEXT,                  -- JSON list of attached document upload ids, if any
     reasoning         TEXT,                  -- the model's thinking before this (assistant) reply, if it thought
     thinking_seconds  REAL,                  -- first thinking token -> first answer token
+    tools_json        TEXT,                  -- agent reply: {"steps": [...], "sources": [...]}
     -- Conversations are trees (editing a message forks it; see threads.py).
     -- Logical links only, no FK: a conversation's messages are deleted together.
     parent_id         INTEGER,               -- NULL for a conversation's first message(s)

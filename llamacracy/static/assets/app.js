@@ -625,9 +625,12 @@ function msgBubble(m) {
     m.reasoning ? thoughtBlock(m.reasoning, {
       seconds: m.thinking_seconds, open: !!m._thoughtOpen, onToggle: o => { m._thoughtOpen = o; },
     }) : null,
-    m.content ? mdBlock(m.content, { class: 'prose-chat body' })
-      : h('div', { class: 'body muted small' },
-        'It used all its room thinking and never got to the answer. Ask again, or turn Think off for this one.'),
+    m.tools?.steps?.length ? trailBlock(m.tools.steps, { open: !!m._trailOpen, onToggle: o => { m._trailOpen = o; } }) : null,
+    m.content ? answerBlock(m.content, m.tools?.sources, { class: 'prose-chat body' })
+      : h('div', { class: 'body muted small' }, m.tools
+        ? 'It ran out of steps or room before it could answer. Ask again, maybe more narrowly.'
+        : 'It used all its room thinking and never got to the answer. Ask again, or turn Think off for this one.'),
+    sourcesList(m.tools?.sources, m.content),
     h('div', { class: 'msg-foot' },
       h('span', { class: 'meta' }, tokenMeta(m)),
       copyBtn(m.content)));
@@ -664,7 +667,7 @@ function activeBubble() {
   const a = S.active;
   const status = a.state === 'queued' ? (a.position > 0 ? `Queued · position ${a.position}` : 'Queued')
     : a.state === 'loading_model' ? `Loading ${modelName(a.model)}${a.eta ? ` · ~${Math.round(a.eta)}s` : ''}`
-    : a.state === 'generating' ? 'Generating' : a.state;
+    : a.state === 'generating' ? (a.trail?.some(x => x.running) ? 'Working' : 'Generating') : a.state;
   return h('div', { class: 'msg msg-assistant', id: 'active-msg' },
     h('div', { class: 'head' },
       h('img', { src: '/assets/llamacracy-favicon.svg', alt: '' }),
@@ -676,8 +679,65 @@ function activeBubble() {
       live: a.thoughtSeconds == null, seconds: a.thoughtSeconds ?? thinkElapsed(), bodyId: 'think-body',
       open: !!a.thinkOpen, onToggle: o => { a.thinkOpen = o; },
     }) : null,
-    mdBlock(a.text, { id: 'active-body', class: 'prose-chat body' }, false));
+    a.trail?.length ? trailBlock(a.trail, { live: true, open: a.trailOpen !== false, onToggle: o => { a.trailOpen = o; } }) : null,
+    answerBlock(a.text, a.sources, { id: 'active-body', class: 'prose-chat body' }, false));
 }
+/* ------------------------------------------------------------ agent trail */
+// What a model did on its way to an answer: "Searching “x”" rows (and any
+// short notes it wrote between them), folded under one summary line.
+const TOOL_ICON = { web_search: 'globe' };
+function trailSummary(steps, live) {
+  const tools = steps.filter(s => s.type === 'tool');
+  const running = tools.find(s => s.running);
+  if (live && running) return running.label + '…';
+  const searches = tools.filter(s => s.name === 'web_search').length;
+  const bits = [];
+  if (searches) bits.push(`Searched the web${searches > 1 ? ` ${searches} times` : ''}`);
+  const other = tools.length - searches;
+  if (other) bits.push(plural(other, 'step'));
+  return bits.join(' · ') || 'Worked it out';
+}
+function trailBlock(steps, { live = false, open = false, onToggle } = {}) {
+  return h('details', {
+    class: 'trail' + (live ? ' is-live' : ''), open,
+    ontoggle: e => onToggle && onToggle(e.target.open),
+  },
+    h('summary', {}, live && steps.some(s => s.running) ? h('i', { class: 'pulse' }) : icon('zap', 'icon-sm'),
+      h('span', {}, trailSummary(steps, live)), icon('chevron', 'icon-sm')),
+    h('ol', { class: 'trail-steps' }, steps.map(st => st.type === 'note'
+      ? h('li', { class: 'step note' }, st.text)
+      : h('li', { class: 'step' + (st.running ? ' is-running' : st.ok === false ? ' is-bad' : '') },
+          st.running ? h('i', { class: 'pulse' }) : icon(st.ok === false ? 'alert' : (TOOL_ICON[st.name] || 'zap'), 'icon-sm'),
+          h('span', { class: 'lbl' }, st.label),
+          st.running ? null : h('span', { class: 'res' }, [st.summary, st.ms != null ? fmtMs(st.ms) : null].filter(Boolean).join(' · '))))));
+}
+const fmtMs = ms => ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)}s`;
+// "[3]" in an answer becomes a link to source 3. Plain HTML, not markdown
+// link syntax: escaped brackets (\\[3\\]) would be read as display math.
+function citeLinks(src, sources) {
+  if (!sources?.length || !src) return src;
+  const by = Object.fromEntries(sources.map(x => [x.n, x]));
+  // leave code alone: `a[1]` is an index, not a citation
+  const parts = src.split(/(```[\s\S]*?```|`[^`\n]+`)/g);
+  return parts.map((part, i) => i % 2 ? part : part.replace(/\[(\d{1,3})\](?![(:])/g, (m, n) => by[n]
+    ? `<a class="cite" href="${esc(by[n].url)}" title="${esc(by[n].title || '')}">[${n}]</a>` : m)).join('');
+}
+function answerBlock(text, sources, attrs, finalize = true) {
+  const el = h('div', { class: 'prose-chat', ...attrs });
+  mdInto(el, citeLinks(text, sources), finalize);
+  return el;
+}
+function sourcesList(sources, text) {
+  if (!sources?.length) return null;
+  const cited = new Set([...(text || '').matchAll(/\[(\d{1,3})\]/g)].map(x => +x[1]));
+  return h('details', { class: 'sources' },
+    h('summary', {}, icon('globe', 'icon-sm'),
+      `${plural(sources.length, 'source')}` + (cited.size ? ` · ${cited.size} cited` : ''), icon('chevron', 'icon-sm')),
+    h('ol', {}, sources.map(r => h('li', { value: r.n, class: cited.has(r.n) ? 'is-cited' : '' },
+      h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.title || r.url),
+      h('span', { class: 'host' }, ' · ' + hostOf(r.url))))));
+}
+const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
 const thinkElapsed = () => S.active?.thinkStart ? (Date.now() - S.active.thinkStart) / 1000 : 0;
 let _thinkTick = null;
 function startThinkTicker() {
@@ -726,6 +786,8 @@ function contextInfo() {
       // completion_tokens counts the reply's thinking, which is never sent
       // back to the model: take our estimate of it off (and say it's approx)
       if (msg.reasoning) { base = Math.max(msg.prompt_tokens, base - estTok(msg.reasoning)); exact = false; }
+      // an agent reply's completion count covers every step; only its answer is kept
+      if (msg.tools) { base = msg.prompt_tokens + estTok(msg.content) + 4; exact = false; }
       from = i + 1;
       foundExact = true;
       break;
@@ -979,10 +1041,12 @@ function composer() {
               },
             }, S.models.filter(md => md.in_picker).map(md => h('option',
               { value: md.id, selected: md.id === S.pickerModel },
-              `${md.display}${md.tier ? ` · ${tierLabel(md.tier)}` : ''}${md.vision ? ' · vision' : ''}${md.thinking ? ' · thinks' : ''}`))),
+              `${md.display}${md.tier ? ` · ${tierLabel(md.tier)}` : ''}${md.vision ? ' · vision' : ''}${md.thinking ? ' · thinks' : ''}${md.tools ? ' · searches' : ''}`))),
             icon('chevron', 'icon-sm')),
           h('button', {
-            type: 'button', title: 'Search the web before answering (one query, injected as context)',
+            type: 'button', title: m?.tools
+              ? 'Let the model search the web: it picks what to look up, can search again, and cites its sources'
+              : 'Search the web before answering (one search, added to your message)',
             class: 'btn btn-sm' + (S.searchOn ? ' is-on' : ''), 'aria-pressed': S.searchOn ? 'true' : 'false',
             onclick: () => { S.searchOn = !S.searchOn; render(); },
           }, icon('globe', 'icon-sm'), h('span', { class: 'tool-label' }, 'Search')),
@@ -1335,7 +1399,7 @@ function helpView() {
     // six columns would otherwise scroll off the right edge unnoticed
     h('div', { class: 'table-wrap model-wrap' }, h('table', { class: 'model-table' },
       h('thead', {}, h('tr', {},
-        h('th', {}, 'Model'), h('th', {}, 'Best for'), h('th', {}, 'Photos'), h('th', {}, 'Thinks'),
+        h('th', {}, 'Model'), h('th', {}, 'Best for'), h('th', {}, 'Photos'), h('th', {}, 'Thinks'), h('th', {}, 'Searches'),
         h('th', {}, 'Holds about'), h('th', {}, 'Types at'), h('th', {}, 'Wake-up'))),
       h('tbody', {}, ms.map(m => h('tr', {},
         h('td', { 'data-label': 'Model' }, h('span', { class: 'pick' }, m.display),
@@ -1347,6 +1411,9 @@ function helpView() {
         h('td', { 'data-label': 'Thinks' }, m.thinking
           ? h('span', { class: 'yes' }, icon('bulb', 'icon-sm'), 'Yes')
           : h('span', { class: 'no' }, '—')),
+        h('td', { 'data-label': 'Searches' }, m.tools
+          ? h('span', { class: 'yes', title: 'Decides what to look up itself' }, icon('globe', 'icon-sm'), 'Itself')
+          : h('span', { class: 'no', title: 'Gets one search made from your message' }, 'Once')),
         h('td', { class: 'num', 'data-label': 'Holds about' }, `~${pagesFor(m.ctx)} pages`),
         h('td', { class: 'num', 'data-label': 'Types at' }, `~${wordsSec(m.tok_s)} words/sec`),
         h('td', { class: 'num muted', 'data-label': 'Wake-up' }, waitFor(m.cold_load_s)))))),
@@ -1405,7 +1472,7 @@ function helpView() {
     h('h2', {}, 'The buttons around the message box'),
     h('div', { class: 'table-wrap' }, h('table', {},
       h('tbody', {},
-        tool('globe', 'Search', 'Searches the web first and hands the results to the model before it answers. Off unless you turn it on. The search itself is free; the model just has a little more to read.'),
+        tool('globe', 'Search', 'Lets the model use the web. Models marked "searches" decide for themselves what to look up, can look again if the first try misses, and number their sources so you can check them. The others get one search made from your message. Off unless you turn it on; the model pays, in credits, for the time it spends reading.'),
         tool('bulb', 'Think', 'Lets the model work the problem through before answering. Slower and uses more credits, so save it for tricky questions. Greyed out on models that can\'t.'),
         tool('clip', 'Attach', 'Adds a document (any model) or a photo (models that can see). Dragging a file onto the message box, or pasting a screenshot, does the same.'),
         tool('compress', 'Compact', 'In a very long chat, folds the older part into a short summary so there\'s room to keep going. Nothing is deleted.'),
@@ -1537,6 +1604,7 @@ function applyConv(d) {
   d.messages.forEach(m => {
     if (m.search_json) { try { m.search = JSON.parse(m.search_json); } catch { /* ignore */ } }
     if (m.image_upload_id) m.image = { url: '/api/uploads/' + m.image_upload_id };
+    if (m.tools_json) { try { m.tools = JSON.parse(m.tools_json); } catch { /* ignore */ } }
     if (open.has(m.id)) m._thoughtOpen = true;
   });
   if (lastOpen && d.messages.length) d.messages.at(-1)._thoughtOpen = true;
@@ -1664,10 +1732,31 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
       }
       else if (ev.type === 'reasoning') {
         const first = !S.active.reasoning;
+        const resumed = !first && S.active.thoughtSeconds != null;
         S.active.state = 'generating';
         S.active.reasoning = (S.active.reasoning || '') + ev.text;
         if (first) { S.active.thinkStart = Date.now(); render(); startThinkTicker(); }
+        else if (resumed) {
+          // thinking again after a tool call: the timer carries on from where it stopped
+          S.active.thinkStart = Date.now() - S.active.thoughtSeconds * 1000;
+          S.active.thoughtSeconds = null; render(); startThinkTicker();
+        }
         else { const b = document.getElementById('think-body'); if (b) { mdInto(b, S.active.reasoning, false); scrollThread(); } }
+      }
+      else if (ev.type === 'tool_start') {
+        const a = S.active;
+        a.trail = a.trail || [];
+        // whatever it wrote before deciding to call a tool was a preamble
+        if (a.text.trim()) a.trail.push({ type: 'note', text: a.text.trim() });
+        a.text = '';
+        a.trail.push({ type: 'tool', id: ev.id, name: ev.name, label: ev.label, running: true });
+        a.state = 'generating'; render(); scrollThread();
+      }
+      else if (ev.type === 'tool_end') {
+        const a = S.active, st = a.trail?.find(x => x.id === ev.id && x.running);
+        if (st) Object.assign(st, { running: false, ok: ev.ok, summary: ev.summary, ms: ev.ms });
+        if (ev.sources?.length) a.sources = [...(a.sources || []), ...ev.sources];
+        render(); scrollThread();
       }
       else if (ev.type === 'thought') { S.active.thoughtSeconds = ev.seconds; render(); }
       else if (ev.type === 'done') {
@@ -1677,6 +1766,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
           // picker's selection -- matches what's persisted server-side.
           role: 'assistant', content: S.active.text, model_id: ev.model || S.active.model,
           reasoning: S.active.reasoning || null, thinking_seconds: ev.thinking_seconds,
+          tools: ev.tools || null,
           prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens,
           usage_estimated: ev.usage_estimated, created_at: Date.now() / 1000,
         });

@@ -25,6 +25,7 @@ class ModelInfo:
     blurb: str
     reasoning: str | None
     thinking: bool = False    # can reason on request; off unless the user asks
+    tools: bool = False       # dependable at tool calls: gets the agent loop
     sampling: dict = field(default_factory=dict)
     ctx: int = 8192
     seed_cold_load_s: float = 10.0
@@ -86,6 +87,7 @@ def get_registry() -> Registry:
             blurb=m.get("blurb", ""),
             reasoning=m.get("reasoning"),
             thinking=bool(m.get("thinking", False)),
+            tools=bool(m.get("tools", False)),
             sampling=m.get("sampling", {}),
             ctx=m.get("ctx", 8192),
             seed_cold_load_s=m.get("seed_cold_load_s", 10.0),

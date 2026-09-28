@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Web search via SearXNG -- injected into the prompt on request, never
-model-driven. Local 4-35B models are unreliable at deciding when to call a
-tool, multi-round tool loops thrash a 16-128K context and hold the FIFO queue
-open, and billing gets murky across N inferences. Instead: the user toggles
-Search on, we run exactly one query, prepend the top few snippets to their
-message before it's sent, and the model answers in a single normal inference.
-Credits are unaffected by this module -- a bigger prompt just takes a little
-longer, which is already priced by the second.
+"""Web search via SearXNG, two ways.
+
+For a model marked `tools: true` the search is the model's own: it calls
+web_search (tools.py) as often as it needs inside one queued turn. Every
+other model gets the original behaviour: the user toggles Search on, we run
+exactly one query built from their message, prepend the top snippets, and the
+model answers in a single normal inference. Smaller models are unreliable at
+deciding when and how to call a tool, so they keep the injected search.
+Neither costs credits by itself; the model pays, by the second, for reading
+the results.
 """
 
 from __future__ import annotations
@@ -122,10 +124,18 @@ class SearchClient:
         await self._client.aclose()
 
     async def search(self, message: str, count: int) -> SearchOutcome:
+        """One search for a chat message: its conversational wrapping is
+        stripped first (see extract_query)."""
         raw = (message or "").strip()
         if not raw:
             return SearchOutcome(raw, ok=False, error="empty query")
-        query = extract_query(raw)
+        return await self.query(extract_query(raw), count)
+
+    async def query(self, query: str, count: int) -> SearchOutcome:
+        """A query exactly as given: what a model's web_search call uses."""
+        query = (query or "").strip()[:QUERY_CHARS]
+        if not query:
+            return SearchOutcome(query, ok=False, error="empty query")
         try:
             r = await self._client.get(f"{self.base_url}/search",
                                        params={"q": query, "format": "json"})

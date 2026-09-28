@@ -23,6 +23,8 @@ Serving choices baked in:
     reason. No llama-swap filter is emitted for it: the app sends
     `chat_template_kwargs.enable_thinking` on every request, off unless the
     user flips the Think toggle (a setParams filter would override that)
+  - `tools: true` marks a model that is dependable at tool calls; the app
+    lets it drive its own web searches (and, later, reading) in a loop
   - kind=fim models are `unlisted` in llama-swap and hidden from the picker
   - a model's `vision` block adds a second, unlisted `<key>-vision` entry:
     same weights + --mmproj, dispatched to only when a message carries an image
@@ -147,6 +149,9 @@ def registry_entry(m: dict, rec: dict, path: str, *, display: str, blurb: str,
         # can reason on request (the Think toggle). `nothink` is the older
         # name for the same fact: "reasons, but keep it off by default".
         "thinking": bool(m.get("thinking", m.get("nothink", False))) and not is_fim,
+        # reliable at OpenAI-style tool calls: gets the agent loop (the model
+        # picks its own searches) instead of one injected search
+        "tools": bool(m.get("tools", False)) and not is_fim,
         "sampling": m.get("sampling", {}),
         "ctx": rec["ctx"],
         "seed_cold_load_s": rec["cold_load_s"],

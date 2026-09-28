@@ -53,8 +53,11 @@ payment processing.
 - **Edit any message you sent**: the conversation forks instead of being
   rewritten. The original and its reply are kept, and `‹ 1 / 2 ›` arrows flip
   between versions, each with its own follow-ups.
-- **Web search on demand**: flip a toggle and that one message gets the top
-  SearXNG snippets prepended, with sources cited under it. Never a tool loop.
+- **Web search that the model drives**: with Search on, a model marked
+  `tools: true` decides what to look up, searches again when the first try
+  misses, and cites numbered sources you can click; a live trail shows each
+  step. The whole turn is one queued job. Other models get one SearXNG
+  search added to the message.
 - **Documents**: attach (or drag in) PDFs, Word, LibreOffice, Excel and
   PowerPoint files, text, CSV, HTML and code, on any model. The text is
   extracted once at upload, in a sandboxed child process, and stays part of

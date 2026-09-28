@@ -30,6 +30,7 @@ from .metering import Meter
 from .queue import Job, JobState, QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
 from .search import get_search
+from .tools import Toolbox, web_search_tool
 from .uploads import UploadRejected
 from .uploads import save as save_upload
 from .uploads import validate as validate_upload
@@ -257,6 +258,7 @@ async def list_models(principal: Principal = Depends(get_principal),
             "ctx": m.ctx,
             "reasoning": m.reasoning,
             "thinking": m.thinking,
+            "tools": m.tools,
             "tok_s": m.seed_tg_tok_s,
             "pp_tok_s": m.seed_pp_tok_s,     # how fast it reads: attached documents
             "cold_load_s": qm.load_estimate(m.key),
@@ -712,11 +714,20 @@ async def chat(req: ChatRequest,
             raise HTTPException(400, f"{model.display} doesn't support images yet")
         dispatch_model_id = vision.key
 
-    # Search runs here, outside the FIFO queue -- it's a local HTTP call, not
-    # GPU time. One query, injected into this turn's prompt only; the user's
-    # own message is persisted clean (search_json carries the citations).
+    # Search, two ways. A model that is good with tools gets the agent loop:
+    # it writes its own queries, as many as it needs, inside its queued turn.
+    # Any other model gets one search, run here outside the FIFO queue (a
+    # local HTTP call, not GPU time) and injected into this turn's prompt
+    # only; the user's own message is persisted clean (search_json carries
+    # the citations).
     search_outcome = None
-    if req.search:
+    agent = None
+    if req.search and model.tools:
+        agent = Toolbox([web_search_tool(get_search(), settings.agent_search_results)],
+                        max_steps=settings.agent_max_steps,
+                        deadline_s=settings.agent_max_seconds,
+                        result_chars=settings.agent_tool_result_chars)
+    elif req.search:
         search_outcome = await get_search().search(req.message, settings.search_max_results)
 
     prompt_content = req.message
@@ -737,6 +748,14 @@ async def chat(req: ChatRequest,
     else:
         user_content = prompt_content
     messages = history + [{"role": "user", "content": user_content}]
+    if agent is not None:
+        # one system message, first: several chat templates reject a second
+        # one, and a compacted history already starts with its summary
+        brief = agent.system_prompt()
+        if messages[0]["role"] == "system":
+            messages[0] = {"role": "system", "content": brief + "\n\n" + messages[0]["content"]}
+        else:
+            messages.insert(0, {"role": "system", "content": brief})
 
     # Thinking and the answer share one output budget, so a thinking turn gets
     # the larger THINKING_MAX_TOKENS instead of the everyday cap.
@@ -765,6 +784,7 @@ async def chat(req: ChatRequest,
         model_id=dispatch_model_id,
         payload=payload,
         conversation_id=None,   # attached below, once the row is guaranteed to exist
+        agent=agent,
     )
     # Admission first: a 429 must not leave a half-written conversation or a
     # user message that never got a reply.

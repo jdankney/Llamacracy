@@ -162,7 +162,9 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 | `MARKUP` | multiplier on `cost_usd`. Default 1.0 -- raise to 2-3x for non-trivial invoices. |
 | `IDLE_TTL_MINUTES` | unload the resident model after this long idle. Default 15. |
 | `IDLE_TTL_SECONDS` | seconds-granularity idle unload; wins over `IDLE_TTL_MINUTES` when set. Short = frees VRAM fast but quick follow-ups re-pay the cold load. |
-| `SEARXNG_URL` / `SEARCH_MAX_RESULTS` | local SearXNG instance + how many snippets get prepended when a user flips the search toggle on. Not metered. |
+| `SEARXNG_URL` / `SEARCH_MAX_RESULTS` | local SearXNG instance + how many snippets get prepended when a user flips the search toggle on for a model without `tools`. Not metered. |
+| `AGENT_MAX_STEPS` / `AGENT_MAX_SECONDS` | bounds on an agent turn (a `tools: true` model with Search on): rounds of tool calls, and wall-clock seconds, before it must answer. Default 6 and 240. The turn holds the GPU slot throughout and is billed for it. |
+| `AGENT_SEARCH_RESULTS` / `AGENT_TOOL_RESULT_CHARS` | results per `web_search` call, and the cap on one tool result's text. Default 5 and 12,000. |
 | `UPLOAD_DIR` / `UPLOAD_MAX_MB` | where attached images and documents land on disk, and the per-image size cap. Default `./data/uploads`, 8 MB. |
 | `DOCUMENT_MAX_MB` / `DOCUMENT_MAX_CHARS` | per-document size cap, and how much extracted text one document may keep (the rest is cut, and the user is told). Default 25 MB, 1,200,000 characters. |
 | `COMPACT_KEEP_RECENT` | messages always left verbatim when a user compacts a conversation. Default 6. |

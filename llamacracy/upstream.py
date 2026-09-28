@@ -25,6 +25,8 @@ class StreamChunk:
     usage: dict | None = None
     timings: dict | None = None
     finish_reason: str | None = None
+    # OpenAI streams a tool call in pieces: [{index, id?, function: {name?, arguments?}}]
+    tool_call_deltas: list | None = None
 
 
 class Upstream:
@@ -143,6 +145,7 @@ def _parse_chunk(obj: dict) -> StreamChunk:
         usage=obj.get("usage"),
         timings=obj.get("timings"),
         finish_reason=(choices[0].get("finish_reason") if choices else None),
+        tool_call_deltas=delta.get("tool_calls") or None,
     )
 
 

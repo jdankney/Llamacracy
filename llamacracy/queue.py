@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import json
 import logging
 import time
 import uuid
@@ -28,9 +29,12 @@ from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .power import GpuPowerSampler
 from .registry import Registry, get_registry
+from .tools import Toolbox
 from .upstream import Upstream, UpstreamError, UsageSniffer, get_upstream
 
 log = logging.getLogger("llamacracy.queue")
+
+ANSWER_ROOM_TOKENS = 2048   # context an agent keeps free for its final answer
 
 
 class JobState(enum.StrEnum):
@@ -59,6 +63,9 @@ class Job:
     # of decoding them into token events. Billing still comes off the same
     # clocks; only the shape of what crosses the wire differs.
     raw_passthrough: bool = False
+    # Agent turn: the model may call these tools, and the job keeps the slot
+    # while it does (see _pump_agent). None = one plain inference.
+    agent: Toolbox | None = None
     session_id: int | None = None       # session active at enqueue (set by metering)
     lane: str = "exclusive"
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -93,6 +100,11 @@ class Job:
     reasoning_parts: list[str] = field(default_factory=list)
     think_started_at: float | None = None
     think_ended_at: float | None = None
+    think_accum_s: float = 0.0          # earlier thinking spans (an agent thinks between steps)
+    # agent turns: what the model did on the way to its answer, shown as a
+    # trail above it -- [{"type": "tool", ...} | {"type": "note", "text": ...}]
+    trail: list[dict] = field(default_factory=list)
+    context_tokens: int | None = None   # the conversation's size when the turn began
     _chunks: asyncio.Queue = field(default_factory=asyncio.Queue)
     _cancel: asyncio.Event = field(default_factory=asyncio.Event)
     _done: asyncio.Event = field(default_factory=asyncio.Event)
@@ -110,7 +122,13 @@ class Job:
         if self.think_started_at is None:
             return None
         end = self.think_ended_at or self.finished_at or now()
-        return round(max(0.0, end - self.think_started_at), 1)
+        return round(max(0.0, self.think_accum_s + end - self.think_started_at), 1)
+
+    def tools_record(self) -> dict | None:
+        """The agent's trail and numbered sources, as stored on the reply."""
+        if self.agent is None:
+            return None
+        return {"steps": self.trail, "sources": self.agent.sources}
 
     def public(self, position: int) -> dict:
         return {
@@ -314,6 +332,23 @@ class QueueManager:
         sampler.start()
         await self._broadcast()
 
+    async def _on_reasoning(self, job: Job, text: str) -> None:
+        if job.think_started_at is None:
+            job.think_started_at = now()
+        elif job.think_ended_at is not None:
+            # thinking again after a tool call: the clock picks up where it stopped
+            job.think_accum_s += job.think_ended_at - job.think_started_at
+            job.think_started_at, job.think_ended_at = now(), None
+        job.reasoning_parts.append(text)
+        await self._emit(job, {"type": "reasoning", "text": text})
+
+    async def _end_thinking(self, job: Job) -> None:
+        """Output that isn't thinking has started: the UI can swap
+        "Thinking..." for "Thought for Ns" right now."""
+        if job.think_started_at is not None and job.think_ended_at is None:
+            job.think_ended_at = now()
+            await self._emit(job, {"type": "thought", "seconds": job.thinking_seconds})
+
     async def _pump_chat(self, job: Job, t_start: float,
                          sampler: GpuPowerSampler) -> None:
         """The web UI's path: decode upstream chunks into token events."""
@@ -323,17 +358,9 @@ class QueueManager:
             if job.gen_started_at is None and (chunk.content_delta or chunk.reasoning_delta):
                 await self._mark_generating(job, t_start, sampler)
             if chunk.reasoning_delta:
-                if job.think_started_at is None:
-                    job.think_started_at = now()
-                job.reasoning_parts.append(chunk.reasoning_delta)
-                await self._emit(job, {"type": "reasoning", "text": chunk.reasoning_delta})
+                await self._on_reasoning(job, chunk.reasoning_delta)
             if chunk.content_delta:
-                if job.think_started_at is not None and job.think_ended_at is None:
-                    # the answer has started: thinking is over, and the UI can
-                    # swap "Thinking..." for "Thought for Ns" right now
-                    job.think_ended_at = now()
-                    await self._emit(job, {"type": "thought",
-                                           "seconds": job.thinking_seconds})
+                await self._end_thinking(job)
                 job.content_parts.append(chunk.content_delta)
                 await self._emit(job, {"type": "token", "text": chunk.content_delta})
             if chunk.usage:
@@ -341,6 +368,113 @@ class QueueManager:
                 job.completion_tokens = chunk.usage.get("completion_tokens")
             if chunk.timings:
                 job.last_timings = chunk.timings
+
+    async def _pump_agent(self, job: Job, t_start: float,
+                          sampler: GpuPowerSampler) -> None:
+        """An agent turn: infer, run whatever tools the model asked for,
+        append their results, infer again -- until it answers without asking
+        for a tool, or a limit says answer now.
+
+        It is ONE job holding the exclusive slot for the whole turn. Handing
+        the slot back between steps would let another user's prompt evict
+        llama.cpp's cache (-np 1), and every step would then re-read the whole
+        conversation from scratch. Time spent waiting on a tool is therefore
+        billed like the rest of the turn: nobody else could use the GPU then.
+
+        Limits: `max_steps` rounds of tool calls, a wall-clock deadline, and
+        the model's context window. Hitting any of them sends one last request
+        with tool_choice "none", so the turn always ends in an answer. The
+        output budget (max_tokens) is shared by every step, which also keeps
+        the overshoot past a credit limit bounded.
+        """
+        box = job.agent
+        assert box is not None
+        messages = list(job.payload["messages"])
+        budget = int(job.payload.get("max_tokens") or 2048)
+        ctx = self.reg.require(job.model_id).ctx
+        t0 = now()
+        out_tokens = prompt_total = 0
+        for step in range(box.max_steps + 1):
+            # stop calling tools while there is still room to answer: an
+            # answer's worth, not the whole (thinking-sized) output budget
+            est_prompt = int(len(json.dumps(messages)) / 3.6)
+            room = min(budget - out_tokens, ANSWER_ROOM_TOKENS)
+            final = (step == box.max_steps or now() - t0 > box.deadline_s
+                     or est_prompt + room > ctx)
+            payload = {**job.payload, "messages": messages, "model": job.model_id,
+                       "tools": box.schemas(),
+                       "max_tokens": max(256, budget - out_tokens)}
+            if final:
+                payload["tool_choice"] = "none"
+            calls: dict[int, dict] = {}
+            text: list[str] = []
+            reasoning: list[str] = []
+            async for chunk in self.up.stream_chat(payload):
+                if job._cancel.is_set():
+                    break
+                if job.gen_started_at is None and (chunk.content_delta or chunk.reasoning_delta
+                                                   or chunk.tool_call_deltas):
+                    await self._mark_generating(job, t_start, sampler)
+                if chunk.reasoning_delta:
+                    reasoning.append(chunk.reasoning_delta)
+                    await self._on_reasoning(job, chunk.reasoning_delta)
+                if chunk.content_delta:
+                    await self._end_thinking(job)
+                    text.append(chunk.content_delta)
+                    job.content_parts.append(chunk.content_delta)
+                    await self._emit(job, {"type": "token", "text": chunk.content_delta})
+                for d in chunk.tool_call_deltas or []:
+                    await self._end_thinking(job)
+                    c = calls.setdefault(d.get("index", len(calls)), {"id": "", "name": "", "arguments": ""})
+                    fn = d.get("function") or {}
+                    c["id"] = d.get("id") or c["id"]
+                    c["name"] += fn.get("name") or ""
+                    c["arguments"] += fn.get("arguments") or ""
+                if chunk.usage:
+                    if step == 0:
+                        job.context_tokens = chunk.usage.get("prompt_tokens")
+                    prompt_total += chunk.usage.get("prompt_tokens") or 0
+                    out_tokens += chunk.usage.get("completion_tokens") or 0
+                    job.prompt_tokens, job.completion_tokens = prompt_total, out_tokens
+                if chunk.timings and job.last_timings is None:
+                    # only the first step's timings: the cold-load split in
+                    # _run subtracts that step's prompt processing
+                    job.last_timings = chunk.timings
+            if job._cancel.is_set() or not calls or final:
+                return
+
+            # a tool step: whatever it said first was a preamble, not the answer
+            said = "".join(text).strip()
+            if said:
+                job.trail.append({"type": "note", "text": said})
+            job.content_parts.clear()
+            ordered = [calls[i] for i in sorted(calls)]
+            for i, c in enumerate(ordered):
+                c["id"] = c["id"] or f"call_{step}_{i}"
+            turn = {"role": "assistant", "content": "".join(text) or None,
+                    "tool_calls": [{"id": c["id"], "type": "function",
+                                    "function": {"name": c["name"], "arguments": c["arguments"]}}
+                                   for c in ordered]}
+            if reasoning:
+                # templates that keep a turn's reasoning across its tool calls read this
+                turn["reasoning_content"] = "".join(reasoning)
+            messages.append(turn)
+            for c in ordered:
+                if job._cancel.is_set():
+                    return
+                args = _loose_json(c["arguments"])
+                label = box.label(c["name"], args)
+                await self._emit(job, {"type": "tool_start", "id": c["id"], "name": c["name"],
+                                       "label": label, "said": said})
+                said = ""
+                t_tool = now()
+                res = await box.run(c["name"], c["arguments"])
+                step_rec = {"type": "tool", "id": c["id"], "name": c["name"], "label": label,
+                            "args": args, "ok": res.ok, "summary": res.summary,
+                            "ms": round((now() - t_tool) * 1000)}
+                job.trail.append(step_rec)
+                await self._emit(job, {**step_rec, "type": "tool_end", "sources": res.sources})
+                messages.append({"role": "tool", "tool_call_id": c["id"], "content": res.text})
 
     async def _pump_raw(self, job: Job, t_start: float,
                         sampler: GpuPowerSampler) -> None:
@@ -420,7 +554,8 @@ class QueueManager:
             await self._broadcast()
 
         sampler = GpuPowerSampler()
-        pump = self._pump_raw if job.raw_passthrough else self._pump_chat
+        pump = (self._pump_raw if job.raw_passthrough
+                else self._pump_agent if job.agent is not None else self._pump_chat)
         await pump(job, t_start, sampler)
 
         await sampler.stop()
@@ -463,6 +598,7 @@ class QueueManager:
             "load_seconds": round(job.load_seconds, 2),
             "gen_seconds": round(job.gen_seconds, 2),
             "thinking_seconds": job.thinking_seconds,
+            "tools": job.tools_record(),
         })
 
     # -- finalisation ---------------------------------------------------------
@@ -511,14 +647,20 @@ class QueueManager:
         )
 
     async def _persist_assistant_message(self, job: Job) -> None:
+        tools = job.tools_record()
         await self.db.execute(
             "INSERT INTO messages (conversation_id, role, content, model_id, "
             "  prompt_tokens, completion_tokens, usage_estimated, reasoning, "
-            "  thinking_seconds, parent_id, created_at) "
-            "VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (job.conversation_id, job.content, job.model_id, job.prompt_tokens,
+            "  thinking_seconds, tools_json, parent_id, created_at) "
+            "VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            # an agent reply's prompt_tokens is the conversation it started
+            # from, not the sum over its steps: that is what the UI's context
+            # ring needs (the jobs row keeps the full count for billing)
+            (job.conversation_id, job.content, job.model_id,
+             job.context_tokens if tools else job.prompt_tokens,
              job.completion_tokens, int(job.usage_estimated), job.reasoning or None,
-             job.thinking_seconds, job.parent_message_id, now()),
+             job.thinking_seconds, json.dumps(tools) if tools else None,
+             job.parent_message_id, now()),
         )
         # the reply becomes what's shown under the message it answers, even if
         # the user flipped to another branch while it was being written
@@ -555,6 +697,15 @@ class QueueManager:
             if m != self._loaded_model:
                 self._loaded_model = m
                 await self._broadcast()
+
+
+def _loose_json(raw: str) -> dict:
+    """Tool arguments for display; the tool itself re-parses strictly."""
+    try:
+        v = json.loads(raw or "{}")
+    except ValueError:
+        return {"raw": (raw or "")[:200]}
+    return v if isinstance(v, dict) else {"value": v}
 
 
 _qm: QueueManager | None = None

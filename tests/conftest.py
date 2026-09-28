@@ -38,6 +38,11 @@ class FakeUpstream:
         self.tool_calls: list[dict] | None = None
         self.thinking: dict[str, list[str]] = {}
         self.seen_payload: dict | None = None
+        # agent turns: one entry per request that carries `tools`, e.g.
+        #   {"content": ["Let me look."], "tool_calls": [("web_search", {"query": "x"})]}
+        #   {"content": ["The answer [1]."]}
+        self.agent_steps: list[dict] = []
+        self.payloads: list[dict] = []          # every streamed request, in order
 
     async def health(self):
         return True
@@ -60,9 +65,30 @@ class FakeUpstream:
         from llamacracy.upstream import StreamChunk
 
         self.seen_payload = dict(payload)
+        self.payloads.append(json.loads(json.dumps(payload)))
         model = payload.get("model")
         deltas = self.script.get(model, ["hello", " world"])
         self.loaded = model
+        if payload.get("tools") and self.agent_steps:
+            step = self.agent_steps.pop(0)
+            if payload.get("tool_choice") == "none":
+                step = {k: v for k, v in step.items() if k != "tool_calls"}
+            for r in step.get("reasoning", []):
+                await asyncio.sleep(self.delay)
+                yield StreamChunk(raw={}, reasoning_delta=r)
+            for d in step.get("content", []):
+                await asyncio.sleep(self.delay)
+                yield StreamChunk(raw={}, content_delta=d)
+            for i, (name, args) in enumerate(step.get("tool_calls", [])):
+                raw = json.dumps(args) if isinstance(args, dict) else args
+                # the way llama.cpp streams one: name first, arguments in pieces
+                yield StreamChunk(raw={}, tool_call_deltas=[
+                    {"index": i, "id": f"c{i}", "function": {"name": name, "arguments": ""}}])
+                for j in range(0, len(raw), 7):
+                    yield StreamChunk(raw={}, tool_call_deltas=[
+                        {"index": i, "function": {"arguments": raw[j:j + 7]}}])
+            yield StreamChunk(raw={}, usage=dict(self.usage), timings=dict(self.timings))
+            return
         # a model asked to think streams its reasoning before the answer
         ctk = payload.get("chat_template_kwargs") or {}
         if ctk.get("enable_thinking"):

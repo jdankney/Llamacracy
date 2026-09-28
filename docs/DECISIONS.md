@@ -170,10 +170,32 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   Billing never needs to understand the payload: a sniffer reads `usage` and
   `timings` off the same bytes without touching them, and falls back to the
   usual estimate if it finds neither.
-- **Tool loops are acceptable over `/v1` but not in the web UI**, because the
-  IDE owns the loop. Each round trip arrives as its own job and queues
-  normally, so an agent turn is N ordinary FIFO entries rather than one job
-  holding the GPU across N inferences.
+- **Over `/v1` the client owns the tool loop.** Each round trip from an IDE
+  arrives as its own job and queues normally: Llamacracy runs no tools on an
+  API caller's behalf.
+- **In the web UI, an agent turn is one job that keeps the slot.** This
+  reverses the first design, which refused tool loops in the web UI because
+  they "hold the queue" and make billing murky. Both costs turned out smaller
+  than the alternative. Released between steps, the slot would let another
+  user's prompt evict llama.cpp's single cache slot (`-np 1`), and every
+  step would then re-read the whole conversation: on a MoE model at ~250
+  prompt tokens/s that is minutes of GPU per turn, paid by everyone waiting.
+  Held, only the new tool result is read each step. Billing stays simple:
+  the turn is one job and is charged for the time it held the slot,
+  including the seconds spent waiting on a search, because nobody else
+  could use the GPU then either. Limits keep it bounded: `AGENT_MAX_STEPS`
+  rounds of tool calls (6), `AGENT_MAX_SECONDS` of wall clock (240), a cap
+  on each tool result, one output budget shared by every step (so the
+  overshoot past a credit limit stays bounded), and a context check that
+  stops tool use while there is still room to answer. Hitting any limit
+  sends one last request with `tool_choice: "none"`, so a turn always ends
+  in an answer. Only that answer is kept as history: the trail of steps and
+  the numbered sources are stored with the reply for display, the way
+  reasoning is, not resent on later turns.
+- **Tools are read-only outside the conversation.** A tool result is text
+  from the web or a file, returned to the model as a `tool` message and
+  framed in the system prompt as facts to weigh, not instructions; no tool
+  can reach anything that would make an injected instruction dangerous.
 - **On `/v1` the client's sampling wins and the output cap is larger.** In
   the web UI nobody picks a temperature, so the inventory's values are
   final. An editor sets them on purpose (a low temperature for its apply
@@ -221,10 +243,14 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   conversations are migrated to single-branch trees at startup. Only your
   own messages can be edited; there is no "regenerate" for replies (yet),
   though the tree would take one without changes.
-- **Search is a toggle, never model-driven.** Small local models are
-  unreliable at deciding when to call a tool, tool loops thrash the context
-  and hold the queue, and billing across N inferences gets murky. One query,
-  top snippets prepended to that turn only, one normal inference. Not metered.
+- **Search is a toggle; with it on, a capable model drives it.** A model
+  marked `tools: true` in the inventory runs the agent loop (see Inference
+  layer): it writes its own queries, searches again when the first try
+  misses, and cites numbered sources. Every other model keeps the original
+  behaviour, because small models are unreliable at deciding when and how to
+  call a tool: one query built from the message, top snippets prepended to
+  that turn only, one normal inference. The search call itself is not
+  metered either way.
 - **Installable PWA without a service worker.** Registering one needs HTTPS
   or literally `localhost`; iOS "Add to Home Screen" predates that
   requirement and works fine over plain HTTP, and there is no meaningful

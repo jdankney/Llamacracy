@@ -52,6 +52,7 @@
       "blurb": "Can think a problem through first when you turn on Think.",
       "reasoning": "off",
       "thinking": true,
+      "tools": true,
       "sampling": { "temperature": 0.7, "top_p": 0.8, "top_k": 20 },
       "serve": { "ctx": 40960, "kv_type": "q8_0", "no_mmap": false, "args": ["-b", "2048", "-ub", "512"] },
       "group": "standard",

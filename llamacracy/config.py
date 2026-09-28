@@ -43,9 +43,15 @@ class Settings(BaseSettings):
     database_path: str = str(REPO_ROOT / "data" / "llamacracy.db")
     models_registry_path: str = str(REPO_ROOT / "config" / "models.json")
 
-    # --- search -- SearXNG, injected on request, never model-driven -
+    # --- search -- SearXNG. Models marked `tools` search for themselves
+    # (the agent loop); the rest get one search injected on request ---------
     searxng_url: str = "http://127.0.0.1:8085"
     search_max_results: int = 4
+    agent_search_results: int = 5            # per web_search call
+    # --- agent turns (a model calling tools) -------------------------------
+    agent_max_steps: int = 6                 # rounds of tool calls before it must answer
+    agent_max_seconds: float = 240           # wall clock, then it must answer
+    agent_tool_result_chars: int = 12000     # one tool result, cut past this (~3K tokens)
 
     # --- uploads -- on-disk, never base64-in-DB -----------
     upload_dir: str = str(REPO_ROOT / "data" / "uploads")

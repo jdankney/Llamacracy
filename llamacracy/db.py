@@ -38,6 +38,7 @@ _MIGRATIONS = [
     "ALTER TABLE uploads ADD COLUMN text_path TEXT",
     "ALTER TABLE uploads ADD COLUMN meta_json TEXT",
     "ALTER TABLE messages ADD COLUMN doc_ids_json TEXT",
+    "ALTER TABLE messages ADD COLUMN tools_json TEXT",
 ]
 
 # Conversations became trees (message editing). A conversation from before

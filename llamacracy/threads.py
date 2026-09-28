@@ -26,7 +26,7 @@ from .db import Database
 
 _COLS = (
     "id, role, content, model_id, prompt_tokens, completion_tokens, usage_estimated, "
-    "search_json, image_upload_id, doc_ids_json, reasoning, thinking_seconds, parent_id, "
+    "search_json, image_upload_id, doc_ids_json, tools_json, reasoning, thinking_seconds, parent_id, "
     "active_child_id, context_summary, created_at"
 )
 

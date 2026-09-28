@@ -13,9 +13,19 @@
   send, the context ring counts it and a note says roughly how long the model
   will take to read it. New settings: `DOCUMENT_MAX_MB` (25) and
   `DOCUMENT_MAX_CHARS` (1,200,000).
+- **The model runs its own searches.** With Search on, a model marked
+  `"tools": true` in the inventory decides what to look up, searches again
+  if the first results miss, and cites numbered sources (the `[1]` links
+  go to the page). A live trail shows each step, and stays folded above the
+  reply afterwards. The whole turn is one queued job, bounded by
+  `AGENT_MAX_STEPS` (6) and `AGENT_MAX_SECONDS` (240). Models without the
+  flag keep the one-search behaviour. The Help page has a new Searches
+  column.
 
 ### Upgrading
 
+- Add `"tools": true` to the inventory entries that handle tool calls well,
+  then rerun `python3 bench/gen_llamaswap_config.py` and restart llamacracy.
 - New dependencies (pypdf, openpyxl, defusedxml): run `uv sync`. The
   database migrates itself on start.
 

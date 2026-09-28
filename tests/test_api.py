@@ -598,3 +598,139 @@ def test_compaction_names_documents_instead_of_resending_them(client):
     prompt = client.fake_upstream.seen_payload["messages"][-1]["content"]
     assert "[attached: plan.txt] one" in prompt
     assert "secret plan body" not in prompt
+
+
+# --------------------------------------------------------------------------- #
+# agent turns: a tool-capable model with Search on
+# --------------------------------------------------------------------------- #
+class FakeSearch:
+    def __init__(self):
+        self.queries: list[str] = []
+
+    async def query(self, q, count):
+        from llamacracy.search import SearchOutcome, SearchResult
+        self.queries.append(q)
+        return SearchOutcome(q, ok=True, results=[
+            SearchResult(f"{q} guide", f"https://example.org/{q.replace(' ', '-')}", f"all about {q}"),
+            SearchResult("Shared page", "https://example.org/shared", "on every search")])
+
+    async def search(self, message, count):
+        return await self.query(message, count)
+
+    async def aclose(self):
+        pass
+
+
+@pytest.fixture
+def agent_client(client, monkeypatch):
+    reg = client.registry
+    reg._models["small"] = replace(reg.require("small"), tools=True)
+    client.search = FakeSearch()
+    monkeypatch.setattr(appmod, "get_search", lambda: client.search)
+    return client
+
+
+def test_agent_searches_then_answers_with_citations(agent_client):
+    c, up = agent_client, agent_client.fake_upstream
+    up.agent_steps = [
+        {"content": ["Let me check."], "tool_calls": [("web_search", {"query": "llama release"})]},
+        {"content": ["It shipped in May [1]."]},
+    ]
+    ev = _chat(c, model="small", message="When did it ship?", search=True)
+    types = [e["type"] for e in ev]
+    assert types.index("tool_start") < types.index("tool_end") < types.index("done")
+    start = next(e for e in ev if e["type"] == "tool_start")
+    assert start["label"] == "Searching “llama release”" and start["said"] == "Let me check."
+    end = next(e for e in ev if e["type"] == "tool_end")
+    assert end["summary"] == "2 results" and [s["n"] for s in end["sources"]] == [1, 2]
+
+    assert c.search.queries == ["llama release"]       # the model's words, not the message
+    first, second = up.payloads
+    assert first["messages"][0]["role"] == "system" and "Today is" in first["messages"][0]["content"]
+    assert [t["function"]["name"] for t in first["tools"]] == ["web_search"]
+    call, result = second["messages"][-2:]
+    assert call["tool_calls"][0]["function"]["arguments"] == '{"query": "llama release"}'
+    assert result["role"] == "tool" and "[1] llama release guide" in result["content"]
+
+    conv = ev[0]["conversation_id"]
+    reply = client_messages(c, conv)[1]
+    assert reply["content"] == "It shipped in May [1]."     # the preamble isn't the answer
+    tools = json.loads(reply["tools_json"])
+    assert tools["steps"][0] == {"type": "note", "text": "Let me check."}
+    assert tools["steps"][1]["label"] == "Searching “llama release”"
+    assert tools["sources"][0]["url"] == "https://example.org/llama-release"
+    # one queued job for the whole turn, and no injected search on the message
+    assert _count(c.db, "jobs") == 1
+    assert client_messages(c, conv)[0]["search_json"] is None
+
+
+def test_agent_numbers_sources_across_searches(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [
+        {"tool_calls": [("web_search", {"query": "a"}), ("web_search", {"query": "b"})]},
+        {"content": ["done"]},
+    ]
+    ev = _chat(agent_client, model="small", message="q", search=True)
+    ends = [e for e in ev if e["type"] == "tool_end"]
+    # the shared page keeps [2] the second time and isn't listed as new
+    assert [s["n"] for s in ends[0]["sources"]] == [1, 2]
+    assert [s["n"] for s in ends[1]["sources"]] == [3]
+    assert "[2] Shared page" in up.payloads[1]["messages"][-1]["content"]
+
+
+def test_agent_must_answer_after_max_steps(agent_client):
+    up = agent_client.fake_upstream
+    loop = {"content": ["hm"], "tool_calls": [("web_search", {"query": "again"})]}
+    up.agent_steps = [dict(loop) for _ in range(20)]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("AGENT_MAX_STEPS", "2")
+        get_settings.cache_clear()
+        ev = _chat(agent_client, model="small", message="q", search=True)
+    assert [e["type"] for e in ev].count("tool_start") == 2
+    assert up.payloads[-1]["tool_choice"] == "none"      # the last request forbids tools
+    assert ev[-1]["type"] == "done" and ev[-1]["state"] == "done"
+
+
+def test_agent_survives_bad_arguments_and_unknown_tools(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [
+        {"tool_calls": [("web_search", "{not json"), ("teleport", {})]},
+        {"content": ["ok"]},
+    ]
+    ev = _chat(agent_client, model="small", message="q", search=True)
+    ends = [e for e in ev if e["type"] == "tool_end"]
+    assert [e["ok"] for e in ends] == [False, False]
+    results = [m["content"] for m in up.payloads[1]["messages"] if m["role"] == "tool"]
+    assert "weren't valid JSON" in results[0] and "no tool called 'teleport'" in results[1]
+    assert ev[-1]["state"] == "done"
+
+
+def test_agent_thinking_time_adds_up_across_steps(agent_client):
+    reg = agent_client.registry
+    reg._models["small"] = replace(reg.require("small"), thinking=True)
+    up = agent_client.fake_upstream
+    up.agent_steps = [
+        {"reasoning": ["need data"], "tool_calls": [("web_search", {"query": "x"})]},
+        {"reasoning": ["now I know"], "content": ["answer"]},
+    ]
+    ev = _chat(agent_client, model="small", message="q", search=True, think=True)
+    assert [e["type"] for e in ev].count("thought") == 2
+    reply = client_messages(agent_client, ev[0]["conversation_id"])[1]
+    assert reply["reasoning"] == "need datanow I know"
+    # the model's first step's reasoning goes back with its tool call
+    assert up.payloads[1]["messages"][-2]["reasoning_content"] == "need data"
+
+
+def test_search_on_a_plain_model_still_injects_one_search(agent_client):
+    reg = agent_client.registry
+    reg._models["small"] = replace(reg.require("small"), tools=False)
+    ev = _chat(agent_client, model="small", message="what is x", search=True)
+    assert "tool_start" not in [e["type"] for e in ev]
+    assert "tools" not in agent_client.fake_upstream.seen_payload
+    assert "Web search results" in agent_client.fake_upstream.seen_payload["messages"][-1]["content"]
+
+
+def client_messages(c, conv_id) -> list[dict]:
+    rows = c.db._conn.execute(
+        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conv_id,)).fetchall()
+    return [dict(r) for r in rows]

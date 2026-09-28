@@ -57,6 +57,7 @@ API, billing rows):
 | `in_picker` | `false` hides a chat model without removing it. |
 | `blurb` | One line under the composer when the model is selected. |
 | `reasoning` | `"off"` (can think), `"none"` (can't), or `null`. A label only; `thinking` is what turns the Think toggle on. |
+| `tools` | `true` for a model that makes reliable OpenAI-style tool calls through its chat template (recent Qwen, GLM, Nemotron and Gemma releases, among others). With Search on, such a model runs the agent loop: it writes its own queries, can search again, and cites what it used. Other models get one search injected ahead of the message. Try a couple of searches before trusting it; a model that answers with a description of the call instead of making it should stay `false`. |
 | `thinking` | `true` for a model that can reason and whose chat template takes `enable_thinking` (Qwen3 and later, among others; try one prompt with Think on to confirm). Thinking is off by default; users turn it on per message with the Think toggle, and the app sends `chat_template_kwargs.enable_thinking` on every request. `nothink: true` is the older name for the same thing, from when these models had thinking forced off. |
 | `sampling` | Per-model request defaults the app sends (`temperature`, `top_p`, `top_k`, `min_p`). |
 | `max_tokens` | Per-model reply cap in the web chat, default 2048 (also capped by `MAX_TOKENS_PER_REQUEST`). Think turns and `/v1` calls use `THINKING_MAX_TOKENS` and `API_MAX_TOKENS_PER_REQUEST` instead. |
