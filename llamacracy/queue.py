@@ -456,7 +456,8 @@ class QueueManager:
                 c["id"] = c["id"] or f"call_{step}_{i}"
             turn = {"role": "assistant", "content": "".join(text) or None,
                     "tool_calls": [{"id": c["id"], "type": "function",
-                                    "function": {"name": c["name"], "arguments": c["arguments"]}}
+                                    "function": {"name": c["name"],
+                                                 "arguments": _echo_args(c["arguments"])}}
                                    for c in ordered]}
             if reasoning:
                 # templates that keep a turn's reasoning across its tool calls read this
@@ -709,6 +710,17 @@ class QueueManager:
             if m != self._loaded_model:
                 self._loaded_model = m
                 await self._broadcast()
+
+
+def _echo_args(raw: str) -> str:
+    """Arguments as sent back in the history. llama.cpp re-parses them to
+    render the chat template and fails the whole request (HTTP 500) on
+    malformed JSON, so a call whose arguments were cut off or garbled goes
+    back as {}; its tool result already told the model what went wrong."""
+    try:
+        return raw if isinstance(json.loads(raw or "{}"), dict) else "{}"
+    except ValueError:
+        return "{}"
 
 
 def _loose_json(raw: str) -> dict:

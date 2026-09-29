@@ -702,6 +702,9 @@ def test_agent_survives_bad_arguments_and_unknown_tools(agent_client):
     assert [e["ok"] for e in ends] == [False, False]
     results = [m["content"] for m in up.payloads[1]["messages"] if m["role"] == "tool"]
     assert "weren't valid JSON" in results[0] and "no tool called 'teleport'" in results[1]
+    # llama.cpp re-parses echoed arguments and 500s on bad JSON, so they go back as {}
+    calls = next(m for m in up.payloads[1]["messages"] if m.get("tool_calls"))["tool_calls"]
+    assert [c["function"]["arguments"] for c in calls] == ["{}", "{}"]
     assert ev[-1]["state"] == "done"
 
 
