@@ -26,6 +26,23 @@ def test_page_at_follows_page_marks():
     assert page_at(text, text.index("[Page 2]")) == 2     # a read that starts on the mark
 
 
+async def test_reading_on_through_a_document_counts_parts_and_names_sections():
+    text = "\n\n".join(f"## Section {s}\n\n" + "\n".join(f"filler line {s}.{i} here" for i in range(40))
+                       for s in range(1, 31))
+    (_, search, read) = document_tools([DocRef("d1", "book.md", text)], read_chars=2000)
+    box = Toolbox([search, read], max_steps=1, deadline_s=10, result_chars=100_000)
+    labels, start = [], 0
+    for _ in range(3):
+        out = await box.run("doc_read", {"ref": "d1", "start": start})
+        labels.append(out.summary)
+        start = int(out.text.rsplit("start ", 1)[1].rstrip("]").replace(",", ""))
+    # each window ends a little short of 2000 chars: still parts 1, 2, 3
+    assert [lb.split(" of ")[0] for lb in labels] == ["part 1", "part 2", "part 3"]
+    assert 'from inside "Section 5"' in out.text    # ~900 chars a section
+    hits = await box.run("doc_search", {"ref": "d1", "query": "filler 17.5"})
+    assert 'under "Section 17"' in hits.text
+
+
 async def test_outline_samples_long_documents_evenly():
     text = "\n\n".join(f"[Page {i}]\n\nPage {i} begins here" for i in range(1, 501))
     (outline, _, _) = document_tools([DocRef("d1", "big.pdf", text, 500, "page")], read_chars=5000)

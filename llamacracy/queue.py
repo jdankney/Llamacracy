@@ -18,6 +18,7 @@ full price. The second lane is not implemented yet -- everything is exclusive.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import json
 import logging
@@ -35,6 +36,11 @@ from .upstream import Upstream, UpstreamError, UsageSniffer, get_upstream
 log = logging.getLogger("llamacracy.queue")
 
 ANSWER_ROOM_TOKENS = 2048   # context an agent keeps free for its final answer
+# Sent after the tool results when a limit ends the turn. tool_choice "none"
+# alone isn't enough: some chat templates still let the model write a tool
+# call out as plain text, which would then be the answer.
+FINAL_NUDGE = ("(No more tool calls this turn. Write your final answer now from the results "
+               "above; if they weren't enough, say what you found and what's still missing.)")
 
 
 class JobState(enum.StrEnum):
@@ -386,75 +392,108 @@ class QueueManager:
 
         Limits: `max_steps` rounds of tool calls, a wall-clock deadline, and
         the model's context window. Hitting any of them sends one last request
-        with tool_choice "none", so the turn always ends in an answer. The
-        output budget (max_tokens) is shared by every step, which also keeps
-        the overshoot past a credit limit bounded.
+        with tool_choice "none", a note saying so, and thinking off, so the
+        turn always ends in an answer. The output budget (max_tokens) is
+        shared by every step, which also keeps the overshoot past a credit
+        limit bounded. With Think on, a step may not think its way through
+        the whole budget: it is cut at the budget less an answer's worth, or
+        at the deadline, and the final request answers instead.
         """
         box = job.agent
         assert box is not None
         messages = list(job.payload["messages"])
         budget = int(job.payload.get("max_tokens") or 2048)
         ctx = self.reg.require(job.model_id).ctx
+        ctk = job.payload.get("chat_template_kwargs") or {}
+        thinking = bool(ctk.get("enable_thinking"))
         t0 = now()
         out_tokens = prompt_total = 0
+        cut_off = False                 # the last step ran out of room or time mid-thought
         for step in range(box.max_steps + 1):
             # stop calling tools while there is still room to answer: an
             # answer's worth, not the whole (thinking-sized) output budget
             est_prompt = int(len(json.dumps(messages)) / 3.6)
             room = min(budget - out_tokens, ANSWER_ROOM_TOKENS)
-            final = (step == box.max_steps or now() - t0 > box.deadline_s
+            final = (cut_off or step == box.max_steps or now() - t0 > box.deadline_s
                      or est_prompt + room > ctx)
+            left = budget - out_tokens
+            if thinking and not final:
+                left -= min(ANSWER_ROOM_TOKENS, budget // 4)
             payload = {**job.payload, "messages": messages, "model": job.model_id,
-                       "tools": box.schemas(),
-                       "max_tokens": max(256, budget - out_tokens)}
+                       "tools": box.schemas(), "max_tokens": max(256, left)}
             if final:
                 payload["tool_choice"] = "none"
+                if step:
+                    payload["messages"] = [*messages, {"role": "user", "content": FINAL_NUDGE}]
+                if thinking:
+                    payload["chat_template_kwargs"] = {**ctk, "enable_thinking": False}
             calls: dict[int, dict] = {}
             text: list[str] = []
             reasoning: list[str] = []
-            async for chunk in self.up.stream_chat(payload):
-                if job._cancel.is_set():
-                    break
-                if job.gen_started_at is None and (chunk.content_delta or chunk.reasoning_delta
-                                                   or chunk.tool_call_deltas):
-                    await self._mark_generating(job, t_start, sampler)
-                if chunk.reasoning_delta:
-                    reasoning.append(chunk.reasoning_delta)
-                    await self._on_reasoning(job, chunk.reasoning_delta)
-                if chunk.content_delta:
-                    await self._end_thinking(job)
-                    text.append(chunk.content_delta)
-                    job.content_parts.append(chunk.content_delta)
-                    await self._emit(job, {"type": "token", "text": chunk.content_delta})
-                for d in chunk.tool_call_deltas or []:
-                    await self._end_thinking(job)
-                    c = calls.setdefault(d.get("index", len(calls)), {"id": "", "name": "", "arguments": ""})
-                    fn = d.get("function") or {}
-                    c["id"] = d.get("id") or c["id"]
-                    c["name"] += fn.get("name") or ""
-                    c["arguments"] += fn.get("arguments") or ""
-                if chunk.usage:
-                    if step == 0:
-                        job.context_tokens = chunk.usage.get("prompt_tokens")
-                    prompt_total += chunk.usage.get("prompt_tokens") or 0
-                    out_tokens += chunk.usage.get("completion_tokens") or 0
-                    job.prompt_tokens, job.completion_tokens = prompt_total, out_tokens
-                if chunk.timings and job.last_timings is None:
-                    # only the first step's timings: the cold-load split in
-                    # _run subtracts that step's prompt processing
-                    job.last_timings = chunk.timings
+            finish = None
+            closed = False
+            # aclosing: leaving the loop early must close the HTTP stream at
+            # once, or llama.cpp keeps generating and the next step queues
+            # behind it on the single slot
+            async with contextlib.aclosing(self.up.stream_chat(payload)) as stream:
+                async for chunk in stream:
+                    if job._cancel.is_set():
+                        break
+                    if (not final and chunk.reasoning_delta and not text and not calls
+                            and now() - t0 > box.deadline_s):
+                        cut_off = closed = True     # still thinking at the deadline: answer instead
+                        break
+                    finish = chunk.finish_reason or finish
+                    if job.gen_started_at is None and (chunk.content_delta or chunk.reasoning_delta
+                                                       or chunk.tool_call_deltas):
+                        await self._mark_generating(job, t_start, sampler)
+                    if chunk.reasoning_delta:
+                        reasoning.append(chunk.reasoning_delta)
+                        await self._on_reasoning(job, chunk.reasoning_delta)
+                    if chunk.content_delta:
+                        await self._end_thinking(job)
+                        text.append(chunk.content_delta)
+                        job.content_parts.append(chunk.content_delta)
+                        await self._emit(job, {"type": "token", "text": chunk.content_delta})
+                    for d in chunk.tool_call_deltas or []:
+                        await self._end_thinking(job)
+                        c = calls.setdefault(d.get("index", len(calls)), {"id": "", "name": "", "arguments": ""})
+                        fn = d.get("function") or {}
+                        c["id"] = d.get("id") or c["id"]
+                        c["name"] += fn.get("name") or ""
+                        c["arguments"] += fn.get("arguments") or ""
+                    if chunk.usage:
+                        if step == 0:
+                            job.context_tokens = chunk.usage.get("prompt_tokens")
+                        prompt_total += chunk.usage.get("prompt_tokens") or 0
+                        out_tokens += chunk.usage.get("completion_tokens") or 0
+                        job.prompt_tokens, job.completion_tokens = prompt_total, out_tokens
+                    if chunk.timings and job.last_timings is None:
+                        # only the first step's timings: the cold-load split in
+                        # _run subtracts that step's prompt processing
+                        job.last_timings = chunk.timings
+            if closed:
+                # no usage chunk arrives from a stream we closed: count what it thought
+                out_tokens += int(len("".join(reasoning)) / 3.6)
+                job.completion_tokens = out_tokens
+            elif not final and not calls and not text and finish == "length":
+                cut_off = True          # thought through its share of the budget
+            if cut_off and not final and not job._cancel.is_set():
+                continue
             if job._cancel.is_set() or not calls or final:
                 return
 
-            # a tool step: whatever it said first was a preamble, not the answer
-            said = "".join(text).strip()
+            # a tool step: whatever it said first was a preamble, not the answer.
+            # With thinking off, some models still think a line and close it with
+            # a bare </think> that llama.cpp leaves in the content: drop that part.
+            said = "".join(text).rsplit("</think>", 1)[-1].strip()
             if said:
                 job.trail.append({"type": "note", "text": said})
             job.content_parts.clear()
             ordered = [calls[i] for i in sorted(calls)]
             for i, c in enumerate(ordered):
                 c["id"] = c["id"] or f"call_{step}_{i}"
-            turn = {"role": "assistant", "content": "".join(text) or None,
+            turn = {"role": "assistant", "content": said or None,
                     "tool_calls": [{"id": c["id"], "type": "function",
                                     "function": {"name": c["name"],
                                                  "arguments": _echo_args(c["arguments"])}}
@@ -481,6 +520,10 @@ class QueueManager:
                 job.trail.append(step_rec)
                 await self._emit(job, {**step_rec, "type": "tool_end", "sources": res.sources})
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": res.text})
+            if box.max_steps - step - 1 == 1:
+                # models that don't count their own calls search on and on otherwise
+                messages[-1]["content"] += ("\n\n(You have one more round of tool calls this "
+                                            "turn; after that you must answer.)")
             if seen:
                 # a tool result is text only; pictures the model asked to see
                 # arrive as the next user turn, the one place images can go

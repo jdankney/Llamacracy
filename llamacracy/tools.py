@@ -181,6 +181,9 @@ def web_search_tool(search_client, count: int) -> Tool:
             if is_new:
                 new.append(box.sources[n - 1])
             lines.append(f"[{n}] {r.title}\n{r.url}\n{r.snippet}")
+        # said here as well as in the system prompt: next to the results is
+        # where models actually pick it up
+        lines.append("(Cite what you use from these by number, like [1].)")
         k = len(outcome.results)
         return ToolOutcome("\n\n".join(lines), summary=f"{k} result{'s' if k != 1 else ''}",
                            sources=new)
@@ -200,6 +203,7 @@ def web_search_tool(search_client, count: int) -> Tool:
 # reading: one windowing rule for web pages and documents
 # --------------------------------------------------------------------------- #
 _PAGE_MARK = re.compile(r"^\[Page (\d+)\]$", re.MULTILINE)
+_SECTION = re.compile(r"^#{1,6} (.+)$", re.MULTILINE)
 
 
 def text_window(text: str, start: int, length: int) -> tuple[str, int, int]:
@@ -211,6 +215,16 @@ def text_window(text: str, start: int, length: int) -> tuple[str, int, int]:
         if nl > start:
             end = nl + 1
     return text[start:end], start, end
+
+
+def section_at(text: str, offset: int) -> str | None:
+    """The Markdown heading an offset falls under, if any."""
+    title = None
+    for m in _SECTION.finditer(text):
+        if m.start() > offset:
+            break
+        title = m.group(1).strip()
+    return title
 
 
 def page_at(text: str, offset: int) -> int | None:
@@ -226,7 +240,9 @@ def page_at(text: str, offset: int) -> int | None:
 def _window_result(header: str, text: str, start: int, length: int, next_hint: str) -> tuple[str, str]:
     chunk, a, b = text_window(text, start, length)
     parts = max(1, math.ceil(len(text) / length))
-    part = min(parts, a // length + 1)
+    # windows end early on a line break, so the next one starts just short
+    # of a multiple of `length`: round, or it would claim the same part twice
+    part = min(parts, round(a / length) + 1)
     where = f"part {part} of {parts}" if parts > 1 else "all of it"
     body = f"{header}\n({where}: characters {a:,}-{b:,} of {len(text):,})\n\n{chunk}"
     if b < len(text):
@@ -392,8 +408,9 @@ def document_tools(docs: list[DocRef], *, read_chars: int) -> list[Tool]:
         hits.sort(key=lambda h: -h[0])
         out = []
         for _, at, para in sorted(hits[:6], key=lambda h: h[1]):
-            page = page_at(d.text, at)
-            where = f"@{at}" + (f" (page {page})" if page else "")
+            page, sec = page_at(d.text, at), section_at(d.text, at)
+            where = (f"@{at}" + (f" (page {page})" if page else "")
+                     + (f' under "{sec[:80]}"' if sec else ""))
             out.append(f"{where}\n{para.strip()[:700]}")
         k = len(hits)
         return ToolOutcome(f'{k} passage{"s" if k != 1 else ""} in {d.ref} match; the best:\n\n'
@@ -411,7 +428,9 @@ def document_tools(docs: list[DocRef], *, read_chars: int) -> list[Tool]:
             start = m.start()
         elif args.get("start") not in (None, ""):
             start = int(args["start"])
-        body, where = _window_result(f'{d.ref} "{d.name}"', d.text, start, read_chars,
+        sec = section_at(d.text, start)
+        head = f'{d.ref} "{d.name}"' + (f', from inside "{sec[:80]}"' if sec else "")
+        body, where = _window_result(head, d.text, start, read_chars,
                                      f'doc_read with ref "{d.ref}" and start {{start}}')
         page = page_at(d.text, start)
         return ToolOutcome(body, summary=f"page {page}" if page else where)

@@ -87,6 +87,8 @@ class FakeUpstream:
                 for j in range(0, len(raw), 7):
                     yield StreamChunk(raw={}, tool_call_deltas=[
                         {"index": i, "function": {"arguments": raw[j:j + 7]}}])
+            if step.get("finish"):
+                yield StreamChunk(raw={}, finish_reason=step["finish"])
             yield StreamChunk(raw={}, usage=dict(self.usage), timings=dict(self.timings))
             return
         # a model asked to think streams its reasoning before the answer

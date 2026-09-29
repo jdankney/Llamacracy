@@ -15,6 +15,7 @@ import llamacracy.app as appmod
 import llamacracy.queue as queuemod
 from llamacracy.config import get_settings
 from llamacracy.db import Database, get_db
+from llamacracy.queue import ANSWER_ROOM_TOKENS, FINAL_NUDGE
 from llamacracy.registry import ModelInfo, Registry, get_registry
 from llamacracy.upstream import get_upstream
 from tests.conftest import FakeUpstream
@@ -633,7 +634,8 @@ def agent_client(client, monkeypatch):
 def test_agent_searches_then_answers_with_citations(agent_client):
     c, up = agent_client, agent_client.fake_upstream
     up.agent_steps = [
-        {"content": ["Let me check."], "tool_calls": [("web_search", {"query": "llama release"})]},
+        {"content": ["Search it.</think>", "Let me check."],
+         "tool_calls": [("web_search", {"query": "llama release"})]},
         {"content": ["It shipped in May [1]."]},
     ]
     ev = _chat(c, model="small", message="When did it ship?", search=True)
@@ -688,7 +690,33 @@ def test_agent_must_answer_after_max_steps(agent_client):
         ev = _chat(agent_client, model="small", message="q", search=True)
     assert [e["type"] for e in ev].count("tool_start") == 2
     assert up.payloads[-1]["tool_choice"] == "none"      # the last request forbids tools
+    # ...and says so, since some templates let a model write a call out as text
+    assert up.payloads[-1]["messages"][-1] == {"role": "user", "content": FINAL_NUDGE}
+    # the step before the last round is told it's the last round
+    assert "one more round" in up.payloads[1]["messages"][-1]["content"]
+    assert "one more round" not in up.payloads[0]["messages"][-1]["content"]
     assert ev[-1]["type"] == "done" and ev[-1]["state"] == "done"
+
+
+def test_agent_answers_when_thinking_eats_its_budget(agent_client):
+    reg = agent_client.registry
+    reg._models["small"] = replace(reg.require("small"), thinking=True)
+    up = agent_client.fake_upstream
+    up.agent_steps = [
+        {"reasoning": ["hmm"] * 5, "finish": "length"},     # thought until cut off
+        {"content": ["the answer"]},
+    ]
+    ev = _chat(agent_client, model="small", message="q", search=True, think=True)
+    first, last = up.payloads
+    budget = get_settings().thinking_max_tokens
+    # a thinking step leaves an answer's worth of the budget unspent...
+    assert first["max_tokens"] == budget - min(ANSWER_ROOM_TOKENS, budget // 4)
+    # ...and the answer comes from one more request with thinking off
+    assert last["tool_choice"] == "none"
+    assert last["chat_template_kwargs"]["enable_thinking"] is False
+    assert last["messages"][-1]["content"] == FINAL_NUDGE
+    assert ev[-1]["state"] == "done"
+    assert client_messages(agent_client, ev[0]["conversation_id"])[1]["content"] == "the answer"
 
 
 def test_agent_survives_bad_arguments_and_unknown_tools(agent_client):

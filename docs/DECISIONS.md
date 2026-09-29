@@ -190,7 +190,11 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   overshoot past a credit limit stays bounded), and a context check that
   stops tool use while there is still room to answer. Hitting any limit
   sends one last request with `tool_choice: "none"`, so a turn always ends
-  in an answer. Only that answer is kept as history: the trail of steps and
+  in an answer. That request also carries a short note saying tools are
+  over, because in live runs some chat templates let a model write a tool
+  call out as plain text despite `tool_choice`. It also has thinking off:
+  a Think step can't spend the budget an answer needs (it is cut an
+  answer's worth short, or at the deadline). Only that answer is kept as history: the trail of steps and
   the numbered sources are stored with the reply for display, the way
   reasoning is, not resent on later turns.
 - **Tools are read-only outside the conversation.** A tool result is text
