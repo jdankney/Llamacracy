@@ -740,6 +740,19 @@ def test_agent_survives_bad_arguments_and_unknown_tools(agent_client):
     assert ev[-1]["state"] == "done"
 
 
+def test_a_raw_newline_in_code_arguments_is_accepted(compute_client):
+    # smaller models put real newlines inside the JSON string; that parses
+    # here, and goes back to llama.cpp as valid JSON
+    up = compute_client.fake_upstream
+    up.agent_steps = [{"tool_calls": [("run_python", '{"code": "x = 2\nprint(x * 21)"}')]},
+                      {"content": ["It's 42."]}]
+    ev = _chat(compute_client, model="small", message="q")
+    assert compute_client.ran == ["x = 2\nprint(x * 21)"]
+    assert next(e for e in ev if e["type"] == "tool_end")["ok"]
+    call = next(m for m in up.payloads[1]["messages"] if m.get("tool_calls"))["tool_calls"][0]
+    assert json.loads(call["function"]["arguments"]) == {"code": "x = 2\nprint(x * 21)"}
+
+
 def test_agent_thinking_time_adds_up_across_steps(agent_client):
     reg = agent_client.registry
     reg._models["small"] = replace(reg.require("small"), thinking=True)
@@ -1052,15 +1065,15 @@ def test_a_tools_model_gets_python_only_with_a_sandbox(agent_client):
 def test_model_computes_and_the_answer_numbers_are_checked(compute_client):
     c, up = compute_client, compute_client.fake_upstream
     up.agent_steps = [
-        {"tool_calls": [("run_python", {"code": "# the double integral\nprint(8/3)\nplt.savefig('/tmp/out/area.png')"})]},
+        {"tool_calls": [("run_python", {"code": "# the double integral\ng = 9.81\nprint(8/3)\nplt.savefig('/tmp/out/area.png')"})]},
         {"content": ["The integral is 2.667 and the area about 12.57; the ratio is 0.4219. "
-                     "Step 3 used the 5 m side."]},
+                     "Step 3 used the 5 m side, with g = 9.81."]},
     ]
     ev = _chat(c, model="small", message="integrate x*y over the region, side 5 m")
     first = up.payloads[0]
     assert [t["function"]["name"] for t in first["tools"]] == ["run_python"]
     assert "run_python runs Python 3" in first["messages"][0]["content"]
-    assert c.ran == ["# the double integral\nprint(8/3)\nplt.savefig('/tmp/out/area.png')"]
+    assert c.ran == ["# the double integral\ng = 9.81\nprint(8/3)\nplt.savefig('/tmp/out/area.png')"]
     end = next(e for e in ev if e["type"] == "tool_end")
     assert end["label"] == "Computing: the double integral" and end["ok"]
     assert end["output"].startswith("2.666") and len(end["figures"]) == 1
@@ -1069,8 +1082,9 @@ def test_model_computes_and_the_answer_numbers_are_checked(compute_client):
     assert "2.6666666666666665" in result and "shown to the user: area.png" in result
 
     done = ev[-1]
-    # 2.667 and 12.57 came from the code; 5 was given; 3 is a step number;
-    # 0.4219 came from nowhere, and the reply says so
+    # 2.667 and 12.57 came from the code; 5 was given, and 9.81 is a constant
+    # the code was written with; 3 is a step number; 0.4219 came from nowhere,
+    # and the reply says so
     assert done["tools"]["check"] == {"matched": 2, "unmatched": ["0.4219"]}
     fig = done["tools"]["figures"][0]
     row = c.db._conn.execute("SELECT user_id, mime, path FROM uploads WHERE id = ?", (fig,)).fetchone()

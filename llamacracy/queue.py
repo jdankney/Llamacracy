@@ -142,8 +142,10 @@ class Job:
             rec["figures"] = list(self.agent.figures)
         if self.agent.python_outputs:
             # which of the answer's numbers came out of the code it ran
+            # given: what the user wrote, and the constants the code was written with
+            # (m = 1.673e-27), which are in plain view in the code
             givens = [_text_of(m.get("content")) for m in self.payload.get("messages", [])
-                      if m.get("role") == "user"]
+                      if m.get("role") == "user"] + self.agent.python_code
             chk = verify.check("".join(self.content_parts), self.agent.python_outputs, givens)
             if chk:
                 rec["check"] = chk
@@ -777,15 +779,17 @@ def _echo_args(raw: str) -> str:
     malformed JSON, so a call whose arguments were cut off or garbled goes
     back as {}; its tool result already told the model what went wrong."""
     try:
-        return raw if isinstance(json.loads(raw or "{}"), dict) else "{}"
+        v = json.loads(raw or "{}", strict=False)
     except ValueError:
         return "{}"
+    # re-serialized: a raw newline inside a string parses here, but not there
+    return json.dumps(v) if isinstance(v, dict) else "{}"
 
 
 def _loose_json(raw: str) -> dict:
-    """Tool arguments for display; the tool itself re-parses strictly."""
+    """Tool arguments for display; the tool itself re-parses them."""
     try:
-        v = json.loads(raw or "{}")
+        v = json.loads(raw or "{}", strict=False)
     except ValueError:
         return {"raw": (raw or "")[:200]}
     return v if isinstance(v, dict) else {"value": v}

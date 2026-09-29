@@ -17,8 +17,9 @@ sandbox:
   address-space rlimit.
 
 Nothing survives a run. Its output comes back on stdout; pictures it saved
-under /tmp/out come back at the end of that stream, after a marker line
-carrying a random nonce, as base64 PNG, and are checked to be PNGs here.
+anywhere under /tmp (or drew and left open, unsaved) come back at the end of
+that stream, after a marker line carrying a random nonce, as base64 PNG, and
+are checked to be PNGs here.
 """
 
 from __future__ import annotations
@@ -68,16 +69,31 @@ except BaseException:
         tb = tb.tb_next
     traceback.print_exception(t, v, tb)
     status = 1
+def pngs():
+    # anywhere under /tmp: models asked for /tmp/out also save to /tmp/plot.png
+    found = []
+    for d, dirs, files in os.walk("/tmp"):
+        dirs.sort()
+        for n in sorted(files):
+            p = os.path.join(d, n)
+            if n.lower().endswith(".png") and os.path.isfile(p) and not os.path.islink(p):
+                found.append(p)
+    return found
+paths = pngs()
+if not paths and "matplotlib.pyplot" in sys.modules:
+    # drawn but never saved (plt.show() does nothing here): save what's open
+    try:
+        plt = sys.modules["matplotlib.pyplot"]
+        for i in plt.get_fignums()[:MAX_FIGURES]:
+            plt.figure(i).savefig("/tmp/out/figure-%d.png" % i, dpi=110)
+    except Exception:
+        pass
+    paths = pngs()
 figs = []
-try:
-    names = sorted(n for n in os.listdir("/tmp/out") if n.lower().endswith(".png"))
-except OSError:
-    names = []
-for n in names[:MAX_FIGURES]:
-    p = os.path.join("/tmp/out", n)
-    if os.path.isfile(p) and not os.path.islink(p) and os.path.getsize(p) <= MAX_FIGURE_BYTES:
+for p in paths[:MAX_FIGURES]:
+    if os.path.getsize(p) <= MAX_FIGURE_BYTES:
         with open(p, "rb") as f:
-            figs.append({"name": n, "png": base64.b64encode(f.read()).decode()})
+            figs.append({"name": os.path.basename(p), "png": base64.b64encode(f.read()).decode()})
 sys.stdout.flush(); sys.stderr.flush()
 sys.stdout.write("\n" + nonce + "\n" + json.dumps({"status": status, "figures": figs}) + "\n")
 sys.stdout.flush()

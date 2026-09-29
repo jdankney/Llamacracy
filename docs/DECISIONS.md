@@ -227,9 +227,16 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   came from the code" or names the ones that didn't. Asking the model to
   mark its own answer as verified would be the thing we are trying not to
   trust. The check is deliberately modest: it shows a number was computed,
-  not that the code solved the right problem, and it doesn't read symbolic
-  answers; small whole numbers and years are neither counted nor flagged,
-  since they are step numbers and dates as often as results.
+  not that the code solved the right problem. It reads exact fractions and
+  multiples of π the way sympy prints them, and a result restated in
+  another SI prefix, and nothing more symbolic. Small whole numbers, small
+  fractions and years are never flagged, since they are step numbers,
+  constants and dates as often as results; nor is hand working on an
+  equation line whose result the code printed. Those two rules came from a
+  live run against a real model: all twelve answers were right, and the
+  first version of the check still flagged five of them for the 32 in
+  `\frac{32}{5}`, the 187 in "187 ns" and the like. A warning that is
+  usually wrong would teach people to ignore the one that isn't.
 - **The calculator is always on for tools models.** No toggle: a model that
   uses tools well can tell when a question needs arithmetic, and a toggle
   would have to be remembered exactly when it matters. It makes every turn

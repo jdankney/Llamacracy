@@ -29,6 +29,11 @@ async def test_it_brings_back_pictures():
                    "plt.savefig('/tmp/out/line.png')")
     assert r.ok and [n for n, _ in r.figures] == ["line.png"]
     assert r.figures[0][1].startswith(b"\x89PNG")
+    # saved somewhere else under /tmp, or drawn and never saved: still shown
+    r = await _run("import matplotlib.pyplot as plt\nplt.plot([1, 2])\nplt.savefig('/tmp/out.png')")
+    assert [n for n, _ in r.figures] == ["out.png"]
+    r = await _run("import matplotlib.pyplot as plt\nplt.plot([1, 2])\nplt.show()")
+    assert [n for n, _ in r.figures] == ["figure-1.png"]
 
 
 async def test_it_cannot_reach_the_network_or_the_host():

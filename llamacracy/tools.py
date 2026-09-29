@@ -71,6 +71,7 @@ class Toolbox:
         self.pages: dict[str, tuple[str, str]] = {}   # url -> (title, text): a page is fetched once per turn
         self.workspace = None              # the conversation's files, when the turn may use them
         self.python_outputs: list[str] = []  # what run_python printed, for the answer's number check
+        self.python_code: list[str] = []     # and the code: its constants are givens there
         self.figures: list[str] = []       # upload ids of pictures run_python made
 
     def schemas(self) -> list[dict]:
@@ -98,7 +99,9 @@ class Toolbox:
             return ToolOutcome(f"Error: there is no tool called {name!r}. "
                                f"Available: {', '.join(self.tools)}.", ok=False, summary="unknown tool")
         try:
-            args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args or "{}")
+            # strict=False: a raw newline or tab inside a string (code, mostly) is
+            # what smaller models get wrong, and it's unambiguous
+            args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args or "{}", strict=False)
             if not isinstance(args, dict):
                 raise ValueError("arguments must be a JSON object")
         except ValueError as e:
@@ -167,8 +170,9 @@ class Toolbox:
                 "conversions, checking code) instead of working numbers out in your head, and "
                 "check a result a second way when that's cheap: substitute it back, or compare a "
                 "symbolic answer with a numeric one. Quote numbers in your answer as the code "
-                "printed them (rounding is fine): the user is shown which numbers came from code. "
-                "For a chart or diagram, save a PNG under /tmp/out and the user will see it.")
+                "printed them (rounding is fine), and print the steps you'll show too, not just "
+                "the result: the user is shown which numbers came from code. For a chart or "
+                "diagram, plt.savefig('/tmp/out/<name>.png') and the user will see it.")
         lines.extend(self.notes)
         return "\n".join(lines)
 
@@ -699,6 +703,7 @@ def python_tool(*, python: str, timeout_s: float, memory_mb: int, output_chars: 
             return ToolOutcome("Python isn't available right now. Work it out without it, and say "
                                "in your answer that it wasn't computed.", ok=False, summary="unavailable")
         box.python_outputs.append(r.output)
+        box.python_code.append(code)
         saved = []
         if save_figure is not None:
             for _, png in r.figures:
