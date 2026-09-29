@@ -297,7 +297,7 @@ code, pre, kbd { font-family: var(--mono); }
 .trail summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px; padding: 3px 0; }
 .trail summary::-webkit-details-marker { display: none; }
 .trail summary:hover { color: var(--text-2); }
-.trail[open] summary .icon:last-child { transform: rotate(180deg); }
+.trail[open] > summary .icon:last-child { transform: rotate(180deg); }
 .trail .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite; flex: none; }
 .trail-steps { list-style: none; margin: 4px 0 2px; padding: 0 0 0 10px; border-left: 2px solid var(--line); display: grid; gap: 3px; }
 .trail-steps .step { display: flex; align-items: center; gap: 7px; min-width: 0; }
@@ -307,6 +307,26 @@ code, pre, kbd { font-family: var(--mono); }
 .trail-steps .step.is-bad .icon { color: var(--warn); }
 .trail-steps .note { color: var(--text-3); font-style: italic; white-space: pre-wrap; }
 .trail-thumb { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); flex: none; }
+/* a Python step: its code and output fold out on a line of their own */
+.trail-steps .step:has(.py-run) { display: grid; grid-template-columns: auto minmax(0, max-content) auto 1fr;
+  column-gap: 7px; align-items: center; }
+.py-run { grid-column: 1 / -1; min-width: 0; margin: 0 0 4px 21px; }
+.py-run summary { font-size: 11.5px; color: var(--text-4); padding: 1px 0; }
+.py-run[open] summary .icon:last-child { transform: rotate(180deg); }
+.py-run .prose-chat { font-size: 12px; }
+.py-run .prose-chat pre { margin: 4px 0; max-height: 22rem; overflow: auto; }
+/* pictures run_python drew */
+.figures { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.figures img { display: block; max-width: min(100%, 26rem); max-height: 20rem; border-radius: var(--r-md);
+  border: 1px solid var(--line); background: #fff; }
+/* whether the answer's numbers came from the code: the server's check */
+.check-line { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; margin: 6px 0 2px;
+  max-width: 40rem; cursor: help; }
+.check-line .icon { flex: none; margin-top: 1px; }
+.check-line.is-ok { color: var(--good); }
+.check-line.is-warn { color: var(--warn); }
+.check-line.is-warn strong { color: var(--text); font-weight: 600; }
+.msg-assistant .figures, .msg-assistant .check-line { margin-left: 30px; }
 .prose-chat a.cite { font-size: .78em; vertical-align: super; line-height: 0; text-decoration: none; padding: 0 1px; }
 .prose-chat a.cite:hover { text-decoration: underline; }
 .sources li.is-cited a { font-weight: 600; }
@@ -639,6 +659,7 @@ a.btn { text-decoration: none; }
   .conv .del { opacity: .7; }
   .thread { padding: 16px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left)); }
   .msg-assistant .body, .msg-assistant .msg-foot, .msg-assistant .thought, .msg-assistant .trail, .msg-assistant > .sources, .msg-assistant .reply-files { padding-left: 0; }
+  .msg-assistant .figures, .msg-assistant .check-line { margin-left: 0; }
   .composer { padding: 6px calc(10px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(10px + var(--safe-left)); }
   .compose-tools .tool-label { display: none; }
   .compose-tools .select-wrap { flex: 1 1 100%; max-width: none; }

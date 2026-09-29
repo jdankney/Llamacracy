@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,6 +42,9 @@ def client(tmp_db_path, tmp_path, monkeypatch, request):
     monkeypatch.setenv("DEV_EMAIL", "dev@localhost")
     monkeypatch.setenv("ADMIN_EMAILS", "dev@localhost")
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    # no run_python unless a test brings its own sandbox: whether this machine
+    # has one built must not change what the other tests see
+    monkeypatch.setenv("SANDBOX_PYTHON", str(tmp_path / "no-sandbox" / "python"))
     marker = request.node.get_closest_marker("env")
     for k, v in (marker.kwargs if marker else {}).items():
         monkeypatch.setenv(k, str(v))
@@ -1016,3 +1020,75 @@ def test_a_resident_vision_entry_is_reused_for_plain_turns(vision_client):
     _chat(c, model="small", message="thanks", conversation_id=conv)
     # no swap back to the text entry just because this turn has no picture
     assert c.fake_upstream.seen_payload["model"] == "small-vision"
+
+
+# --------------------------------------------------------------------------- #
+# run_python: computing in a sandbox, and the answer's number check
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def compute_client(agent_client, monkeypatch):
+    """A tools model with a (fake) sandbox: records the code, returns canned output."""
+    from llamacracy import sandbox
+    ran = []
+
+    async def fake_run(code, *, python, timeout_s, memory_mb, output_chars):
+        ran.append(code)
+        if "raise" in code:
+            return sandbox.RunResult("Traceback (most recent call last):\nValueError: nope", ok=False)
+        figs = [("area.png", PNG)] if "savefig" in code else []
+        return sandbox.RunResult("2.6666666666666665\narea: 12.566370614359172", ok=True, figures=figs)
+    monkeypatch.setattr(sandbox, "available", lambda python: None)
+    monkeypatch.setattr(sandbox, "run", fake_run)
+    agent_client.ran = ran
+    return agent_client
+
+
+def test_a_tools_model_gets_python_only_with_a_sandbox(agent_client):
+    _chat(agent_client, model="small", message="2+2?")
+    # no sandbox built here: no tool, and no agent turn just for that
+    assert "tools" not in agent_client.fake_upstream.seen_payload
+
+
+def test_model_computes_and_the_answer_numbers_are_checked(compute_client):
+    c, up = compute_client, compute_client.fake_upstream
+    up.agent_steps = [
+        {"tool_calls": [("run_python", {"code": "# the double integral\nprint(8/3)\nplt.savefig('/tmp/out/area.png')"})]},
+        {"content": ["The integral is 2.667 and the area about 12.57; the ratio is 0.4219. "
+                     "Step 3 used the 5 m side."]},
+    ]
+    ev = _chat(c, model="small", message="integrate x*y over the region, side 5 m")
+    first = up.payloads[0]
+    assert [t["function"]["name"] for t in first["tools"]] == ["run_python"]
+    assert "run_python runs Python 3" in first["messages"][0]["content"]
+    assert c.ran == ["# the double integral\nprint(8/3)\nplt.savefig('/tmp/out/area.png')"]
+    end = next(e for e in ev if e["type"] == "tool_end")
+    assert end["label"] == "Computing: the double integral" and end["ok"]
+    assert end["output"].startswith("2.666") and len(end["figures"]) == 1
+    # the model reads the output, and is told its picture was shown
+    result = next(m for m in up.payloads[1]["messages"] if m["role"] == "tool")["content"]
+    assert "2.6666666666666665" in result and "shown to the user: area.png" in result
+
+    done = ev[-1]
+    # 2.667 and 12.57 came from the code; 5 was given; 3 is a step number;
+    # 0.4219 came from nowhere, and the reply says so
+    assert done["tools"]["check"] == {"matched": 2, "unmatched": ["0.4219"]}
+    fig = done["tools"]["figures"][0]
+    row = c.db._conn.execute("SELECT user_id, mime, path FROM uploads WHERE id = ?", (fig,)).fetchone()
+    assert row["mime"] == "image/png" and Path(row["path"]).read_bytes() == PNG
+    assert c.get(f"/api/uploads/{fig}").content == PNG      # the user can open it
+
+    # deleting the chat deletes the pictures it drew
+    conv = ev[0]["conversation_id"]
+    assert c.delete(f"/api/conversations/{conv}").status_code == 200
+    assert not Path(row["path"]).exists()
+    assert c.db._conn.execute("SELECT 1 FROM uploads WHERE id = ?", (fig,)).fetchone() is None
+
+
+def test_a_failed_run_shows_the_error(compute_client):
+    up = compute_client.fake_upstream
+    up.agent_steps = [{"tool_calls": [("run_python", {"code": "raise ValueError('nope')"})]},
+                      {"content": ["It failed, so I can't say."]}]
+    ev = _chat(compute_client, model="small", message="q")
+    end = next(e for e in ev if e["type"] == "tool_end")
+    assert end["ok"] is False and end["summary"] == "ValueError" and end["label"] == "Running Python"
+    assert "check" not in ev[-1]["tools"]         # no numbers in the answer: nothing to say

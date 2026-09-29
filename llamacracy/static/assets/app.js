@@ -631,6 +631,8 @@ function msgBubble(m) {
       : h('div', { class: 'body muted small' }, m.tools
         ? 'It ran out of steps or room before it could answer. Ask again, maybe more narrowly.'
         : 'It used all its room thinking and never got to the answer. Ask again, or turn Think off for this one.'),
+    checkLine(m.tools?.check),
+    figureStrip(m.tools?.figures),
     sourcesList(m.tools?.sources, m.content),
     m.tools?.files?.length ? h('div', { class: 'doc-chips reply-files' }, m.tools.files.map(fileChip)) : null,
     h('div', { class: 'msg-foot' },
@@ -688,7 +690,8 @@ function activeBubble() {
 // What a model did on its way to an answer: "Searching “x”" rows (and any
 // short notes it wrote between them), folded under one summary line.
 const TOOL_ICON = { web_search: 'search', read_page: 'globe', doc_outline: 'file', doc_search: 'file', doc_read: 'file',
-  ws_list: 'folder', ws_read: 'folder', ws_write: 'pen', ws_edit: 'pen', view_image: 'eye', image_search: 'search' };
+  ws_list: 'folder', ws_read: 'folder', ws_write: 'pen', ws_edit: 'pen', view_image: 'eye', image_search: 'search',
+  run_python: 'code' };
 function trailSummary(steps, live) {
   const tools = steps.filter(s => s.type === 'tool');
   const running = tools.find(s => s.running);
@@ -705,7 +708,9 @@ function trailSummary(steps, live) {
   if (looked) bits.push(`${bits.length ? 'looked at' : 'Looked at'} ${n('view_image') === 1 ? 'a picture' : n('view_image') ? plural(n('view_image'), 'picture') : 'pictures'}`);
   const wrote = new Set(tools.filter(s => (s.name === 'ws_write' || s.name === 'ws_edit') && s.ok !== false).map(s => s.args?.path || s.label)).size;
   if (wrote) bits.push(`${bits.length ? 'worked on' : 'Worked on'} ${wrote === 1 ? 'a file' : plural(wrote, 'file')}`);
-  const known = searches + n('read_page') + looked + tools.filter(s => s.name.startsWith('doc_') || s.name.startsWith('ws_')).length;
+  const runs = n('run_python');
+  if (runs) bits.push(`${bits.length ? 'ran' : 'Ran'} Python${runs > 1 ? ` ${runs} times` : ''}`);
+  const known = searches + n('read_page') + looked + runs + tools.filter(s => s.name.startsWith('doc_') || s.name.startsWith('ws_')).length;
   if (tools.length > known) bits.push(plural(tools.length - known, 'other step'));
   return bits.join(' · ') || 'Worked it out';
 }
@@ -723,7 +728,38 @@ function trailBlock(steps, { live = false, open = false, onToggle } = {}) {
           h('span', { class: 'lbl' }, st.label),
           st.running ? null : h('span', { class: 'res' }, [st.summary, st.ms != null ? fmtMs(st.ms) : null].filter(Boolean).join(' · ')),
           // an earlier photo it looked at again (our own upload, never a remote image)
-          st.upload_id ? h('img', { class: 'trail-thumb', src: '/api/uploads/' + st.upload_id, alt: '' }) : null))));
+          st.upload_id ? h('img', { class: 'trail-thumb', src: '/api/uploads/' + st.upload_id, alt: '' }) : null,
+          st.name === 'run_python' && !st.running && st.args?.code ? pyRun(st) : null))));
+}
+// A Python step, unfolded: the code it ran and what that printed
+const fence = (lang, text) => '```' + lang + '\n' + String(text).replace(/```/g, '`\u200b``') + '\n```';
+function pyRun(st) {
+  return h('details', { class: 'py-run' },
+    h('summary', {}, 'Code and output', icon('chevron', 'icon-sm')),
+    mdBlock(fence('python', st.args.code)),
+    st.output ? mdBlock(fence('text', st.output)) : h('div', { class: 'muted small' }, 'No output.'));
+}
+// Pictures run_python drew, under the reply
+function figureStrip(ids) {
+  if (!ids?.length) return null;
+  return h('div', { class: 'figures' }, ids.map(id =>
+    h('a', { href: '/api/uploads/' + id, target: '_blank', rel: 'noopener', title: 'Open full size' },
+      h('img', { src: '/api/uploads/' + id, alt: 'A chart or diagram the model drew', loading: 'lazy' }))));
+}
+// Which of the answer's numbers came out of the code it ran: the server's
+// check, not the model's claim
+function checkLine(chk) {
+  if (!chk) return null;
+  const why = 'Llamacracy compared the numbers in this answer with what the Python printed. A match ' +
+    'means the number was computed, not that the code solved the right problem: check the setup in ' +
+    '"Code and output" above.';
+  if (!chk.unmatched?.length)
+    return h('div', { class: 'check-line is-ok', title: why }, icon('check', 'icon-sm'),
+      `${chk.matched === 1 ? 'The number' : `All ${chk.matched} numbers`} here came from the code it ran`);
+  return h('div', { class: 'check-line is-warn', title: why }, icon('alert', 'icon-sm'),
+    h('span', {}, 'Not from the code it ran: ', h('strong', {}, chk.unmatched.join(', ')),
+      ' — double-check ' + (chk.unmatched.length === 1 ? 'it' : 'these')
+      + (chk.matched ? ` (${chk.matched} other${chk.matched === 1 ? '' : 's'} matched)` : '')));
 }
 const fmtMs = ms => ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)}s`;
 // "[3]" in an answer becomes a link to source 3. Plain HTML, not markdown
@@ -1573,6 +1609,19 @@ function helpView() {
         'Files belong to the chat they were written in. If you edit an earlier message, that ' +
         'version of the chat keeps the files as they were at that point, and flipping back brings ' +
         'the later ones back. The folder button next to Files lists them all.')) : null,
+    S.me?.compute && ms.some(m => m.tools) ? h('div', {},
+      h('h2', {}, 'It does the math with code'),
+      h('p', {},
+        'The models that look things up also have Python (with sympy, numpy, scipy and units), and ' +
+        'they\'re told to calculate with it rather than in their heads: integrals, physics problems, ' +
+        'statistics, unit conversions, checking code. "Ran Python" in the steps above a reply opens the ' +
+        'code and what it printed. Charts and diagrams it draws appear under the reply.'),
+      h('p', { class: 'muted' },
+        'Under the answer, Llamacracy says whether its numbers came from that code: a check mark ' +
+        'when they all did, a warning naming any that didn\'t. That is Llamacracy checking, not the ' +
+        'model vouching for itself. A match means the number was computed, not that the code solved ' +
+        'the right problem, so glance at how it set things up. The code runs sealed off: no internet, ' +
+        'no access to anything on the server, and a time limit.')) : null,
 
     h('h2', {}, 'Letting it think'),
     h('p', {},
@@ -1882,7 +1931,8 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
       }
       else if (ev.type === 'tool_end') {
         const a = S.active, st = a.trail?.find(x => x.id === ev.id && x.running);
-        if (st) Object.assign(st, { running: false, ok: ev.ok, summary: ev.summary, ms: ev.ms, args: ev.args, upload_id: ev.upload_id });
+        if (st) Object.assign(st, { running: false, ok: ev.ok, summary: ev.summary, ms: ev.ms, args: ev.args,
+          upload_id: ev.upload_id, output: ev.output, figures: ev.figures });
         if (ev.sources?.length) a.sources = [...(a.sources || []), ...ev.sources];
         render(); scrollThread();
       }

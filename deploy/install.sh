@@ -44,6 +44,7 @@ fi
 # --- 2. python env -----------------------------------------------------------
 say "syncing python env"
 ( cd "$REPO" && uv sync --frozen )
+"$REPO/deploy/setup-sandbox.sh"     # the separate Python that run_python uses
 
 # --- 3. oauth2-proxy binary --------------------------------------------------
 if [ ! -x "$BIN/oauth2-proxy" ]; then

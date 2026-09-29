@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     # Such turns run on the -vision entry; off keeps searches on the text one.
     agent_images: bool = True
     agent_image_max_mb: float = 8.0
+    # run_python: tools models compute in a bubblewrap sandbox, using the
+    # separate Python that deploy/setup-sandbox.sh builds. Off, or with no
+    # sandbox built, the tool is simply not offered.
+    python_tool: bool = True
+    sandbox_python: str = str(REPO_ROOT / "data" / "sandbox" / "bin" / "python")
+    sandbox_timeout_seconds: float = 20      # one run, wall clock
+    sandbox_memory_mb: int = 1024            # one run
     # documents on a branch are sent in full while they fit in this share of
     # the model's context; past that, a tools model looks things up in them
     doc_inline_fraction: float = 0.5

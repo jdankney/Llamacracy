@@ -44,8 +44,23 @@
   once that entry is loaded, plain turns stay on it instead of swapping the
   model back. `AGENT_IMAGES=false` turns this off.
 
+- **It does the math with code.** Models that use tools get Python (sympy,
+  numpy, scipy, pint for units, matplotlib, networkx) and are told to
+  calculate with it rather than in their heads. "Ran Python" in the steps
+  above a reply opens the code and its output; charts it draws appear under
+  the reply. Below the answer, the server says whether its numbers came from
+  that code, and names any that didn't. The code runs in a bubblewrap
+  sandbox: no network, no view of the server, a private scratch folder, and
+  limits on time, memory, CPU and processes. New settings: `PYTHON_TOOL`,
+  `SANDBOX_PYTHON`, `SANDBOX_TIMEOUT_SECONDS` (20), `SANDBOX_MEMORY_MB`
+  (1024).
+
 ### Upgrading
 
+- For `run_python`: install bubblewrap (`bwrap`), then rerun
+  `./deploy/install.sh`, which now builds the sandbox's Python in
+  `data/sandbox` (or run `./deploy/setup-sandbox.sh` on its own). Without
+  it, everything else works and the tool just isn't offered.
 - Add `"tools": true` to the inventory entries that handle tool calls well,
   then rerun `python3 bench/gen_llamaswap_config.py` and restart llamacracy.
 - New dependencies (pypdf, openpyxl, defusedxml): run `uv sync`. The

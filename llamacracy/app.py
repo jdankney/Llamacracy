@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import documents, threads
+from . import documents, sandbox, threads
 from .admin import router as admin_router
 from .apikeys import generate as generate_api_key
 from .config import Settings, get_settings
@@ -36,6 +36,7 @@ from .tools import (
     Toolbox,
     document_tools,
     image_search_tool,
+    python_tool,
     read_page_tool,
     view_image_tool,
     web_search_tool,
@@ -137,6 +138,8 @@ async def me(principal: Principal = Depends(get_principal),
         "display_name": principal.display_name,
         "is_admin": principal.is_admin,
         "source_url": settings.source_url,
+        # tools models compute with run_python (the Help page says so only then)
+        "compute": settings.python_tool and sandbox.available(settings.sandbox_python) is None,
         "limits": {
             "session_credit_limit": settings.session_credit_limit,
             "weekly_credit_limit": settings.weekly_credit_limit,
@@ -439,8 +442,11 @@ async def delete_conversation(conv_id: str,
         "SELECT id, path, text_path FROM uploads WHERE user_id = ? AND ("
         "  id IN (SELECT image_upload_id FROM messages WHERE conversation_id = ?)"
         "  OR id IN (SELECT j.value FROM messages m, json_each(m.doc_ids_json) j"
-        "            WHERE m.conversation_id = ? AND json_valid(m.doc_ids_json)))",
-        (principal.user_id, conv_id, conv_id),
+        "            WHERE m.conversation_id = ? AND json_valid(m.doc_ids_json))"
+        # pictures run_python drew
+        "  OR id IN (SELECT j.value FROM messages m, json_each(m.tools_json, '$.figures') j"
+        "            WHERE m.conversation_id = ? AND json_valid(m.tools_json)))",
+        (principal.user_id, conv_id, conv_id, conv_id),
     )
     await db.transaction([
         ("DELETE FROM messages WHERE conversation_id = ?", (conv_id,)),
@@ -813,7 +819,10 @@ async def chat(req: ChatRequest,
         # already resident: the vision entry does everything the text one
         # does, so use it rather than swap models for a turn without pictures
         dispatch_model_id = vision.key
-    if web or refs or use_files or use_pictures:
+    # run_python: a tools model always has a calculator, when the sandbox is built
+    compute = (model.tools and settings.python_tool
+               and sandbox.available(settings.sandbox_python) is None)
+    if web or refs or use_files or use_pictures or compute:
         tools = []
         if use_pictures:
             tools.append(view_image_tool(pictures, allow_web=web,
@@ -830,6 +839,18 @@ async def chat(req: ChatRequest,
                                      pdf_max_chars=settings.document_max_chars)]
         if refs:
             tools += document_tools(refs, read_chars=settings.agent_read_chars)
+        if compute:
+            async def save_figure(png: bytes) -> str:
+                file_id, path = save_upload(settings.upload_dir, png, ".png")
+                await db.execute(
+                    "INSERT INTO uploads (id, user_id, path, mime, bytes, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (file_id, principal.user_id, path, "image/png", len(png), now()))
+                return file_id
+            tools.append(python_tool(python=settings.sandbox_python,
+                                     timeout_s=settings.sandbox_timeout_seconds,
+                                     memory_mb=settings.sandbox_memory_mb,
+                                     output_chars=8000, save_figure=save_figure))
         folded_refs = [r for r in refs if r not in by_id.values()]
         notes = []
         if pictures:

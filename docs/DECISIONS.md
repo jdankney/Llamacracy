@@ -201,6 +201,40 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   from the web or a file, returned to the model as a `tool` message and
   framed in the system prompt as facts to weigh, not instructions; no tool
   can reach anything that would make an injected instruction dangerous.
+  `run_python` executes code, so it gets its own walls (below) rather than
+  an exception to this.
+- **Model-written code runs in a throwaway bubblewrap sandbox.** The model's
+  input can include a web page, so its code is treated as hostile. Each run
+  gets fresh user, PID, network, IPC and UTS namespaces (no network at all),
+  a read-only view of `/usr` and of a separate Python environment built by
+  `deploy/setup-sandbox.sh` (mounted at `/opt/py`, so no host path shows),
+  and a size-capped private `/tmp` as its only writable place: not the repo,
+  `.env`, the database or `/home`. Limits: a wall clock (the process group is
+  killed), CPU seconds, file size, and, when `systemd-run --user --scope`
+  works, a cgroup memory cap and a 64-task cap; without systemd it falls
+  back to an address-space rlimit. Rlimits are applied by `prlimit(1)`, not
+  `preexec_fn`, which isn't safe in a threaded server. Pictures come back
+  base64 on stdout after a marker carrying a random nonce and are checked to
+  be PNGs, so nothing on the host is ever shared with the sandbox for
+  writing. We chose bubblewrap over a container runtime because it is one
+  small setuid-free binary with no daemon, and over a Python-level
+  restriction (RestrictedPython and the like) because those have a long
+  history of escapes.
+- **The server checks the numbers, not the model.** After a turn that ran
+  code, every number in the answer is looked up in what the code printed
+  (rounding, percentages and scientific notation allowed), and in what the
+  user wrote, since repeating a given isn't a claim. The reply says "all N
+  came from the code" or names the ones that didn't. Asking the model to
+  mark its own answer as verified would be the thing we are trying not to
+  trust. The check is deliberately modest: it shows a number was computed,
+  not that the code solved the right problem, and it doesn't read symbolic
+  answers; small whole numbers and years are neither counted nor flagged,
+  since they are step numbers and dates as often as results.
+- **The calculator is always on for tools models.** No toggle: a model that
+  uses tools well can tell when a question needs arithmetic, and a toggle
+  would have to be remembered exactly when it matters. It makes every turn
+  on those models an agent turn, which costs a system prompt and a tool
+  schema; turns that don't compute answer in one step as before.
 - **Long documents are looked up, not truncated.** A model with `tools`
   gets its documents whole while they fit in `DOC_INLINE_FRACTION` (half) of
   its context; past that the biggest are replaced by a short

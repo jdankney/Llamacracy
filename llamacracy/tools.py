@@ -70,6 +70,8 @@ class Toolbox:
         self._by_url: dict[str, int] = {}
         self.pages: dict[str, tuple[str, str]] = {}   # url -> (title, text): a page is fetched once per turn
         self.workspace = None              # the conversation's files, when the turn may use them
+        self.python_outputs: list[str] = []  # what run_python printed, for the answer's number check
+        self.figures: list[str] = []       # upload ids of pictures run_python made
 
     def schemas(self) -> list[dict]:
         return [t.schema() for t in self.tools.values()]
@@ -156,6 +158,17 @@ class Toolbox:
                 "look again when a question is about an earlier one."
                 + (" image_search finds pictures on the web; view the ones worth checking."
                    if "image_search" in self.tools else ""))
+        if "run_python" in self.tools:
+            lines.append(
+                "run_python runs Python 3 with sympy, numpy, scipy, pint (units), matplotlib and "
+                "networkx: no internet, and nothing is kept between runs, so each run imports and "
+                "defines what it needs. Print what you need; a last bare expression is shown too. "
+                "Do every calculation with it (arithmetic, algebra, calculus, statistics, unit "
+                "conversions, checking code) instead of working numbers out in your head, and "
+                "check a result a second way when that's cheap: substitute it back, or compare a "
+                "symbolic answer with a numeric one. Quote numbers in your answer as the code "
+                "printed them (rounding is fine): the user is shown which numbers came from code. "
+                "For a chart or diagram, save a PNG under /tmp/out and the user will see it.")
         lines.extend(self.notes)
         return "\n".join(lines)
 
@@ -659,3 +672,68 @@ def image_search_tool(search_client, count: int) -> Tool:
         description="Search the web for pictures. Returns titles, image URLs and the pages they're on.",
         parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
         run=run, label=lambda a: f"Finding pictures of “{str(a.get('query', '')).strip()[:60]}”")
+
+
+# --------------------------------------------------------------------------- #
+# run_python: model-written code in a sandbox (see sandbox.py)
+# --------------------------------------------------------------------------- #
+MAX_CODE_CHARS = 20_000
+
+
+def python_tool(*, python: str, timeout_s: float, memory_mb: int, output_chars: int,
+                save_figure: Callable[[bytes], Awaitable[str]] | None = None) -> Tool:
+    from . import sandbox
+
+    async def run(args: dict, box: Toolbox) -> ToolOutcome:
+        code = str(args.get("code") or "")
+        if not code.strip():
+            return ToolOutcome("Error: give some Python in `code`.", ok=False, summary="no code")
+        if len(code) > MAX_CODE_CHARS:
+            return ToolOutcome(f"Error: that's {len(code):,} characters of code; keep one run under "
+                               f"{MAX_CODE_CHARS:,}.", ok=False, summary="too long")
+        try:
+            r = await sandbox.run(code, python=python, timeout_s=timeout_s, memory_mb=memory_mb,
+                                  output_chars=output_chars)
+        except sandbox.SandboxUnavailable as e:
+            log.warning("run_python unavailable: %s", e)
+            return ToolOutcome("Python isn't available right now. Work it out without it, and say "
+                               "in your answer that it wasn't computed.", ok=False, summary="unavailable")
+        box.python_outputs.append(r.output)
+        saved = []
+        if save_figure is not None:
+            for _, png in r.figures:
+                saved.append(await save_figure(png))
+        box.figures += saved
+        text = r.output or "(no output: print what you need, or end with an expression)"
+        if r.note:
+            text += f"\n[{r.note}]"
+        if saved:
+            names = ", ".join(n for n, _ in r.figures)
+            text += f"\n[shown to the user: {names}]"
+        if r.ok:
+            summary = "ran" + (f" · {len(saved)} picture{'s' if len(saved) != 1 else ''}" if saved else "")
+        elif r.note:
+            summary = r.note.split(":")[0]
+        else:
+            # the exception's name, from the traceback's last line
+            last = next((ln for ln in reversed(r.output.splitlines()) if ln.strip()), "error")
+            summary = last.split(":")[0].strip()[:40] or "error"
+        return ToolOutcome(text, ok=r.ok, summary=summary,
+                           extra={"output": r.output[-4000:], "figures": saved})
+
+    def label(a: dict) -> str:
+        # a first comment line says what the run is for
+        first = str(a.get("code") or "").lstrip().split("\n", 1)[0].strip()
+        if first.startswith("#") and first.lstrip("#").strip():
+            return "Computing: " + first.lstrip("#").strip()[:70]
+        return "Running Python"
+
+    return Tool(
+        name="run_python",
+        description="Run Python 3 in a sandbox (sympy, numpy, scipy, pint, matplotlib, networkx; "
+                    "no internet; fresh each run) and get back what it prints. Start with a "
+                    "comment line saying what it computes.",
+        parameters={"type": "object", "properties": {
+            "code": {"type": "string", "description": "The program. Print the results you need."}},
+            "required": ["code"]},
+        run=run, label=label)

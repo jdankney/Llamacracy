@@ -26,6 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from . import verify
 from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .power import GpuPowerSampler
@@ -137,6 +138,15 @@ class Job:
         rec = {"steps": self.trail, "sources": self.agent.sources}
         if self.agent.workspace is not None and self.agent.workspace.changed:
             rec["files"] = list(self.agent.workspace.changed.values())
+        if self.agent.figures:
+            rec["figures"] = list(self.agent.figures)
+        if self.agent.python_outputs:
+            # which of the answer's numbers came out of the code it ran
+            givens = [_text_of(m.get("content")) for m in self.payload.get("messages", [])
+                      if m.get("role") == "user"]
+            chk = verify.check("".join(self.content_parts), self.agent.python_outputs, givens)
+            if chk:
+                rec["check"] = chk
         return rec
 
     def public(self, position: int) -> dict:
@@ -753,6 +763,12 @@ class QueueManager:
             if m != self._loaded_model:
                 self._loaded_model = m
                 await self._broadcast()
+
+
+def _text_of(content) -> str:
+    if isinstance(content, str):
+        return content
+    return "".join(p.get("text", "") for p in content or [] if isinstance(p, dict))
 
 
 def _echo_args(raw: str) -> str:
