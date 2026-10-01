@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     context_summary      TEXT,
     -- the first message of the branch being shown (see threads.py)
     active_root_id       INTEGER,
+    -- a study session: the course it belongs to (see study.py); NULL for chat
+    course_id            TEXT,
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 );
@@ -66,6 +68,29 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation ON messages(conversation_id, id);
+
+-- Study: a person's courses, private to them like their conversations. A
+-- course's materials are documents they uploaded for it; its sessions are
+-- conversations with course_id set. Nothing about a course is configuration:
+-- it all lives here, in the instance's own database.
+CREATE TABLE IF NOT EXISTS courses (
+    id            TEXT PRIMARY KEY,          -- uuid hex, used in URLs (/study/<id>)
+    user_id       INTEGER NOT NULL REFERENCES users(id),
+    name          TEXT NOT NULL,
+    notes         TEXT NOT NULL DEFAULT '',  -- what the tutor should know: level, textbook, exam format
+    quantitative  INTEGER NOT NULL DEFAULT 0, -- 1: every number in an answer must come from run_python
+    model_id      TEXT,                      -- the model its last session used
+    created_at    REAL NOT NULL,
+    updated_at    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_courses_user ON courses(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS course_materials (
+    course_id   TEXT NOT NULL REFERENCES courses(id),
+    upload_id   TEXT NOT NULL REFERENCES uploads(id),
+    added_at    REAL NOT NULL,
+    PRIMARY KEY (course_id, upload_id)
+);
 
 -- uploaded images and documents -- on disk under UPLOAD_DIR, never in the DB.
 -- Scoped to the uploader; served back only to them (see /api/uploads/{id}).

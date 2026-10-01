@@ -54,6 +54,16 @@
   limits on time, memory, CPU and processes. New settings: `PYTHON_TOOL`,
   `SANDBOX_PYTHON`, `SANDBOX_TIMEOUT_SECONDS` (20), `SANDBOX_MEMORY_MB`
   (1024).
+- **Study.** A Study section (at `/study`) where each person adds their own
+  courses: a name, a few lines about the class, and its materials (syllabus,
+  notes, slides, homework, old exams). A session runs a tutor on a model
+  that looks things up: it asks what you know, gives hints before answers,
+  works from your materials and names the file and page it used, and says
+  when an answer is general knowledge instead. Tick "It uses math or
+  numbers" and every number must come from Python. Courses, their materials
+  and their sessions are private to their owner, and sessions are listed
+  under their course rather than among the chats. New settings: `STUDY`
+  (on) and `STUDY_MODEL` (which model a new course starts on).
 
 ### Upgrading
 

@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import documents, sandbox, threads
+from . import documents, sandbox, study, threads
 from .admin import router as admin_router
 from .apikeys import generate as generate_api_key
 from .config import Settings, get_settings
@@ -83,6 +83,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Llamacracy", lifespan=lifespan)
 app.include_router(admin_router)
+app.include_router(study.router)
 
 
 # --------------------------------------------------------------------------- #
@@ -130,7 +131,8 @@ async def _load_prefs(db: Database, user_id: int) -> Prefs:
 @app.get("/api/me")
 async def me(principal: Principal = Depends(get_principal),
              settings: Settings = Depends(get_settings),
-             db: Database = Depends(get_db)):
+             db: Database = Depends(get_db),
+             reg: Registry = Depends(get_registry)):
     prefs = await _load_prefs(db, principal.user_id)
     return {
         "prefs": prefs.model_dump(),
@@ -140,6 +142,9 @@ async def me(principal: Principal = Depends(get_principal),
         "source_url": settings.source_url,
         # tools models compute with run_python (the Help page says so only then)
         "compute": settings.python_tool and sandbox.available(settings.sandbox_python) is None,
+        # /study: on when some model can run a session
+        "study": {"enabled": study.enabled(reg, settings),
+                  "default_model": study.default_model(reg, settings)},
         "limits": {
             "session_credit_limit": settings.session_credit_limit,
             "weekly_credit_limit": settings.weekly_credit_limit,
@@ -312,9 +317,10 @@ async def _check_limits(job: Job, qm: QueueManager) -> None:
 @app.get("/api/conversations")
 async def conversations(principal: Principal = Depends(get_principal),
                         db: Database = Depends(get_db)):
+    """The sidebar's chats. Study sessions are listed under their course."""
     rows = await db.fetch_all(
         "SELECT id, title, model_id, created_at, updated_at FROM conversations "
-        "WHERE user_id = ? ORDER BY updated_at DESC LIMIT 200",
+        "WHERE user_id = ? AND course_id IS NULL ORDER BY updated_at DESC LIMIT 200",
         (principal.user_id,),
     )
     return {"conversations": [dict(r) for r in rows]}
@@ -435,34 +441,7 @@ async def delete_conversation(conv_id: str,
     )
     if conv is None:
         raise HTTPException(404, "no such conversation")
-    # attached images and documents belong only to this conversation's
-    # messages -- clean up their rows *and* the on-disk files (a document's
-    # extracted text too) so deleted chats don't leave orphans
-    uploads = await db.fetch_all(
-        "SELECT id, path, text_path FROM uploads WHERE user_id = ? AND ("
-        "  id IN (SELECT image_upload_id FROM messages WHERE conversation_id = ?)"
-        "  OR id IN (SELECT j.value FROM messages m, json_each(m.doc_ids_json) j"
-        "            WHERE m.conversation_id = ? AND json_valid(m.doc_ids_json))"
-        # pictures run_python drew
-        "  OR id IN (SELECT j.value FROM messages m, json_each(m.tools_json, '$.figures') j"
-        "            WHERE m.conversation_id = ? AND json_valid(m.tools_json)))",
-        (principal.user_id, conv_id, conv_id, conv_id),
-    )
-    await db.transaction([
-        ("DELETE FROM messages WHERE conversation_id = ?", (conv_id,)),
-        ("DELETE FROM workspace_files WHERE conversation_id = ?", (conv_id,)),
-        ("UPDATE jobs SET conversation_id = NULL WHERE conversation_id = ?", (conv_id,)),
-        ("DELETE FROM conversations WHERE id = ?", (conv_id,)),
-        *[("DELETE FROM uploads WHERE id = ?", (u["id"],)) for u in uploads],
-    ])
-    for u in uploads:
-        for f in (u["path"], u["text_path"]):
-            if not f:
-                continue
-            try:
-                Path(f).unlink(missing_ok=True)
-            except OSError:
-                log.warning("failed to remove upload file %s", f)
+    await threads.delete(db, conv_id, principal.user_id)
     return {"deleted": conv_id}
 
 
@@ -693,6 +672,9 @@ class ChatRequest(BaseModel):
     # original is kept; this becomes its sibling (a new branch) and gets a
     # fresh reply. Omitted, the message continues the branch being shown.
     edit_of: int | None = None
+    # Study: start a session in this course (a new conversation only; an
+    # existing one keeps the course it was started in)
+    course_id: str | None = None
 
 
 @app.post("/api/chat")
@@ -715,8 +697,11 @@ async def chat(req: ChatRequest,
     image_id = req.image_id
     doc_ids = list(dict.fromkeys(req.doc_ids or []))
     prior: list[dict] = []
+    course = None
     if conv_id:
         conv = await _owned_conversation(db, conv_id, principal.user_id)
+        if conv["course_id"]:
+            course = await study.owned(db, conv["course_id"], principal.user_id)
         rows = await threads.load(db, conv_id)
         if req.edit_of is not None:
             orig = next((r for r in rows if r["id"] == req.edit_of), None)
@@ -734,6 +719,13 @@ async def chat(req: ChatRequest,
         prior = threads.path_to(parent_id, rows)
     elif req.edit_of is not None:
         raise HTTPException(400, "edit_of needs the conversation_id it belongs to")
+    elif req.course_id:
+        course = await study.owned(db, req.course_id, principal.user_id)
+    if course is not None and not settings.study:
+        raise HTTPException(400, "study sessions are turned off here")
+    if course is not None and not model.tools:
+        raise HTTPException(400, f"{model.display} can't run a study session: pick a model "
+                                 "that looks things up")
 
     if len(doc_ids) > documents.MAX_DOCS_PER_MESSAGE:
         raise HTTPException(400, f"at most {documents.MAX_DOCS_PER_MESSAGE} documents per message")
@@ -759,6 +751,16 @@ async def chat(req: ChatRequest,
             for n, d in enumerate(lookup + ([docs[i] for i in folded if i in docs]
                                             if model.tools else []), 1)]
     by_id = {d.id: r for d, r in zip(lookup, refs, strict=False)}
+    # a course's materials: always looked up, never sent whole, so a semester
+    # of notes doesn't fill the window on every turn
+    course_refs: list[DocRef] = []
+    course_tokens: dict[str, int] = {}
+    if course is not None:
+        for d in await study.materials(db, course["id"], principal.user_id):
+            r = DocRef(f"d{len(refs) + len(course_refs) + 1}", d.filename, d.text,
+                       d.meta.get("units"), d.meta.get("unit"))
+            course_refs.append(r)
+            course_tokens[r.ref] = d.tokens
     doc_blocks = {d.id: d.block() for d in playing}
     doc_blocks.update({i: r.stub(docs[i].tokens) for i, r in by_id.items()})
     history = threads.history(prior, doc_blocks)
@@ -822,7 +824,7 @@ async def chat(req: ChatRequest,
     # run_python: a tools model always has a calculator, when the sandbox is built
     compute = (model.tools and settings.python_tool
                and sandbox.available(settings.sandbox_python) is None)
-    if web or refs or use_files or use_pictures or compute:
+    if web or refs or course_refs or use_files or use_pictures or compute or course is not None:
         tools = []
         if use_pictures:
             tools.append(view_image_tool(pictures, allow_web=web,
@@ -837,8 +839,8 @@ async def chat(req: ChatRequest,
                                      max_bytes=int(settings.agent_page_max_mb * 1024 * 1024),
                                      scratch_dir=settings.upload_dir,
                                      pdf_max_chars=settings.document_max_chars)]
-        if refs:
-            tools += document_tools(refs, read_chars=settings.agent_read_chars)
+        if refs or course_refs:
+            tools += document_tools(refs + course_refs, read_chars=settings.agent_read_chars)
         if compute:
             async def save_figure(png: bytes) -> str:
                 file_id, path = save_upload(settings.upload_dir, png, ".png")
@@ -889,6 +891,8 @@ async def chat(req: ChatRequest,
         # one system message, first: several chat templates reject a second
         # one, and a compacted history already starts with its summary
         brief = agent.system_prompt()
+        if course is not None:
+            brief = study.brief(course, course_refs, course_tokens, compute=compute) + "\n\n" + brief
         if messages[0]["role"] == "system":
             messages[0] = {"role": "system", "content": brief + "\n\n" + messages[0]["content"]}
         else:
@@ -933,10 +937,14 @@ async def chat(req: ChatRequest,
         conv_id = uuid.uuid4().hex
         title = req.message.strip().replace("\n", " ")[:50]
         await db.execute(
-            "INSERT INTO conversations (id, user_id, title, model_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (conv_id, principal.user_id, title, req.model, ts, ts),
+            "INSERT INTO conversations (id, user_id, title, model_id, course_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (conv_id, principal.user_id, title, req.model, course["id"] if course else None, ts, ts),
         )
+    if course is not None:
+        # the course moves up its list, and its next session starts on this model
+        await db.execute("UPDATE courses SET updated_at = ?, model_id = ? WHERE id = ?",
+                         (ts, req.model, course["id"]))
     user_msg_id = await db.insert(
         "INSERT INTO messages (conversation_id, role, content, search_json, "
         "  image_upload_id, doc_ids_json, parent_id, created_at) "
@@ -1218,6 +1226,8 @@ if STATIC_DIR.exists():
               name="assets")
 
     @app.get("/")
+    @app.get("/study")
+    @app.get("/study/{rest:path}")
     async def index():
         idx = STATIC_DIR / "index.html"
         if idx.exists():

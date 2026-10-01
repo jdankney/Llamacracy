@@ -14,6 +14,10 @@ const api = {
     const r = await fetch(p, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) });
     if (!r.ok) throw await err(r); return r.json();
   },
+  async patch(p, b) {
+    const r = await fetch(p, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) });
+    if (!r.ok) throw await err(r); return r.json();
+  },
   async del(p) { const r = await fetch(p, { method: 'DELETE' }); if (!r.ok) throw await err(r); return r.json(); },
   async upload(file) {
     const fd = new FormData(); fd.append('file', file);
@@ -310,6 +314,11 @@ const S = {
   compacting: false,
   draft: '',            // composer text survives re-renders (model switch, stream end, ...)
   stick: true,          // thread is scrolled to the bottom -> keep following new tokens
+  // study: the courses, the one open (with its materials and sessions), and
+  // which of chat / study the conversation state belongs to right now; the
+  // other side's is kept in `saved`, so switching back returns to it
+  courses: [], course: null, matReading: [], routing: false,
+  ctx: 'chat', saved: {},
 };
 
 /* ------------------------------------------------------------- SSE: queue */
@@ -327,18 +336,21 @@ function connectQueue() {
 
 /* --------------------------------------------------------------- rendering */
 function render() {
+  const study = S.view === 'study';
   const main = S.view === 'usage' ? usageView()
     : S.view === 'help' ? helpView()
-    : S.view === 'admin' ? adminView() : chatView();
+    : S.view === 'admin' ? adminView()
+    : study && !S.course ? coursesPage() : chatView();
   $app.replaceChildren(
     topbar(),
-    h('div', { class: 'app-body' }, S.view === 'admin' ? null : sidebar(), main),
+    h('div', { class: 'app-body' }, S.view === 'admin' ? null : study ? studySidebar() : sidebar(), main),
     queuePanel(),
   );
-  if (S.view === 'chat') {
+  if (S.view === 'chat' || (study && S.course)) {
     autosize(document.getElementById('composer'));
     if (S.stick) scrollThread(true);
   }
+  syncUrl();
 }
 // true only on a real mouse/trackpad ("fine" pointer + actual hover) -- false
 // on touch, so the composer auto-focus never summons the on-screen keyboard
@@ -360,6 +372,16 @@ function autosize(ta) {
 }
 function setView(v) {
   if (S.view === v) return;
+  // chat and study each keep their own open conversation and model
+  const ctx = v === 'study' || v === 'chat' ? v : null;
+  if (ctx && ctx !== S.ctx) {
+    if (S.active) { flashInfo('One moment: the reply is still coming.'); return; }
+    S.saved[S.ctx] = { conv: S.conv, messages: S.messages, model: S.pickerModel };
+    const back = S.saved[ctx] || { conv: null, messages: [], model: ctx === 'study' ? studyModelFor(S.course) : S.pickerModel };
+    S.conv = back.conv; S.messages = back.messages; S.pickerModel = back.model;
+    S.ctx = ctx; S.editing = null; S.pendingImage = null; S.pendingDocs = []; S.stick = true;
+    if (ctx === 'study') loadCourses().then(() => { if (S.view === 'study') render(); });
+  }
   S.view = v; S.sidebarOpen = false;
   if (v === 'usage') { loadUsage(); loadApiKeys(); }
   if (v === 'admin') loadAdmin();
@@ -368,7 +390,7 @@ function setView(v) {
 
 /* topbar */
 function topbar() {
-  const nav = [['chat', 'Chat'], ['usage', 'Account'], ['help', 'Help']];
+  const nav = [['chat', 'Chat'], ...(S.me?.study?.enabled ? [['study', 'Study']] : []), ['usage', 'Account'], ['help', 'Help']];
   if (S.me?.is_admin) nav.push(['admin', 'Admin']);
   return h('header', { id: 'topbar', class: 'topbar' },
     h('button', {
@@ -487,6 +509,242 @@ function sidebar() {
   ];
 }
 
+/* ---------------------------------------------------------------- study */
+// /study: courses, each with its own materials and a tutor. A session is an
+// ordinary conversation tied to a course, so the thread, the composer and
+// the streaming are the chat's own. What differs is the sidebar (courses,
+// then one course's sessions), the course's home page, and the models on
+// offer: only those that look things up, since the tutor works from the
+// materials with tools.
+const studyModels = () => S.models.filter(m => m.in_picker && m.tools);
+const STARTERS = [
+  'Quiz me on what we covered this week',
+  'Explain this step by step: ',
+  'Check my work on this problem: ',
+  'Help me plan my studying before the exam',
+];
+function studyModelFor(course) {
+  const ids = studyModels().map(m => m.id);
+  return [course?.model_id, S.me?.study?.default_model].find(x => ids.includes(x)) || ids[0] || S.pickerModel;
+}
+// the address bar follows what's on screen, so a reload or the back button
+// lands in the same course and session
+function studyUrl() {
+  if (S.view !== 'study') return '/';
+  return '/study' + (S.course ? `/${S.course.id}` + (S.conv?.course_id ? `/${S.conv.id}` : '') : '');
+}
+function syncUrl() {
+  if (S.routing) return;
+  const want = studyUrl();
+  if (location.pathname !== want) history.pushState(null, '', want);
+}
+async function routeFromUrl() {
+  const [top, courseId, convId] = location.pathname.split('/').filter(Boolean);
+  S.routing = true;
+  try {
+    if (top === 'study' && S.me?.study?.enabled) {
+      setView('study');
+      await loadCourses();
+      if (!courseId) { S.course = null; S.conv = null; S.messages = []; }
+      else if (courseId !== S.course?.id || (S.conv && !convId)) await openCourse(courseId);
+      if (convId && S.conv?.id !== convId) await openConv(convId);
+    } else if (S.view === 'study') setView('chat');
+  } finally { S.routing = false; }
+  render();
+  history.replaceState(null, '', studyUrl());
+}
+async function loadCourses() {
+  try { S.courses = (await api.get('/api/courses')).courses; } catch (e) { flashError(e.message); }
+}
+async function openCourse(id) {
+  if (S.active) { flashInfo('One moment: the reply is still coming.'); return; }
+  let c;
+  try { c = await api.get('/api/courses/' + id); } catch (e) { flashError(e.message); return; }
+  S.course = c; S.conv = null; S.messages = []; S.editing = null; S.stick = true; S.sidebarOpen = false;
+  S.pickerModel = studyModelFor(c);
+  S.view = 'study';
+  render();
+}
+function allCourses() {
+  if (S.active) { flashInfo('One moment: the reply is still coming.'); return; }
+  S.course = null; S.conv = null; S.messages = []; S.editing = null; S.sidebarOpen = false;
+  render();
+  loadCourses().then(() => { if (S.view === 'study' && !S.course) render(); });
+}
+// a new session starts from the course's home page
+function newSession() {
+  if (S.active) return;
+  S.conv = null; S.messages = []; S.editing = null; S.stick = true; S.sidebarOpen = false;
+  render(); focusComposer();
+}
+
+function studySidebar() {
+  const c = S.course;
+  return [
+    S.sidebarOpen ? h('div', { class: 'backdrop', onclick: () => { S.sidebarOpen = false; render(); } }) : null,
+    h('aside', { class: 'sidebar' + (S.sidebarOpen ? ' is-open' : ''), 'aria-label': c ? 'Sessions' : 'Courses' },
+      h('div', { class: 'sidebar-top' }, c
+        ? h('button', { class: 'btn', onclick: newSession }, icon('plus'), 'New session')
+        : h('button', { class: 'btn', onclick: () => courseForm() }, icon('plus'), 'New course')),
+      h('div', { class: 'convs' }, c ? [
+        h('button', { class: 'conv conv-back', onclick: allCourses }, icon('left', 'icon-sm'), h('span', { class: 'title' }, 'All courses')),
+        h('div', { class: 'group', title: c.name }, c.name),
+        c.sessions.length ? c.sessions.map(s => h('div', {
+          class: 'conv' + (S.conv?.id === s.id ? ' is-active' : ''),
+          role: 'button', tabindex: 0, title: s.title || 'untitled',
+          onclick: () => openConv(s.id),
+          onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openConv(s.id); } },
+        },
+          h('span', { class: 'title' }, s.title || 'untitled'),
+          h('button', { class: 'del', 'aria-label': 'Delete session', title: 'Delete', onclick: e => { e.stopPropagation(); delConv(s.id); } },
+            icon('trash', 'icon-sm'))))
+          : h('div', { class: 'empty-note', style: 'padding:6px 10px' }, 'No sessions yet.'),
+      ] : S.courses.length ? S.courses.map(x => h('div', {
+        class: 'conv', role: 'button', tabindex: 0, title: x.name,
+        onclick: () => openCourse(x.id),
+        onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCourse(x.id); } },
+      }, h('span', { class: 'title' }, x.name)))
+        : h('div', { class: 'empty-note', style: 'padding:12px 10px' }, 'No courses yet.')),
+      h('div', { id: 'sidebar-foot', class: 'sidebar-foot' }, ...sidebarFootKids())),
+  ];
+}
+
+// /study with no course open: the list, or how to start
+function coursesPage() {
+  return h('main', { class: 'main' }, h('div', { class: 'page page-narrow study' },
+    h('h1', {}, 'Study'),
+    h('p', { class: 'lead' },
+      'Add a course and its materials (the syllabus, your notes, slides, homework, old exams) and ' +
+      'work through it with a tutor. It asks before it tells, looks things up in your materials, ' +
+      'and says which file and page an answer came from.'),
+    h('div', { class: 'course-grid' },
+      S.courses.map(c => h('button', { class: 'course-card', onclick: () => openCourse(c.id) },
+        h('span', { class: 'course-name' }, c.name),
+        c.notes ? h('span', { class: 'course-notes' }, c.notes) : null,
+        h('span', { class: 'course-meta' },
+          [plural(c.materials, 'material'), plural(c.sessions, 'session')].join(' · '),
+          c.quantitative ? h('span', { class: 'tag accent' }, 'math') : null))),
+      h('button', { class: 'course-card course-new', onclick: () => courseForm() },
+        icon('plus'), h('span', { class: 'course-name' }, S.courses.length ? 'New course' : 'Add your first course'))),
+    h('p', { class: 'muted small' }, 'Your courses are yours alone: nobody else using this site can see them.')));
+}
+
+// a course's home: what the tutor works from, and a way in
+function courseHome() {
+  const c = S.course;
+  const drop = e => { e.preventDefault(); e.currentTarget.classList.remove('is-drop'); addMaterials([...(e.dataTransfer?.files || [])]); };
+  return h('div', {
+    class: 'course-home',
+    ondragover: e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); e.currentTarget.classList.add('is-drop'); } },
+    ondragleave: e => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove('is-drop'); },
+    ondrop: drop,
+  },
+    h('div', { class: 'course-head' },
+      h('h2', {}, c.name),
+      h('button', { class: 'btn btn-ghost btn-sm', onclick: () => courseForm(c) }, icon('pen', 'icon-sm'), 'Edit')),
+    c.notes ? h('p', { class: 'course-notes' }, c.notes) : null,
+    c.quantitative ? h('p', { class: 'course-flag' }, icon('code', 'icon-sm'),
+      'Math course: the tutor works every number out in Python, and Llamacracy checks the ones in its answers.') : null,
+    h('div', { class: 'look-label' }, 'Materials'),
+    c.materials.length || S.matReading.length ? h('div', { class: 'doc-chips' },
+      c.materials.map(d => docChip(d, { onRemove: () => removeMaterial(d) })),
+      S.matReading.map(n => h('span', { class: 'doc-chip is-reading' }, h('i', { class: 'pulse' }),
+        h('span', { class: 'doc-name' }, n), h('span', { class: 'doc-meta' }, 'reading…')))) : null,
+    h('div', { class: 'row course-add' },
+      h('label', { class: 'btn btn-sm' }, icon('clip', 'icon-sm'), 'Add materials',
+        h('input', { type: 'file', multiple: true, hidden: true, onchange: e => { const f = [...e.target.files]; e.target.value = ''; addMaterials(f); } })),
+      h('span', { class: 'muted small' }, c.materials.length
+        ? 'The tutor looks things up in these and says which one, and which page, it used.'
+        : 'PDF, Word, PowerPoint or text: the syllabus, notes, slides, homework, old exams. Or drop files here.')),
+    h('div', { class: 'look-label' }, 'Start a session'),
+    h('div', { class: 'starters' }, STARTERS.map(t => h('button', {
+      type: 'button', class: 'hint hint-link',
+      onclick: () => { S.draft = t; render(); const ta = document.getElementById('composer'); if (ta) { ta.focus(); ta.setSelectionRange(t.length, t.length); } },
+    }, t.replace(/: $/, '…')))));
+}
+
+async function addMaterials(files) {
+  const c = S.course;
+  if (!c) return;
+  const maxMb = S.me?.limits?.document_max_mb || 25;
+  for (const file of files) {
+    if (isImageFile(file)) { flashError(`${file.name} is a picture. Course materials are documents: PDF, Word, slides or text.`); continue; }
+    if (file.size > maxMb * 1024 * 1024) { flashError(`${file.name} is too large (max ${maxMb} MB)`); continue; }
+    S.matReading.push(file.name); render();
+    try {
+      const up = await api.upload(file);
+      await api.post(`/api/courses/${c.id}/materials`, { upload_id: up.id });
+      c.materials.push(up);
+      if (up.warnings?.includes('truncated')) flashInfo(`${up.filename} is very long, so only the start of it was kept.`);
+      if (up.warnings?.includes('no_text_layer')) flashInfo(`Parts of ${up.filename} look scanned: those pages have no text to read.`);
+    } catch (e) { flashError(e.message); }
+    finally { S.matReading.splice(S.matReading.indexOf(file.name), 1); if (S.view === 'study') render(); }
+  }
+}
+async function removeMaterial(d) {
+  const c = S.course;
+  if (!await confirmModal(`Remove ${d.filename}?`, 'The tutor won\'t see it any more. Your sessions stay as they are.', 'Remove')) return;
+  try { await api.del(`/api/courses/${c.id}/materials/${d.id}`); } catch (e) { flashError(e.message); return; }
+  c.materials = c.materials.filter(x => x.id !== d.id);
+  render();
+}
+
+function courseForm(c = null) {
+  const name = h('input', { class: 'input', value: c?.name || '', maxlength: 80, placeholder: 'e.g. Organic Chemistry', autofocus: true, 'aria-label': 'Course name' });
+  const notes = h('textarea', {
+    class: 'textarea', rows: 4, maxlength: 4000, value: c?.notes || '', 'aria-label': 'About this course',
+    placeholder: 'Anything the tutor should know: the level, the textbook, how the exams work, what you find hard.',
+  });
+  const quant = h('input', { type: 'checkbox', checked: !!c?.quantitative });
+  let busy = false;
+  const save = async () => {
+    const body = { name: name.value.trim(), notes: notes.value.trim(), quantitative: quant.checked };
+    if (!body.name) { name.focus(); return; }
+    if (busy) return;
+    busy = true;
+    try {
+      if (c) {
+        Object.assign(c, await api.patch('/api/courses/' + c.id, body));
+        const row = S.courses.find(x => x.id === c.id); if (row) Object.assign(row, body);
+        close(); render();
+      } else {
+        const made = await api.post('/api/courses', body);
+        close(); await loadCourses(); await openCourse(made.id);
+      }
+    } catch (e) { busy = false; flashError(e.message); }
+  };
+  name.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+  const close = modal([
+    h('h3', {}, c ? 'Edit course' : 'New course'),
+    h('label', { class: 'form-field' }, h('span', {}, 'Name'), name),
+    h('label', { class: 'form-field' }, h('span', {}, 'About it ', h('span', { class: 'faint' }, '(optional)')), notes),
+    h('label', { class: 'check-field' }, quant, h('span', {},
+      h('strong', {}, 'It uses math or numbers'),
+      h('span', { class: 'muted' }, S.me?.compute
+        ? ' — the tutor works every number out in Python, and Llamacracy checks the answers against it.'
+        : ' — the tutor is told to be careful with every number.'))),
+    h('div', { class: 'actions' },
+      c ? h('button', { class: 'btn btn-ghost btn-danger', style: 'margin-right:auto', onclick: () => { close(); deleteCourse(c); } }, 'Delete course') : null,
+      h('button', { class: 'btn btn-ghost', onclick: () => close() }, 'Cancel'),
+      h('button', { class: 'btn btn-primary', onclick: save }, c ? 'Save' : 'Add course')),
+  ], null, 'modal-form');
+}
+async function deleteCourse(c) {
+  const n = c.sessions?.length || 0, m = c.materials?.length || 0;
+  if (!await confirmModal(`Delete ${c.name}?`,
+    `Its ${plural(n, 'session')} and ${plural(m, 'material')} go with it. This can't be undone.`, 'Delete')) return;
+  try { await api.del('/api/courses/' + c.id); } catch (e) { flashError(e.message); return; }
+  S.courses = S.courses.filter(x => x.id !== c.id);
+  if (S.course?.id === c.id) { S.course = null; S.conv = null; S.messages = []; }
+  render();
+}
+// above a session's thread: which course this is, and the way back to it
+function studyBar() {
+  return h('div', { class: 'study-bar' },
+    h('button', { class: 'link-btn', onclick: newSession, title: 'The course page' }, icon('left', 'icon-sm'), S.course.name),
+    S.conv ? h('span', { class: 'study-bar-title' }, S.conv.title || '') : null);
+}
+
 /* chat view */
 function chatView() {
   const thread = h('div', {
@@ -498,9 +756,10 @@ function chatView() {
     },
   },
     h('div', { class: 'thread-inner' },
-      S.messages.length ? threadItems() : emptyState(),
+      S.messages.length ? threadItems() : S.view === 'study' ? courseHome() : emptyState(),
       S.active ? activeBubble() : null));
   return h('main', { class: 'main' },
+    S.view === 'study' && S.conv ? studyBar() : null,
     h('div', { class: 'main', style: 'position:relative' }, thread, h('div', { id: 'jump-slot' }, jumpPill())),
     composer(),
   );
@@ -1160,7 +1419,8 @@ function composer() {
       },
         h('div', { id: 'attach-slot' }, attachTray()),
         h('textarea', {
-          id: 'composer', rows: 1, placeholder: 'Message Llamacracy…', value: S.draft,
+          id: 'composer', rows: 1, value: S.draft,
+          placeholder: S.view === 'study' && S.course ? `Ask about ${S.course.name}…` : 'Message Llamacracy…',
           'aria-label': 'Message',
           oninput: e => { S.draft = e.target.value; autosize(e.target); refreshCtx(); },
           onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(e); } },
@@ -1177,7 +1437,7 @@ function composer() {
                 if (!nm?.vision) S.pendingImage = null;   // no longer attachable on this model
                 render();
               },
-            }, S.models.filter(md => md.in_picker).map(md => h('option',
+            }, (S.view === 'study' ? studyModels() : S.models.filter(md => md.in_picker)).map(md => h('option',
               { value: md.id, selected: md.id === S.pickerModel },
               `${md.display}${md.tier ? ` · ${tierLabel(md.tier)}` : ''}${md.vision ? ' · vision' : ''}${md.thinking ? ' · thinks' : ''}${md.tools ? ' · searches' : ''}`))),
             icon('chevron', 'icon-sm')),
@@ -1622,6 +1882,22 @@ function helpView() {
         'model vouching for itself. A match means the number was computed, not that the code solved ' +
         'the right problem, so glance at how it set things up. The code runs sealed off: no internet, ' +
         'no access to anything on the server, and a time limit.')) : null,
+    S.me?.study?.enabled ? h('div', {},
+      h('h2', {}, 'Studying for a class'),
+      h('p', {},
+        'Open ', h('button', { class: 'link-btn', onclick: () => setView('study') }, 'Study'),
+        ' and add a course: give it a name, a line or two about it (the textbook, how the exams ' +
+        'work), and its materials: the syllabus, your notes, slides, homework, old exams. Then ' +
+        'start a session and ask about anything in it.'),
+      h('p', {},
+        'The tutor works like a good teaching assistant. It asks what you already know, gives a ' +
+        'hint before the answer, and checks you followed. Ask outright and it explains or works ' +
+        'the whole thing through. It looks things up in your materials first and says which file ' +
+        'and page it used, and it says so when the answer comes from general knowledge instead.'),
+      h('p', { class: 'muted' },
+        'Tick "It uses math or numbers" for a course like chemistry, statistics or economics: the tutor ' +
+        'then works every number out in Python, and the check under each answer shows any it ' +
+        'didn\'t. Your courses, materials and sessions are yours alone: nobody else here can see them.')) : null,
 
     h('h2', {}, 'Letting it think'),
     h('p', {},
@@ -1757,9 +2033,17 @@ async function boot() {
   S.models = mods.models; S.loadedModel = mods.loaded_model;
   const pickable = S.models.filter(m => m.in_picker);
   S.pickerModel = pickable.find(m => m.tier === 'daily')?.id || pickable[0]?.id;
+  if (location.pathname.startsWith('/study') && S.me.study?.enabled) {
+    // straight to study, keeping the chat's default model for when they go there
+    S.saved.chat = { conv: null, messages: [], model: S.pickerModel };
+    S.view = S.ctx = 'study'; S.pickerModel = studyModelFor(null);
+    S.routing = true;               // the address is read below; don't rewrite it first
+  }
   render();                       // paint the shell as soon as we can
   focusComposer();
   try { S.conversations = (await api.get('/api/conversations')).conversations; } catch {}
+  if (location.pathname.startsWith('/study')) await routeFromUrl();
+  window.addEventListener('popstate', routeFromUrl);
   await loadUsage();
   connectQueue();
   render();
@@ -1770,6 +2054,7 @@ async function loadUsage() {
 }
 
 function newChat() {
+  if (S.view !== 'chat') setView('chat');
   S.conv = null; S.messages = []; S.editing = null; S.view = 'chat'; S.sidebarOpen = false; S.ctxOpen = false; S.stick = true;
   render(); focusComposer();
 }
@@ -1812,20 +2097,30 @@ async function switchBranch(msgId) {
 async function openConv(id) {
   let d;
   try { d = await api.get('/api/conversations/' + id); } catch (e) { flashError(e.message); return; }
+  const cid = d.conversation.course_id;
+  if (cid && S.course?.id !== cid) {
+    try { S.course = await api.get('/api/courses/' + cid); } catch (e) { flashError(e.message); return; }
+  }
   S.messages = []; S.editing = null;
   applyConv(d);
-  S.view = 'chat'; S.sidebarOpen = false; S.stick = true;
+  S.view = cid ? 'study' : 'chat'; S.ctx = S.view; S.sidebarOpen = false; S.stick = true;
   if (d.conversation.model_id && S.models.some(m => m.id === d.conversation.model_id))
     S.pickerModel = d.conversation.model_id;
   render();
   focusComposer();
 }
 async function delConv(id) {
-  const c = S.conversations.find(x => x.id === id);
-  if (!await confirmModal('Delete this conversation?', `"${c?.title || 'untitled'}" and any attached images will be removed. This can't be undone.`, 'Delete')) return;
+  const sessions = S.course?.sessions || [];
+  const session = sessions.some(x => x.id === id);
+  const c = (session ? sessions : S.conversations).find(x => x.id === id);
+  if (!await confirmModal(session ? 'Delete this session?' : 'Delete this conversation?',
+    `"${c?.title || 'untitled'}" and any attached images will be removed. This can't be undone.`, 'Delete')) return;
   try { await api.del('/api/conversations/' + id); } catch (e) { flashError(e.message); return; }
   S.conversations = S.conversations.filter(x => x.id !== id);
-  if (S.conv?.id === id) newChat(); else render();
+  if (S.course) S.course.sessions = sessions.filter(x => x.id !== id);
+  if (S.conv?.id !== id) render();
+  else if (session) newSession();
+  else newChat();
 }
 async function compactConversation() {
   if (!S.conv || S.compacting) return;
@@ -1877,11 +2172,14 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
   focusComposer();
 
   aborter = new AbortController();
+  // a first message on a course's page starts a session in that course
+  const course = S.view === 'study' && !S.conv ? S.course : null;
   const pm = S.models.find(x => x.id === S.pickerModel);
   const body = { model: S.pickerModel, message: text, search: S.searchOn, think: !!(S.thinkOn && pm?.thinking), files: S.filesOn };
   if (img) body.image_id = img.id;
   if (docs.length) body.doc_ids = docs.map(d => d.id);
   if (S.conv) body.conversation_id = S.conv.id;
+  if (course) body.course_id = course.id;
   if (editing) body.edit_of = editOf;
   let accepted = false;
   try {
@@ -1890,8 +2188,9 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
         accepted = true;
         S.active.jobId = ev.job_id; S.active.position = ev.position;
         if (!S.conv) {
-          S.conv = { id: ev.conversation_id, model_id: S.pickerModel, title: text.slice(0, 50), updated_at: Date.now() / 1000 };
-          S.conversations.unshift(S.conv);
+          S.conv = { id: ev.conversation_id, model_id: S.pickerModel, title: text.slice(0, 50), updated_at: Date.now() / 1000,
+            course_id: course?.id || null };
+          (course ? course.sessions : S.conversations).unshift(S.conv);
         } else {
           S.conv.updated_at = Date.now() / 1000;
         }

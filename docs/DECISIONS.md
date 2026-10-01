@@ -242,6 +242,26 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   would have to be remembered exactly when it matters. It makes every turn
   on those models an agent turn, which costs a system prompt and a tool
   schema; turns that don't compute answer in one step as before.
+- **Study is data, not configuration.** A course (name, notes, materials,
+  whether it uses math) is rows in the instance's own database, owned by
+  one person and invisible to everyone else, the same as their chats. The
+  code knows nothing about any subject: the tutor's instructions are
+  general (ask before telling, hint before solving, materials before
+  general knowledge, say where an answer came from, never invent a quote or
+  a page) and the course supplies the rest. So one install serves a
+  chemistry student and a history student alike, and publishing the
+  code publishes nobody's coursework.
+- **A study session always looks things up.** Course materials are never
+  pasted into the prompt, however small: every session is an agent turn on
+  a `tools` model with doc_outline / doc_search / doc_read over them. A
+  semester of notes then costs a few hundred tokens of stand-ins per turn
+  instead of the whole window, and the tutor can say which file and page
+  it used. The cost is that models without tools can't run a session at
+  all; Study only appears when one can.
+- **Sessions are conversations.** A session is a conversation with
+  `course_id` set: editing, branches, compaction, files, Python and the
+  number check all work unchanged. The chat list leaves them out and the
+  course lists them, which is the only place the two differ.
 - **Long documents are looked up, not truncated.** A model with `tools`
   gets its documents whole while they fit in `DOC_INLINE_FRACTION` (half) of
   its context; past that the biggest are replaced by a short

@@ -21,8 +21,13 @@ checks.
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from . import documents
 from .db import Database
+
+log = logging.getLogger("llamacracy.threads")
 
 _COLS = (
     "id, role, content, model_id, prompt_tokens, completion_tokens, usage_estimated, "
@@ -121,3 +126,41 @@ def _with_documents(row: dict, blocks: dict[str, str]) -> str:
     if not ids:
         return row["content"]
     return "".join(blocks.get(i, "") for i in ids) + row["content"]
+
+
+async def delete(db: Database, conv_id: str, user_id: int) -> None:
+    """Delete a conversation and everything that belongs only to it. Attached
+    images and documents, and pictures run_python drew, belong only to its
+    messages: their rows go *and* their files on disk (a document's extracted
+    text too), so a deleted chat leaves no orphans. A course's materials are
+    the course's, never a session's, and stay."""
+    uploads = await db.fetch_all(
+        "SELECT id, path, text_path FROM uploads WHERE user_id = ? AND ("
+        "  id IN (SELECT image_upload_id FROM messages WHERE conversation_id = ?)"
+        "  OR id IN (SELECT j.value FROM messages m, json_each(m.doc_ids_json) j"
+        "            WHERE m.conversation_id = ? AND json_valid(m.doc_ids_json))"
+        "  OR id IN (SELECT j.value FROM messages m, json_each(m.tools_json, '$.figures') j"
+        "            WHERE m.conversation_id = ? AND json_valid(m.tools_json)))"
+        " AND id NOT IN (SELECT upload_id FROM course_materials)",
+        (user_id, conv_id, conv_id, conv_id),
+    )
+    await db.transaction([
+        ("DELETE FROM messages WHERE conversation_id = ?", (conv_id,)),
+        ("DELETE FROM workspace_files WHERE conversation_id = ?", (conv_id,)),
+        ("UPDATE jobs SET conversation_id = NULL WHERE conversation_id = ?", (conv_id,)),
+        ("DELETE FROM conversations WHERE id = ?", (conv_id,)),
+        *[("DELETE FROM uploads WHERE id = ?", (u["id"],)) for u in uploads],
+    ])
+    remove_files(uploads)
+
+
+def remove_files(uploads) -> None:
+    """The files behind deleted upload rows (best effort: a row is already gone)."""
+    for u in uploads:
+        for f in (u["path"], u["text_path"]):
+            if not f:
+                continue
+            try:
+                Path(f).unlink(missing_ok=True)
+            except OSError:
+                log.warning("failed to remove upload file %s", f)

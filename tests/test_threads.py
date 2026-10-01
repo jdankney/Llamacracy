@@ -76,4 +76,6 @@ def test_linear_conversations_migrate_to_one_branch(tmp_path):
         "SELECT id, parent_id, active_child_id, context_summary FROM messages ORDER BY id")]
     assert rows == [(1, None, 2, None), (2, 1, 3, "SUMMARY"), (3, 2, 4, None), (4, 3, None, None)]
     assert db._conn.execute("SELECT active_root_id FROM conversations").fetchone()[0] == 1
+    # and it caught up with later columns: study sessions
+    assert "course_id" in [r[1] for r in db._conn.execute("PRAGMA table_info(conversations)")]
     db.close()

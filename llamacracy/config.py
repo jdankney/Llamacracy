@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     sandbox_python: str = str(REPO_ROOT / "data" / "sandbox" / "bin" / "python")
     sandbox_timeout_seconds: float = 20      # one run, wall clock
     sandbox_memory_mb: int = 1024            # one run
+    # Study (/study): courses with their own materials and a tutor. Sessions
+    # run on models marked `tools`; STUDY_MODEL picks the one a new course
+    # starts on (default: the first heavy-tier tools model, else any).
+    study: bool = True
+    study_model: str | None = None
     # documents on a branch are sent in full while they fit in this share of
     # the model's context; past that, a tools model looks things up in them
     doc_inline_fraction: float = 0.5

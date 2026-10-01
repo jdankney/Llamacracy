@@ -39,6 +39,9 @@ _MIGRATIONS = [
     "ALTER TABLE uploads ADD COLUMN meta_json TEXT",
     "ALTER TABLE messages ADD COLUMN doc_ids_json TEXT",
     "ALTER TABLE messages ADD COLUMN tools_json TEXT",
+    "ALTER TABLE conversations ADD COLUMN course_id TEXT",
+    # here, not in schema.sql: an older DB only has the column after the line above
+    "CREATE INDEX IF NOT EXISTS ix_conversations_course ON conversations(course_id, updated_at DESC)",
 ]
 
 # Conversations became trees (message editing). A conversation from before

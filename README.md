@@ -75,6 +75,12 @@ payment processing.
   network and no view of the server, charts it draws appear under the reply,
   and the server checks which numbers in the answer actually came from the
   code's output, flagging any that didn't.
+- **Study** (`/study`): each person adds their own courses, with materials
+  (syllabus, notes, slides, old exams) and a few lines about the class. A
+  session is a tutor that asks before it tells, looks things up in those
+  materials and says which file and page it used. A course marked as using
+  math requires every number to come from `run_python`. Courses are private
+  to their owner, and nothing about them is configuration: any subject works.
 - **Vision on demand**: attach an image and the turn routes to the model's
   vision variant. Images live on disk, never base64 in the database. A
   tool-using vision model can look again at an earlier photo when you ask
