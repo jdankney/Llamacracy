@@ -36,8 +36,10 @@ CREATE TABLE IF NOT EXISTS conversations (
     context_summary      TEXT,
     -- the first message of the branch being shown (see threads.py)
     active_root_id       INTEGER,
-    -- a study session: the course it belongs to (see study.py); NULL for chat
+    -- a study session: the course it belongs to (see study.py) and the mode
+    -- its last turn ran in (guide/explain/check/quiz); NULL for chat
     course_id            TEXT,
+    study_mode           TEXT,
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 );

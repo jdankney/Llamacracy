@@ -79,8 +79,12 @@ payment processing.
   (syllabus, notes, slides, old exams) and a few lines about the class. A
   session is a tutor that asks before it tells, looks things up in those
   materials and says which file and page it used. A course marked as using
-  math requires every number to come from `run_python`. Courses are private
-  to their owner, and nothing about them is configuration: any subject works.
+  math requires every number to come from `run_python`. Four modes: Guide me
+  (hints first), Explain, Check my work and Quiz me. Courses are private to
+  their owner, and nothing about them is configuration: any subject works.
+- **Quotations are checked**: when an answer quotes a document or a page,
+  the server looks for the words, word for word, in what the model read,
+  and in the page it cites, and flags any that aren't there.
 - **Vision on demand**: attach an image and the turn routes to the model's
   vision variant. Images live on disk, never base64 in the database. A
   tool-using vision model can look again at an earlier photo when you ask

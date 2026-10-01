@@ -258,6 +258,22 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   instead of the whole window, and the tutor can say which file and page
   it used. The cost is that models without tools can't run a session at
   all; Study only appears when one can.
+- **Quotations are checked the way numbers are.** A tutor that invents a
+  quotation, or puts a real one on the wrong page, is worse than one that
+  paraphrases, and a student can't tell the difference by reading. So the
+  server looks for every quotation (five words or more in double quotes,
+  or a blockquote) in what the model could see: the documents in play and
+  everything its tools returned, plus the user's own words. Matching is
+  word for word but not character for character (case, punctuation,
+  hyphenated line breaks, "…" and [insertions] are allowed for), and a
+  page cited right after a quotation, or as "on page 7" before it, is
+  checked against the page marks the extractor writes. Shorter quoted bits
+  are terms and titles, and are left alone. The model is told the check
+  exists, which is most of its value: it quotes less loosely.
+- **Modes change how the tutor teaches, not what it may claim.** Guide,
+  Explain, Check my work and Quiz swap the "how to tutor" part of the
+  brief; the accuracy rules after it are the same in all four. A session
+  stores its last mode, so a quiz picks up where it left off.
 - **Sessions are conversations.** A session is a conversation with
   `course_id` set: editing, branches, compaction, files, Python and the
   number check all work unchanged. The chat list leaves them out and the

@@ -673,8 +673,10 @@ class ChatRequest(BaseModel):
     # fresh reply. Omitted, the message continues the branch being shown.
     edit_of: int | None = None
     # Study: start a session in this course (a new conversation only; an
-    # existing one keeps the course it was started in)
+    # existing one keeps the course it was started in), and how the tutor
+    # works this turn (a session remembers its last)
     course_id: str | None = None
+    mode: Literal["guide", "explain", "check", "quiz"] | None = None
 
 
 @app.post("/api/chat")
@@ -698,8 +700,10 @@ async def chat(req: ChatRequest,
     doc_ids = list(dict.fromkeys(req.doc_ids or []))
     prior: list[dict] = []
     course = None
+    mode = req.mode
     if conv_id:
         conv = await _owned_conversation(db, conv_id, principal.user_id)
+        mode = mode or conv["study_mode"]
         if conv["course_id"]:
             course = await study.owned(db, conv["course_id"], principal.user_id)
         rows = await threads.load(db, conv_id)
@@ -866,6 +870,9 @@ async def chat(req: ChatRequest,
                         result_chars=settings.agent_tool_result_chars, notes=notes)
         if use_files:
             agent.workspace = ws
+        # what its quotations are checked against, besides what its tools return
+        agent.documents = ([(d.filename, d.text) for d in playing]
+                           + [(r.name, r.text) for r in refs + course_refs])
     elif req.search:
         search_outcome = await get_search().search(req.message, settings.search_max_results)
 
@@ -892,7 +899,8 @@ async def chat(req: ChatRequest,
         # one, and a compacted history already starts with its summary
         brief = agent.system_prompt()
         if course is not None:
-            brief = study.brief(course, course_refs, course_tokens, compute=compute) + "\n\n" + brief
+            brief = (study.brief(course, course_refs, course_tokens, compute=compute,
+                                 mode=mode or "guide") + "\n\n" + brief)
         if messages[0]["role"] == "system":
             messages[0] = {"role": "system", "content": brief + "\n\n" + messages[0]["content"]}
         else:
@@ -945,6 +953,8 @@ async def chat(req: ChatRequest,
         # the course moves up its list, and its next session starts on this model
         await db.execute("UPDATE courses SET updated_at = ?, model_id = ? WHERE id = ?",
                          (ts, req.model, course["id"]))
+        await db.execute("UPDATE conversations SET study_mode = ? WHERE id = ?",
+                         (mode or "guide", conv_id))
     user_msg_id = await db.insert(
         "INSERT INTO messages (conversation_id, role, content, search_json, "
         "  image_upload_id, doc_ids_json, parent_id, created_at) "

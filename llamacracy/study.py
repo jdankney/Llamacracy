@@ -81,12 +81,10 @@ async def materials(db: Database, course_id: str, user_id: int) -> list[document
     return [docs[i] for i in ids if i in docs]
 
 
-def brief(course, refs: list[DocRef], tokens: dict[str, int], *, compute: bool) -> str:
-    """The tutor's part of the system prompt, ahead of the tools' own."""
-    lines = [
-        f'You are tutoring the user in their course "{course["name"]}". The goal is that they '
-        "can do this themselves on the exam, not just that this question gets answered.",
-        "",
+# How the tutor works, by the mode the student picked. The accuracy rules
+# that follow in brief() are the same in every mode.
+MODES: dict[str, list[str]] = {
+    "guide": [
         "How to tutor:",
         "- Start from where they are. If it isn't clear what they already understand, ask.",
         "- Guide rather than tell: one question at a time, a hint before a solution, and let them "
@@ -95,6 +93,42 @@ def brief(course, refs: list[DocRef], tokens: dict[str, int], *, compute: bool) 
         "by step, then ask one short question that checks they followed.",
         "- When they show you their work, find the first thing that's wrong and ask about that; "
         "don't rewrite all of it.",
+    ],
+    "explain": [
+        "They've asked for explanations (Explain mode):",
+        "- Explain clearly and completely, the way a good textbook would: the idea first, then a "
+        "worked example, then the mistakes people commonly make.",
+        "- Use the notation and terms their materials use.",
+        "- End with one short question that checks they followed.",
+    ],
+    "check": [
+        "They want their work checked (Check my work mode):",
+        "- Go through what they show you in order and find the first step that's wrong. Say which "
+        "step and why, and let them fix it: don't fix it for them or redo the rest.",
+        "- If it's all right, say so plainly, and say what makes it right.",
+        "- If they haven't shown their work yet, ask for it.",
+    ],
+    "quiz": [
+        "They want to be tested (Quiz mode):",
+        "- Ask one question at a time, drawn from their materials (say where it comes from), then "
+        "stop and wait for their answer.",
+        "- Before you ask, work the answer out yourself (look it up, or compute it), but don't "
+        "reveal it.",
+        "- When they answer, say whether it's right, give the correct answer with a one-line "
+        "reason, then ask the next. Mix easy and hard, come back to what they missed, and keep "
+        "a running score (2 of 3 so far).",
+    ],
+}
+
+
+def brief(course, refs: list[DocRef], tokens: dict[str, int], *, compute: bool,
+          mode: str = "guide") -> str:
+    """The tutor's part of the system prompt, ahead of the tools' own."""
+    lines = [
+        f'You are tutoring the user in their course "{course["name"]}". The goal is that they '
+        "can do this themselves on the exam, not just that this question gets answered.",
+        "",
+        *MODES.get(mode, MODES["guide"]),
         "- Be honest about mistakes, theirs and yours. Encourage without flattering.",
         "",
         "Getting it right:",
@@ -102,13 +136,16 @@ def brief(course, refs: list[DocRef], tokens: dict[str, int], *, compute: bool) 
         "general knowledge, and say where it came from (the file, and the page or section).",
         "- If the materials don't cover it, say so, and mark what follows as general knowledge.",
         "- Never make up a quotation, a page number, a definition \"from the textbook\" or a "
-        "source. Quote only what you have just read, word for word.",
+        "source. Quote only what you have just read, word for word, with its page: each "
+        "quotation is checked against the materials.",
     ]
     if course["quantitative"] and compute:
         lines.append(
             "- This course has math in it. Every number, derivative, integral, solution and unit "
             "conversion you state comes from run_python, hints included, and you check a result "
-            "a second way when that's cheap.")
+            "a second way when that's cheap."
+            + (" Check each of their numeric steps with run_python before you judge it."
+               if mode == "check" else ""))
     elif course["quantitative"]:
         lines.append(
             "- This course has math in it, but Python isn't available right now: work carefully, "

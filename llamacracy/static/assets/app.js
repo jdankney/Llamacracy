@@ -317,7 +317,7 @@ const S = {
   // study: the courses, the one open (with its materials and sessions), and
   // which of chat / study the conversation state belongs to right now; the
   // other side's is kept in `saved`, so switching back returns to it
-  courses: [], course: null, matReading: [], routing: false,
+  courses: [], course: null, matReading: [], routing: false, studyMode: 'guide',
   ctx: 'chat', saved: {},
 };
 
@@ -335,6 +335,7 @@ function connectQueue() {
 }
 
 /* --------------------------------------------------------------- rendering */
+let _threadResize = null;
 function render() {
   // a redraw rebuilds the thread, which would start at the top: someone
   // reading further up stays where they were
@@ -355,6 +356,14 @@ function render() {
     const t = document.getElementById('thread');
     if (S.stick) scrollThread(true);
     else if (t && keepTop != null) t.scrollTop = keepTop;
+    // pictures and math finish laying out after this: keep following the
+    // bottom as the thread grows, while following at all
+    const inner = t?.querySelector('.thread-inner');
+    if (inner && window.ResizeObserver) {
+      _threadResize?.disconnect();
+      _threadResize = new ResizeObserver(() => { if (S.stick) scrollThread(true); });
+      _threadResize.observe(inner);
+    }
   }
   syncUrl();
 }
@@ -523,12 +532,27 @@ function sidebar() {
 // offer: only those that look things up, since the tutor works from the
 // materials with tools.
 const studyModels = () => S.models.filter(m => m.in_picker && m.tools);
-const STARTERS = [
-  'Quiz me on what we covered this week',
-  'Explain this step by step: ',
-  'Check my work on this problem: ',
-  'Help me plan my studying before the exam',
+// how the tutor works this turn (study.py MODES); a session remembers its last
+const MODES = [
+  ['guide', 'Guide me', 'Asks what you know and gives hints before answers'],
+  ['explain', 'Explain', 'Explains it fully, with a worked example'],
+  ['check', 'Check my work', 'Finds the first mistake in your working and lets you fix it'],
+  ['quiz', 'Quiz me', 'Asks questions from your materials, one at a time, and keeps score'],
 ];
+const STARTERS = [
+  ['quiz', 'Quiz me on what we covered this week'],
+  ['explain', 'Explain this step by step: '],
+  ['check', 'Check my work on this problem: '],
+  ['guide', 'Help me plan my studying before the exam'],
+];
+function modeBar() {
+  return h('div', { class: 'mode-bar', role: 'radiogroup', 'aria-label': 'How the tutor works' },
+    MODES.map(([k, label, what]) => h('button', {
+      type: 'button', role: 'radio', title: what,
+      class: S.studyMode === k ? 'is-on' : '', 'aria-checked': S.studyMode === k ? 'true' : 'false',
+      onclick: () => { S.studyMode = k; render(); focusComposer(); },
+    }, label)));
+}
 function studyModelFor(course) {
   const ids = studyModels().map(m => m.id);
   return [course?.model_id, S.me?.study?.default_model].find(x => ids.includes(x)) || ids[0] || S.pickerModel;
@@ -567,7 +591,7 @@ async function openCourse(id) {
   let c;
   try { c = await api.get('/api/courses/' + id); } catch (e) { flashError(e.message); return; }
   S.course = c; S.conv = null; S.messages = []; S.editing = null; S.stick = true; S.sidebarOpen = false;
-  S.pickerModel = studyModelFor(c);
+  S.pickerModel = studyModelFor(c); S.studyMode = 'guide';
   S.view = 'study';
   render();
 }
@@ -663,9 +687,12 @@ function courseHome() {
         ? 'The tutor looks things up in these and says which one, and which page, it used.'
         : 'PDF, Word, PowerPoint or text: the syllabus, notes, slides, homework, old exams. Or drop files here.')),
     h('div', { class: 'look-label' }, 'Start a session'),
-    h('div', { class: 'starters' }, STARTERS.map(t => h('button', {
+    h('div', { class: 'starters' }, STARTERS.map(([mode, t]) => h('button', {
       type: 'button', class: 'hint hint-link',
-      onclick: () => { S.draft = t; render(); const ta = document.getElementById('composer'); if (ta) { ta.focus(); ta.setSelectionRange(t.length, t.length); } },
+      onclick: () => {
+        S.draft = t; S.studyMode = mode; render();
+        const ta = document.getElementById('composer'); if (ta) { ta.focus(); ta.setSelectionRange(t.length, t.length); }
+      },
     }, t.replace(/: $/, '…')))));
 }
 
@@ -760,9 +787,16 @@ function chatView() {
     // token would pull them back down. It resumes only at the very bottom.
     onwheel: e => { if (e.deltaY < 0 && S.stick) { S.stick = false; renderJump(); } },
     ontouchmove: () => { if (S.stick && S.active) { S.stick = false; renderJump(); } },
+    // Only moving up lets go: a scroll event can also come from our own jump
+    // to the bottom landing after a picture made the thread taller, and that
+    // mustn't count as them leaving.
     onscroll: e => {
       const t = e.target;
-      const stick = t.scrollHeight - t.scrollTop - t.clientHeight < 24;
+      // a redraw already replaced this thread: measuring it reads "at the bottom"
+      if (!t.isConnected) return;
+      const up = t.scrollTop < (t._lastTop ?? t.scrollTop);
+      t._lastTop = t.scrollTop;
+      const stick = t.scrollHeight - t.scrollTop - t.clientHeight < 24 || (S.stick && !up);
       if (stick !== S.stick) { S.stick = stick; renderJump(); }
     },
   },
@@ -902,6 +936,7 @@ function msgBubble(m) {
         ? 'It ran out of steps or room before it could answer. Ask again, maybe more narrowly.'
         : 'It used all its room thinking and never got to the answer. Ask again, or turn Think off for this one.'),
     checkLine(m.tools?.check),
+    quoteLine(m.tools?.quotes),
     figureStrip(m.tools?.figures),
     sourcesList(m.tools?.sources, m.content),
     m.tools?.files?.length ? h('div', { class: 'doc-chips reply-files' }, m.tools.files.map(fileChip)) : null,
@@ -1030,6 +1065,24 @@ function checkLine(chk) {
     h('span', {}, 'Not from the code it ran: ', h('strong', {}, chk.unmatched.join(', ')),
       ' — double-check ' + (chk.unmatched.length === 1 ? 'it' : 'these')
       + (chk.matched ? ` (${chk.matched} other${chk.matched === 1 ? '' : 's'} matched)` : '')));
+}
+// Whether its quotations are word for word in what it read: the server's
+// check (quotes.py), like the number check above
+function quoteLine(q) {
+  if (!q) return null;
+  const why = 'Llamacracy looked for each quotation, word for word, in your materials and in what the ' +
+    'model read this turn, and checked the page where one was given. Not found means it may be ' +
+    'paraphrased, from somewhere else, or made up.';
+  const lines = [];
+  if (q.missing?.length) lines.push(h('div', { class: 'check-line is-warn', title: why }, icon('alert', 'icon-sm'),
+    h('span', {}, 'Not word for word in what it read: ',
+      ...q.missing.flatMap((t, i) => [i ? ', ' : '', h('q', {}, t)]),
+      ' — it may be paraphrased or made up' + (q.found ? ` (${q.found} other${q.found === 1 ? '' : 's'} matched)` : ''))));
+  for (const w of q.wrong_page || []) lines.push(h('div', { class: 'check-line is-warn', title: why }, icon('alert', 'icon-sm'),
+    h('span', {}, h('q', {}, w.quote), ` is on page ${w.pages.join(', ')}, not page ${w.cited}`)));
+  if (!lines.length && q.found) lines.push(h('div', { class: 'check-line is-ok', title: why }, icon('check', 'icon-sm'),
+    q.found === 1 ? 'The quotation is word for word in what it read' : `All ${q.found} quotations are word for word in what it read`));
+  return lines;
 }
 const fmtMs = ms => ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)}s`;
 // "[3]" in an answer becomes a link to source 3. Plain HTML, not markdown
@@ -1421,6 +1474,7 @@ function composer() {
   return h('div', { class: 'composer' },
     h('div', { class: 'composer-inner' },
       h('div', { id: 'ctx-breakdown' }, contextBreakdown(contextInfo())),
+      S.view === 'study' && S.course ? modeBar() : null,
       h('form', {
         class: 'compose-card' + (S.dragging ? ' is-drop' : ''), onsubmit: sendMessage,
         // drag files anywhere onto the box to attach them
@@ -1905,6 +1959,17 @@ function helpView() {
         'hint before the answer, and checks you followed. Ask outright and it explains or works ' +
         'the whole thing through. It looks things up in your materials first and says which file ' +
         'and page it used, and it says so when the answer comes from general knowledge instead.'),
+      h('p', {},
+        'Above the message box you choose how it works: ', h('strong', {}, 'Guide me'),
+        ' (hints and questions, the default), ', h('strong', {}, 'Explain'), ' (the whole idea with ' +
+        'a worked example), ', h('strong', {}, 'Check my work'), ' (paste your working; it finds the ' +
+        'first mistake and lets you fix it) or ', h('strong', {}, 'Quiz me'), ' (questions from your ' +
+        'materials, one at a time, with a running score). Each session remembers its mode.'),
+      h('p', {},
+        'When it quotes your materials, Llamacracy checks the words: under the answer you\'ll see a ' +
+        'check mark when every quotation is word for word in what it read, or a warning naming any ' +
+        'that aren\'t, and any quoted from a different page than it says. Like the number check, ' +
+        'that is Llamacracy checking, not the model vouching for itself.'),
       h('p', { class: 'muted' },
         'Tick "It uses math or numbers" for a course like chemistry, statistics or economics: the tutor ' +
         'then works every number out in Python, and the check under each answer shows any it ' +
@@ -2115,6 +2180,7 @@ async function openConv(id) {
   S.messages = []; S.editing = null;
   applyConv(d);
   S.view = cid ? 'study' : 'chat'; S.ctx = S.view; S.sidebarOpen = false; S.stick = true;
+  if (cid) S.studyMode = d.conversation.study_mode || 'guide';
   if (d.conversation.model_id && S.models.some(m => m.id === d.conversation.model_id))
     S.pickerModel = d.conversation.model_id;
   render();
@@ -2191,6 +2257,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
   if (docs.length) body.doc_ids = docs.map(d => d.id);
   if (S.conv) body.conversation_id = S.conv.id;
   if (course) body.course_id = course.id;
+  if (S.view === 'study' && S.course) body.mode = S.studyMode;
   if (editing) body.edit_of = editOf;
   let accepted = false;
   try {

@@ -73,6 +73,10 @@ class Toolbox:
         self.python_outputs: list[str] = []  # what run_python printed, for the answer's number check
         self.python_code: list[str] = []     # and the code: its constants are givens there
         self.figures: list[str] = []       # upload ids of pictures run_python made
+        # for the answer's quote check (quotes.py): the documents in play,
+        # (name, text), and what the lookup tools returned this turn
+        self.documents: list[tuple[str, str]] = []
+        self.seen: list[str] = []
 
     def schemas(self) -> list[dict]:
         return [t.schema() for t in self.tools.values()]
@@ -114,6 +118,8 @@ class Toolbox:
             return ToolOutcome(f"Error: {name} failed ({type(e).__name__}).", ok=False, summary="failed")
         if len(out.text) > self.result_chars:
             out.text = out.text[:self.result_chars] + "\n[... cut here: the rest didn't fit]"
+        if out.ok and name != "run_python":     # code output is checked by verify.py, not quoted
+            self.seen.append(out.text)
         return out
 
     def system_prompt(self, now: dt.datetime | None = None) -> str:
@@ -138,6 +144,11 @@ class Toolbox:
                 "doc_outline shows how one is laid out, doc_search finds passages about a topic, "
                 "doc_read reads a part (by `page` or `start`). Search before reading, read only what "
                 "you need, and mention page numbers when you use them.")
+        if self.documents or {"doc_read", "read_page", "web_search"} & self.tools.keys():
+            lines.append(
+                "Put quotation marks only around words copied exactly from a document or page; "
+                "paraphrase without them. The user is shown whether each quotation is word for "
+                "word in what you read, and whether it's on the page you cite.")
         if "ws_write" in self.tools:
             files = self.workspace.listing() if self.workspace else []
             lines.append(

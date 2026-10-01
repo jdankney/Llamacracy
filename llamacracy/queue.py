@@ -26,7 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from . import verify
+from . import quotes, verify
 from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .power import GpuPowerSampler
@@ -149,6 +149,14 @@ class Job:
             chk = verify.check("".join(self.content_parts), self.agent.python_outputs, givens)
             if chk:
                 rec["check"] = chk
+        if self.agent.documents or self.agent.seen:
+            # are its quotations word for word in what it could read?
+            said = [_text_of(m.get("content")) for m in self.payload.get("messages", [])
+                    if m.get("role") == "user"]
+            q = quotes.check("".join(self.content_parts), self.agent.documents,
+                             self.agent.seen + said)
+            if q:
+                rec["quotes"] = q
         return rec
 
     def public(self, position: int) -> dict:

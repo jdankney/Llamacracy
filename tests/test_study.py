@@ -157,3 +157,39 @@ def test_study_pages_serve_the_app(client):
     for path in ("/study", "/study/abc123"):
         r = client.get(path)
         assert r.status_code == 200 and "<div id=\"app\">" in r.text
+
+
+def test_a_mode_shapes_the_tutor_and_the_session_remembers_it(compute_client):
+    c, up = compute_client, compute_client.fake_upstream
+    course = _course(c, quantitative=True)
+    up.agent_steps = [{"content": ["First question: what is det(A) for A = [[2, 1], [1, 3]]?"]}]
+    ev = _chat(c, model="small", message="Quiz me", course_id=course["id"], mode="quiz")
+    system = up.payloads[-1]["messages"][0]["content"]
+    assert "They want to be tested (Quiz mode)" in system and "How to tutor:" not in system
+    # the follow-up says no mode: the session carries on quizzing
+    conv = ev[0]["conversation_id"]
+    up.agent_steps = [{"content": ["Right: 5. Next question."]}]
+    _chat(c, model="small", message="5", conversation_id=conv)
+    assert "Quiz mode" in up.payloads[-1]["messages"][0]["content"]
+    # checking work in a math course: every numeric step goes through Python
+    up.agent_steps = [{"content": ["Step 2 is off."]}]
+    _chat(c, model="small", message="Here's my work", conversation_id=conv, mode="check")
+    system = up.payloads[-1]["messages"][0]["content"]
+    assert "Check my work mode" in system and "Check each of their numeric steps" in system
+    assert c.post("/api/chat", json={"model": "small", "message": "x", "mode": "cram"}).status_code == 422
+
+
+def test_quotations_are_checked_against_the_materials(agent_client):
+    c, up = agent_client, agent_client.fake_upstream
+    course = _course(c)
+    doc = _upload_doc(c, "syllabus.md", SYLLABUS)
+    c.post(f"/api/courses/{course['id']}/materials", json={"upload_id": doc["id"]})
+    up.agent_steps = [
+        {"tool_calls": [("doc_search", {"ref": "d1", "query": "midterms"})]},
+        {"content": ['The syllabus says "Two midterms (25% each) and a final" but also '
+                     '"attendance counts for ten percent of the grade".']},
+    ]
+    ev = _chat(c, model="small", message="How is it graded?", course_id=course["id"])
+    assert ev[-1]["tools"]["quotes"] == {
+        "found": 1, "missing": ["attendance counts for ten percent of the grade"], "wrong_page": []}
+    assert "Put quotation marks only around words copied exactly" in up.payloads[0]["messages"][0]["content"]

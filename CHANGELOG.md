@@ -64,6 +64,24 @@
   and their sessions are private to their owner, and sessions are listed
   under their course rather than among the chats. New settings: `STUDY`
   (on) and `STUDY_MODEL` (which model a new course starts on).
+- **Study modes.** Above the message box in a session: Guide me (hints and
+  questions, the default), Explain (the whole idea with a worked example),
+  Check my work (finds the first mistake and lets you fix it) and Quiz me
+  (questions from your materials, one at a time, with a score). The starter
+  prompts pick the matching mode, and a session remembers its last.
+- **Quotation check.** When an answer quotes a document, a web page or a
+  course's materials, the server looks for each quotation word for word in
+  what the model could read (forgiving about case, punctuation, PDF line
+  breaks and "…" omissions) and, when it cites a page, on that page. Under
+  the answer: a check mark when they all match, or a warning naming any
+  that don't, and any on a different page than it says.
+
+### Fixed
+
+- Scrolling up while a reply is being written no longer jumps: the thread
+  kept resetting to the top on every redraw, and a small scroll up was
+  pulled straight back down. Reopening a chat whose last answer has a
+  picture now lands at the bottom.
 
 ### Upgrading
 
