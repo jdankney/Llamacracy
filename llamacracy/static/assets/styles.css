@@ -664,7 +664,39 @@ a.btn { text-decoration: none; }
   background: var(--panel); color: var(--text-2); cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease); }
 .mode-bar button:hover { color: var(--text); background: var(--panel-2); }
 .mode-bar button.is-on { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.check-line.is-note { color: var(--text-3); }
 .check-line q { quotes: "“" "”"; font-style: italic; }
+.practice-set { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 4px 30px; }
+.problem { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.problem.is-right, .problem.is-self_right { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.problem.is-loading { color: var(--text-3); font-size: 13px; }
+.problem-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12.5px; }
+.problem-head .tag { margin-left: 0; display: inline-flex; align-items: center; }
+.problem-n { font-weight: 650; color: var(--text); margin-right: 2px; }
+.problem-q { font-size: var(--chat-size); }
+.problem-answer { flex-wrap: nowrap; }
+.problem-answer .input { flex: 1; font-size: 14px; }
+.problem-answer .textarea { flex: 1; font-size: 14px; resize: vertical; }
+.problem-actions { font-size: 12.5px; }
+.problem-wrong { display: inline-flex; align-items: center; gap: 5px; color: var(--warn); }
+.choices { display: flex; flex-direction: column; gap: 6px; }
+.choice { display: flex; align-items: flex-start; gap: 10px; text-align: left; padding: 8px 12px; border: 1px solid var(--line);
+  border-radius: var(--r-md); background: var(--ink); color: var(--text); cursor: pointer; transition: border-color .12s var(--ease), background .12s var(--ease); }
+.choice:hover { border-color: var(--accent-line); background: var(--panel-2); }
+.choice.is-wrong { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.choice .prose-chat > :first-child { margin-top: 0; } .choice .prose-chat > :last-child { margin-bottom: 0; }
+.choice-letter { font-weight: 650; color: var(--text-3); flex: none; min-width: 1.1em; }
+.problem-verdict { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.problem-verdict.is-good { color: var(--good); } .problem-verdict.is-muted { color: var(--text-3); }
+.problem-reveal { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13.5px; }
+.problem-key { display: flex; align-items: baseline; gap: 8px; }
+.problem-key .prose-chat { font-weight: 600; } .problem-key .prose-chat > * { margin: 0; }
+.problem-source q { quotes: "“" "”"; font-style: italic; margin-left: 6px; }
+.practice-progress { display: flex; flex-direction: column; gap: 6px; }
+.progress-row { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) auto; align-items: center; gap: 10px; font-size: 13px; }
+.progress-topic { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-row .bar { height: 6px; border-radius: 999px; background: var(--panel-3); overflow: hidden; }
+.progress-row .bar i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
 .modal.modal-form { max-width: 30rem; }
 .form-field { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; font-size: 12.5px; color: var(--text-2); font-weight: 600; }
 .form-field .input, .form-field .textarea { font-size: 14px; font-weight: 400; width: 100%; resize: vertical; }
@@ -724,6 +756,11 @@ a.btn { text-decoration: none; }
   .study-bar { padding: 7px calc(12px + var(--safe-right)) 7px calc(12px + var(--safe-left)); }
   .course-grid { grid-template-columns: 1fr; }
   .course-card { min-height: 0; }
+  .practice-set { margin-left: 0; }
+  .mode-bar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .mode-bar::-webkit-scrollbar { display: none; }
+  .mode-bar button { flex: none; }
+  .progress-row { grid-template-columns: minmax(0, 1fr) 5rem auto; }
 }
 @media (min-width: 768px) {
   .gauges .gauge-compact { display: none; }

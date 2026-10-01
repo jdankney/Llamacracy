@@ -76,7 +76,28 @@
   the answer: a check mark when they all match, or a warning naming any
   that don't, and any on a different page than it says.
 
+- **Practice.** A fifth study mode: the tutor writes a set of problems,
+  shown as cards you answer in the chat. Every numeric key in a math course
+  comes with the Python that computes it, which the server runs; a problem
+  whose code disagrees with its stated answer is sent back before you see
+  it (on a live run that caught four wrong keys in one set of five). A key
+  drawn from the materials can carry its quote, which must be there word
+  for word. Numbers (3.2, 16/5, 3*pi/4, sqrt(2), with or without the unit)
+  and multiple choice are graded by the server; written answers show the
+  model answer and you mark yourself. Keys stay hidden until you're right
+  or ask. The course page shows first-try results by topic.
+- **Courses search the web for anything current**, unless turned off per
+  course: the tutor is told what its training can't know and to look
+  those things up, citing what it finds. An answer that looked nothing up
+  says so underneath, more firmly when the question sounds time-sensitive.
+- In a study session the tutor has to look something up before it
+  answers: on a session's first turn, and on every Quiz and Practice turn.
+
 ### Fixed
+
+- LaTeX in tool arguments: models write `\frac` and `\theta` with one
+  backslash, which JSON reads as a form feed and a tab, and `\int` isn't
+  JSON at all. Arguments are repaired before parsing.
 
 - Scrolling up while a reply is being written no longer jumps: the thread
   kept resetting to the top on every redraw, and a small scroll up was

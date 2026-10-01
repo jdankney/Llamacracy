@@ -34,6 +34,7 @@ ignore = ["E501", "B008", "B904"]  # long lines in SQL; Depends() in defaults; r
 [tool.ruff.lint.per-file-ignores]
 # the api tests' fixtures, imported by name: pytest passes them as same-named arguments
 "tests/test_study.py" = ["F811"]
+"tests/test_practice.py" = ["F811"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

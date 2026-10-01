@@ -71,3 +71,8 @@ def test_reciprocals_in_exact_working():
     assert check(ans, ["C = 2.4"], ["4 µF and 6 µF in series"]) == {"matched": 2, "unmatched": []}
     # decimals aren't read as reciprocals: 0.25 isn't 4
     assert check("about 0.25", ["4.0"], [])["unmatched"] == ["0.25"]
+
+
+def test_section_ranges_are_labels():
+    # from a live run: "Sections 15.1–15.3" isn't two results
+    assert check("Based on Stewart Chapter 15 (Sections 15.1–15.3), Week 6; pages 4-7.", ["60"], []) is None

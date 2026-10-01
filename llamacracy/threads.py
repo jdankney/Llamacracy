@@ -145,6 +145,9 @@ async def delete(db: Database, conv_id: str, user_id: int) -> None:
         (user_id, conv_id, conv_id, conv_id),
     )
     await db.transaction([
+        ("DELETE FROM practice_attempts WHERE problem_id IN "
+         "(SELECT id FROM practice_problems WHERE conversation_id = ?)", (conv_id,)),
+        ("DELETE FROM practice_problems WHERE conversation_id = ?", (conv_id,)),
         ("DELETE FROM messages WHERE conversation_id = ?", (conv_id,)),
         ("DELETE FROM workspace_files WHERE conversation_id = ?", (conv_id,)),
         ("UPDATE jobs SET conversation_id = NULL WHERE conversation_id = ?", (conv_id,)),

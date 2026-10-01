@@ -270,6 +270,29 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   checked against the page marks the extractor writes. Shorter quoted bits
   are terms and titles, and are left alone. The model is told the check
   exists, which is most of its value: it quotes less loosely.
+- **Practice keys are checked before anyone sees them.** A tutor that
+  writes a problem with the wrong answer teaches the wrong thing with
+  authority, and a student practising can't tell. So add_problem is a
+  gate, not a note-taker: in a math course a numeric key (or a numeric
+  multiple-choice option) must come with code, which the server runs, and
+  a key that isn't among what its code printed is refused with the output
+  attached. The model then fixes it, usually by trusting its code. On the
+  first live run that refused four wrong keys out of five problems before
+  any reached the student. Outside math, code isn't demanded for a fact; a
+  key's quote is the check, and a quote that isn't in the materials is
+  refused too. Grading is done by the server with no model in the loop, so
+  it's instant, free and the same every time; only written answers are
+  marked by the student, against the model answer, since a rule can't
+  grade prose fairly and a model grading itself is what we're avoiding.
+- **What the tutor didn't look up, the student is told.** Courses search
+  the web by default for anything that changes, but telling a model to
+  search doesn't make it search. The server knows which tools ran, so a
+  study answer that consulted neither the materials nor the web says it
+  came from the model's own knowledge, and says so as a warning when the
+  question sounds time-sensitive. A session's first turn, and every quiz
+  and practice turn, also force a tool call (`tool_choice: required`): a
+  live quiz with nothing forcing it invented a passage and marked a right
+  answer wrong.
 - **Modes change how the tutor teaches, not what it may claim.** Guide,
   Explain, Check my work and Quiz swap the "how to tutor" part of the
   brief; the accuracy rules after it are the same in all four. A session

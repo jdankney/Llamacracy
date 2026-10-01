@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS courses (
     name          TEXT NOT NULL,
     notes         TEXT NOT NULL DEFAULT '',  -- what the tutor should know: level, textbook, exam format
     quantitative  INTEGER NOT NULL DEFAULT 0, -- 1: every number in an answer must come from run_python
+    web           INTEGER NOT NULL DEFAULT 1, -- 1: the tutor searches the web for anything current
     model_id      TEXT,                      -- the model its last session used
     created_at    REAL NOT NULL,
     updated_at    REAL NOT NULL
@@ -93,6 +94,42 @@ CREATE TABLE IF NOT EXISTS course_materials (
     added_at    REAL NOT NULL,
     PRIMARY KEY (course_id, upload_id)
 );
+
+-- Practice problems a tutor wrote (practice.py), with keys the server
+-- checked, and every attempt at them: what the course's progress is made of.
+CREATE TABLE IF NOT EXISTS practice_problems (
+    id               TEXT PRIMARY KEY,
+    user_id          INTEGER NOT NULL REFERENCES users(id),
+    conversation_id  TEXT NOT NULL,
+    course_id        TEXT,
+    n                INTEGER NOT NULL,           -- its number in the set
+    topic            TEXT NOT NULL DEFAULT '',
+    kind             TEXT NOT NULL CHECK (kind IN ('number', 'choice', 'short')),
+    question         TEXT NOT NULL,
+    choices_json     TEXT,                       -- choice: the options
+    answer           TEXT NOT NULL,              -- the key, as written (choice: the right option)
+    answer_value     REAL,                       -- number: the key's value
+    unit             TEXT,
+    solution         TEXT NOT NULL DEFAULT '',
+    source           TEXT,
+    quote            TEXT,                       -- words in the materials the key rests on (checked)
+    code             TEXT,                       -- number: the Python that computed the key (run)
+    code_output      TEXT,
+    verified         TEXT,                       -- how the key was checked: 'code' | 'quote' | NULL
+    created_at       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_practice_course ON practice_problems(user_id, course_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_practice_conv ON practice_problems(conversation_id);
+
+CREATE TABLE IF NOT EXISTS practice_attempts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem_id  TEXT NOT NULL REFERENCES practice_problems(id),
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    answer      TEXT,
+    outcome     TEXT NOT NULL CHECK (outcome IN ('right', 'wrong', 'revealed', 'self_right', 'self_wrong')),
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_attempts_problem ON practice_attempts(problem_id, id);
 
 -- uploaded images and documents -- on disk under UPLOAD_DIR, never in the DB.
 -- Scoped to the uploader; served back only to them (see /api/uploads/{id}).

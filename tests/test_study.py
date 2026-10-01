@@ -193,3 +193,41 @@ def test_quotations_are_checked_against_the_materials(agent_client):
     assert ev[-1]["tools"]["quotes"] == {
         "found": 1, "missing": ["attendance counts for ten percent of the grade"], "wrong_page": []}
     assert "Put quotation marks only around words copied exactly" in up.payloads[0]["messages"][0]["content"]
+
+
+def test_a_tutor_with_materials_looks_before_it_answers(agent_client):
+    c, up = agent_client, agent_client.fake_upstream
+    course = _course(c)
+    doc = _upload_doc(c, "syllabus.md", SYLLABUS)
+    c.post(f"/api/courses/{course['id']}/materials", json={"upload_id": doc["id"]})
+    up.agent_steps = [{"tool_calls": [("doc_search", {"ref": "d1", "query": "grading"})]},
+                      {"content": ["It's in the syllabus."]}]
+    ev = _chat(c, model="small", message="What's on the final?", course_id=course["id"])
+    assert up.payloads[0]["tool_choice"] == "required"         # a new session's first turn
+    assert "tool_choice" not in up.payloads[1]
+    conv = ev[0]["conversation_id"]
+    up.agent_steps = [{"content": ["Good, keep going."]}]
+    _chat(c, model="small", message="ok", conversation_id=conv)
+    assert "tool_choice" not in up.payloads[-1]                # a guide follow-up may just talk
+    up.agent_steps = [{"tool_calls": [("doc_read", {"ref": "d1", "page": 1})]}, {"content": ["Q2."]}]
+    _chat(c, model="small", message="Quiz me", conversation_id=conv, mode="quiz")
+    assert up.payloads[-2]["tool_choice"] == "required"        # every quiz turn
+
+
+def test_courses_search_the_web_unless_told_not_to(agent_client):
+    c, up = agent_client, agent_client.fake_upstream
+    on = _course(c)
+    assert on["web"] is True
+    up.agent_steps = [{"content": ["From memory."]}]
+    ev = _chat(c, model="small", message="What's the latest research on this?", course_id=on["id"])
+    first = up.payloads[-1]
+    assert "web_search" in [t["function"]["name"] for t in first["tools"]]
+    assert "What you know stops at your training" in first["messages"][0]["content"]
+    # it answered without looking anything up, to a question about now: the reply says so
+    assert ev[-1]["tools"]["memory"] == {"timely": True}
+
+    off = _course(c, name="Music Theory", web=False)
+    _chat(c, model="small", message="Explain a cadence", course_id=off["id"])
+    tools = [t["function"]["name"] for t in up.payloads[-1].get("tools", [])]
+    assert "web_search" not in tools
+    assert "You can't search the web in this course" in up.payloads[-1]["messages"][0]["content"]

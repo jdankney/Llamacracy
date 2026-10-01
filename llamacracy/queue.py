@@ -22,6 +22,7 @@ import contextlib
 import enum
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -31,7 +32,7 @@ from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .power import GpuPowerSampler
 from .registry import Registry, get_registry
-from .tools import Toolbox
+from .tools import Toolbox, parse_args
 from .upstream import Upstream, UpstreamError, UsageSniffer, get_upstream
 
 log = logging.getLogger("llamacracy.queue")
@@ -118,7 +119,9 @@ class Job:
 
     @property
     def content(self) -> str:
-        return "".join(self.content_parts)
+        # a model told it may not call tools sometimes writes the call out as
+        # text (some templates' <tool_call><function=...> markup): that isn't an answer
+        return _LEAKED_CALL.sub("", "".join(self.content_parts)).strip()
 
     @property
     def reasoning(self) -> str:
@@ -140,20 +143,28 @@ class Job:
             rec["files"] = list(self.agent.workspace.changed.values())
         if self.agent.figures:
             rec["figures"] = list(self.agent.figures)
+        if self.agent.practice:
+            rec["practice"] = list(self.agent.practice)     # cards; their keys stay server-side
         if self.agent.python_outputs:
             # which of the answer's numbers came out of the code it ran
             # given: what the user wrote, and the constants the code was written with
             # (m = 1.673e-27), which are in plain view in the code
             givens = [_text_of(m.get("content")) for m in self.payload.get("messages", [])
                       if m.get("role") == "user"] + self.agent.python_code
-            chk = verify.check("".join(self.content_parts), self.agent.python_outputs, givens)
+            chk = verify.check(self.content, self.agent.python_outputs, givens)
             if chk:
                 rec["check"] = chk
+        if self.agent.study:
+            # nothing looked up: the answer is the model's memory, as of its training
+            looked = {"doc_outline", "doc_search", "doc_read", "web_search", "read_page", "image_search"}
+            if not any(s.get("name") in looked for s in self.trail if s.get("type") == "tool"):
+                asked = _text_of((self.payload.get("messages") or [{}])[-1].get("content"))
+                rec["memory"] = {"timely": bool(_TIMELY.search(asked))}
         if self.agent.documents or self.agent.seen:
             # are its quotations word for word in what it could read?
             said = [_text_of(m.get("content")) for m in self.payload.get("messages", [])
                     if m.get("role") == "user"]
-            q = quotes.check("".join(self.content_parts), self.agent.documents,
+            q = quotes.check(self.content, self.agent.documents,
                              self.agent.seen + said)
             if q:
                 rec["quotes"] = q
@@ -447,6 +458,9 @@ class QueueManager:
                     payload["messages"] = [*messages, {"role": "user", "content": FINAL_NUDGE}]
                 if thinking:
                     payload["chat_template_kwargs"] = {**ctk, "enable_thinking": False}
+            elif step == 0 and box.lookup_first:
+                # it has to look something up before it may answer at all
+                payload["tool_choice"] = "required"
             calls: dict[int, dict] = {}
             text: list[str] = []
             reasoning: list[str] = []
@@ -781,26 +795,33 @@ def _text_of(content) -> str:
     return "".join(p.get("text", "") for p in content or [] if isinstance(p, dict))
 
 
+_LEAKED_CALL = re.compile(r"<tool_call>.*?(?:</tool_call>|$)|<function=[\w-]+>.*?(?:</function>|$)", re.DOTALL)
+
+# a question about something that changes: memory is the wrong place for it
+_TIMELY = re.compile(r"\b(latest|current(ly)?|recent(ly)?|today|now|nowadays|newest|new|this "
+                     r"(year|month|week|semester|term)|20[2-9]\d|up[- ]to[- ]date|still|anymore)\b",
+                     re.IGNORECASE)
+
+
 def _echo_args(raw: str) -> str:
     """Arguments as sent back in the history. llama.cpp re-parses them to
     render the chat template and fails the whole request (HTTP 500) on
     malformed JSON, so a call whose arguments were cut off or garbled goes
     back as {}; its tool result already told the model what went wrong."""
     try:
-        v = json.loads(raw or "{}", strict=False)
+        v = parse_args(raw)
     except ValueError:
         return "{}"
-    # re-serialized: a raw newline inside a string parses here, but not there
-    return json.dumps(v) if isinstance(v, dict) else "{}"
+    # re-serialized: what parse_args repaired (a raw newline, LaTeX) parses there too
+    return json.dumps(v)
 
 
 def _loose_json(raw: str) -> dict:
     """Tool arguments for display; the tool itself re-parses them."""
     try:
-        v = json.loads(raw or "{}", strict=False)
+        return parse_args(raw)
     except ValueError:
         return {"raw": (raw or "")[:200]}
-    return v if isinstance(v, dict) else {"value": v}
 
 
 _qm: QueueManager | None = None

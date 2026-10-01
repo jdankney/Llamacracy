@@ -102,3 +102,17 @@ async def test_fetch_caps_the_body(monkeypatch):
                                  content=b"x" * 5000)))
     got = await fetchmod.fetch("http://93.184.215.14/", max_bytes=1000, client=client)
     assert got.truncated and len(got.body) == 1000 and got.charset == "latin-1"
+
+
+def test_latex_in_tool_arguments_survives():
+    from llamacracy.tools import parse_args
+    # single backslashes, as models write them: \frac would be a form feed,
+    # \theta a tab, \right a carriage return, and \int not JSON at all
+    raw = '{"q": "Find $\\frac{1}{2}\\theta$ and $\\left(\\int_0^1 x\\,dx\\right)$ by \\nabla"}'
+    assert parse_args(raw)["q"] == r"Find $\frac{1}{2}\theta$ and $\left(\int_0^1 x\,dx\right)$ by \nabla"
+    # correctly escaped JSON, real newlines and tabs before ordinary words: untouched
+    good = '{"q": "\\\\frac{1}{2}\\nnot this\\ttab", "code": "print(1)\\nprint(2)"}'
+    assert parse_args(good) == {"q": "\\frac{1}{2}\nnot this\ttab", "code": "print(1)\nprint(2)"}
+    import pytest
+    with pytest.raises(ValueError):
+        parse_args('["a list"]')

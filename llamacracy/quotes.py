@@ -83,8 +83,15 @@ def extract(answer: str) -> list[Quote]:
         body = [ln for ln in lines if not _ATTRIB.match(ln)]
         attrib = " ".join(ln for ln in lines if _ATTRIB.match(ln))
         q = " ".join(body).strip()
-        # a blockquote that is itself one quoted sentence: drop its quote marks
-        q = re.sub(r'^[“"](.*)[”"]$', r"\1", q)
+        # a blockquote that is itself one quoted passage, maybe with its
+        # citation after it: > "…" (p. 2) -- the words, and where from
+        whole = re.match(r'^[“"](.+)[”"]\s*(.*)$', q)
+        if whole and len(whole.group(2)) <= 80:
+            q, attrib = whole.group(1), attrib + " " + whole.group(2)
+        else:
+            cite = re.search(r"\s*\([^()]*\d[^()]*\)\s*$", q)       # … words (reader, p. 2)
+            if cite and _PAGE_REF.search(cite.group(0)):
+                q, attrib = q[:cite.start()], attrib + " " + cite.group(0)
         if _words(re.sub(_GAP, " ", q)) >= MIN_WORDS:
             page = _PAGE_REF.search(attrib)
             quotes.append(Quote(q, int(page.group(1)) if page else _cited_page(text, m.start(), m.end() - 1)))
@@ -139,6 +146,25 @@ def _fragments(quote: str) -> list[str]:
 def _short(q: str, n: int = 90) -> str:
     q = " ".join(q.split())
     return q if len(q) <= n else q[:n - 1].rstrip() + "…"
+
+
+def find(text: str, documents: list[tuple[str, str]], seen: list[str]) -> tuple[bool, set[int]]:
+    """Whether `text` is word for word in the documents or what was seen,
+    and on which pages of the documents (empty when unpaged or unseen)."""
+    frags = _fragments(text)
+    if not frags:
+        return False, set()
+    pages: set[int] = set()
+    hit = False
+    for d in (_source(n, t) for n, t in documents if t):
+        for page, forms in d.pages:
+            if any(_in(frags, f) for f in forms):
+                hit = True
+                if page is not None:
+                    pages.add(page)
+    if not hit:
+        hit = any(_in(frags, f) for s in seen if s for f in _forms(s))
+    return hit, pages
 
 
 def check(answer: str, documents: list[tuple[str, str]], seen: list[str]) -> dict | None:

@@ -52,6 +52,35 @@ class Tool:
             "name": self.name, "description": self.description, "parameters": self.parameters}}
 
 
+# Models write LaTeX inside JSON strings, and a LaTeX backslash is often a
+# JSON escape. Written single (\frac, \theta, \right) it parses as a form
+# feed, a tab, a carriage return: the math is silently mangled. Before parsing,
+# an odd backslash before letters that only make sense as LaTeX is doubled:
+# \f and \b before any letter (no model means a form feed), and \t, \r, \n
+# only before a known command, so a real newline before a word is left alone.
+_ODD = r"(?<!\\)((?:\\\\)*)\\"
+_LATEX = re.compile(_ODD + r"(?=[fb][a-zA-Z]|t(?:heta|au|imes|ext|extbf|extit|an|anh|o|op|riangle|ilde|frac)"
+                    r"(?![a-zA-Z])|r(?:ight|ho|angle|ceil|floor|m|ightarrow)(?![a-zA-Z])"
+                    r"|n(?:abla|eq|otin|olimits|ewline|u)(?![a-zA-Z]))")
+# ...and if it still won't parse, any backslash that isn't a JSON escape (\\int, \\, )
+_BAD_ESCAPE = re.compile(_ODD + r'(?=[^"\\/bfnrtu])')
+
+
+def parse_args(raw: str | dict | None) -> dict:
+    """Tool-call arguments as a dict, repairing the LaTeX models write in
+    them. Raises ValueError when they still aren't a JSON object."""
+    if isinstance(raw, dict):
+        return raw
+    text = _LATEX.sub(r"\1\\\\", raw or "{}")
+    try:
+        v = json.loads(text, strict=False)
+    except ValueError:
+        v = json.loads(_BAD_ESCAPE.sub(r"\1\\\\", text), strict=False)
+    if not isinstance(v, dict):
+        raise ValueError("arguments must be a JSON object")
+    return v
+
+
 class Toolbox:
     """The tools one turn may use, their limits, and the sources they found.
 
@@ -77,6 +106,9 @@ class Toolbox:
         # (name, text), and what the lookup tools returned this turn
         self.documents: list[tuple[str, str]] = []
         self.seen: list[str] = []
+        self.study = False                 # a study session: say when it answered from memory
+        self.lookup_first = False          # its first step must call a tool (tool_choice "required")
+        self.practice: list[str] = []      # ids of the practice problems it added
 
     def schemas(self) -> list[dict]:
         return [t.schema() for t in self.tools.values()]
@@ -103,11 +135,8 @@ class Toolbox:
             return ToolOutcome(f"Error: there is no tool called {name!r}. "
                                f"Available: {', '.join(self.tools)}.", ok=False, summary="unknown tool")
         try:
-            # strict=False: a raw newline or tab inside a string (code, mostly) is
-            # what smaller models get wrong, and it's unambiguous
-            args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args or "{}", strict=False)
-            if not isinstance(args, dict):
-                raise ValueError("arguments must be a JSON object")
+            # a raw newline inside a string, and LaTeX's backslashes: what models get wrong
+            args = parse_args(raw_args)
         except ValueError as e:
             return ToolOutcome(f"Error: the arguments weren't valid JSON ({e}). Try again.",
                                ok=False, summary="bad arguments")

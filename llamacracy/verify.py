@@ -33,9 +33,11 @@ _FENCE = re.compile(r"```.*?(?:```|$)", re.DOTALL)
 _CITE = re.compile(r"\[\d{1,3}\](?![(:])")
 _LIST_MARK = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)
 # "Step 2", "Day 3", "page 14": labels, not results
+# (and their plurals and ranges: "Sections 15.1–15.3", "pages 4-7")
 _LABEL = re.compile(r"\b(?:step|part|day|section|chapter|page|problem|question|example|exercise|"
-                    r"figure|table|equation|eq\.|case|method|way|round|option|item|line|hw|lab)"
-                    r"\s*#?\s*\d+(?:\.\d+)*[a-z]?\b", re.IGNORECASE)
+                    r"figure|table|equation|eq\.|case|method|way|round|option|item|line|hw|lab|week|unit)s?"
+                    r"\s*#?\s*\d+(?:\.\d+)*[a-z]?(?:\s*(?:[–-]|to)\s*\d+(?:\.\d+)*[a-z]?)?\b",
+                    re.IGNORECASE)
 # 1.2 × 10^{-3}, 1.2\times10^{-3}, 1.2 x 10^-3, 1.2·10^-3
 _SCI = re.compile(r"(?<![\w.])([-−]?\d+(?:\.\d+)?)\s*(?:×|\\times|\\cdot|·|x|\*)\s*10\s*\^\s*\{?\s*([-−]?\d+)\s*\}?")
 # \frac{10}{3}, \dfrac{10}{3}, 16/5

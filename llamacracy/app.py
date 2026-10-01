@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import documents, sandbox, study, threads
+from . import documents, practice, sandbox, study, threads
 from .admin import router as admin_router
 from .apikeys import generate as generate_api_key
 from .config import Settings, get_settings
@@ -84,6 +84,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Llamacracy", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(study.router)
+app.include_router(practice.router)
 
 
 # --------------------------------------------------------------------------- #
@@ -676,7 +677,7 @@ class ChatRequest(BaseModel):
     # existing one keeps the course it was started in), and how the tutor
     # works this turn (a session remembers its last)
     course_id: str | None = None
-    mode: Literal["guide", "explain", "check", "quiz"] | None = None
+    mode: Literal["guide", "explain", "check", "quiz", "practice"] | None = None
 
 
 @app.post("/api/chat")
@@ -795,7 +796,8 @@ async def chat(req: ChatRequest,
     # the citations).
     search_outcome = None
     agent = None
-    web = req.search and model.tools
+    # a course decides for its sessions: on unless its owner turned it off
+    web = model.tools and (req.search or bool(course is not None and course["web"]))
     # the workspace: on when asked, and from then on whenever this branch has
     # files, so a follow-up can always reach what an earlier turn wrote
     ws = await Workspace.open(db, conv_id, [r["id"] for r in prior])
@@ -857,6 +859,32 @@ async def chat(req: ChatRequest,
                                      timeout_s=settings.sandbox_timeout_seconds,
                                      memory_mb=settings.sandbox_memory_mb,
                                      output_chars=8000, save_figure=save_figure))
+        if course is not None and mode == "practice":
+            # the conversation row is made below: the tool runs later, in the queue
+            async def save_problem(p: dict) -> str:
+                pid = practice.new_id()
+                await db.execute(
+                    "INSERT INTO practice_problems (id, user_id, conversation_id, course_id, n, topic,"
+                    " kind, question, choices_json, answer, answer_value, unit, solution, source,"
+                    " quote, code, code_output, verified, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (pid, principal.user_id, job.conversation_id, course["id"], p["n"], p["topic"],
+                     p["kind"], p["question"], json.dumps(p["choices"]) if p["choices"] else None,
+                     p["answer"], p["value"], p["unit"], p["solution"], p["source"], p["quote"],
+                     p["code"], p["code_output"], p["verified"], now()))
+                return pid
+
+            async def run_code(code: str) -> tuple[bool, str]:
+                try:
+                    r = await sandbox.run(code, python=settings.sandbox_python,
+                                          timeout_s=settings.sandbox_timeout_seconds,
+                                          memory_mb=settings.sandbox_memory_mb, output_chars=8000)
+                except sandbox.SandboxUnavailable as e:
+                    return False, f"Python isn't available ({e})"
+                return r.ok, r.output
+            tools.append(practice.add_problem_tool(save=save_problem, compute=compute,
+                                                   quantitative=bool(course["quantitative"]),
+                                                   run_code=run_code if compute else None))
         folded_refs = [r for r in refs if r not in by_id.values()]
         notes = []
         if pictures:
@@ -865,11 +893,18 @@ async def chat(req: ChatRequest,
         if folded_refs:
             notes.append("Documents shared earlier in this conversation (before the summary):\n"
                          + "".join(r.stub(documents.estimate_tokens(r.text)) for r in folded_refs).strip())
-        agent = Toolbox(tools, max_steps=settings.agent_max_steps,
+        # a practice set is a call per problem, after a look at the materials
+        steps = max(settings.agent_max_steps, practice.MAX_PER_SET + 4) if mode == "practice" and course else None
+        agent = Toolbox(tools, max_steps=steps or settings.agent_max_steps,
                         deadline_s=settings.agent_max_seconds,
                         result_chars=settings.agent_tool_result_chars, notes=notes)
         if use_files:
             agent.workspace = ws
+        agent.study = course is not None
+        # A tutor with materials looks before it speaks: on a session's first
+        # turn, and on every quiz turn (a live run quizzed from memory on a
+        # passage that doesn't exist, and marked a right answer wrong)
+        agent.lookup_first = bool(course_refs) and (mode in ("quiz", "practice") or not prior)
         # what its quotations are checked against, besides what its tools return
         agent.documents = ([(d.filename, d.text) for d in playing]
                            + [(r.name, r.text) for r in refs + course_refs])
@@ -899,7 +934,7 @@ async def chat(req: ChatRequest,
         # one, and a compacted history already starts with its summary
         brief = agent.system_prompt()
         if course is not None:
-            brief = (study.brief(course, course_refs, course_tokens, compute=compute,
+            brief = (study.brief(course, course_refs, course_tokens, compute=compute, web=web,
                                  mode=mode or "guide") + "\n\n" + brief)
         if messages[0]["role"] == "system":
             messages[0] = {"role": "system", "content": brief + "\n\n" + messages[0]["content"]}
@@ -909,7 +944,11 @@ async def chat(req: ChatRequest,
     # Thinking and the answer share one output budget, so a thinking turn gets
     # the larger THINKING_MAX_TOKENS instead of the everyday cap.
     think = req.think and model.thinking
-    budget = (settings.thinking_max_tokens if think
+    # A practice set is written as tool calls, a few hundred tokens each (the
+    # problem, its solution, its code): it gets the thinking-sized budget too,
+    # or the last problems are cut off mid-call.
+    practicing = course is not None and mode == "practice"
+    budget = (settings.thinking_max_tokens if think or practicing
               else min(model.max_tokens_default, settings.max_tokens_per_request))
     cap = min(req.max_tokens or budget, budget)
     if doc_blocks:

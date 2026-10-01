@@ -53,3 +53,13 @@ def test_what_the_tools_returned_and_the_user_wrote_count_too():
     ans = 'The page says "llamas were domesticated in the Andes about 5,000 years ago".'
     seen = ["Llamas were domesticated in the Andes about 5,000 years ago, most likely..."]
     assert check(ans, [], seen) == {"found": 1, "missing": [], "wrong_page": []}
+
+
+def test_a_blockquote_with_its_citation_after_it():
+    # from a live run: the citation sat on the quotation's own line
+    ans = ('> "Libraries began collecting early printed books as art only in the 1870s, '
+           'after the Caxton exhibition." (p. 3)\n\nIn short: late.')
+    assert check(ans, [("reader.pdf", READER)], []) == {"found": 1, "missing": [], "wrong_page": []}
+    ans = "> Libraries began collecting early printed books as art only in the 1870s (reader.pdf, p. 2)"
+    r = check(ans, [("reader.pdf", READER)], [])
+    assert r["found"] == 1 and r["wrong_page"][0]["cited"] == 2

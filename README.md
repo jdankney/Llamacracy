@@ -82,6 +82,11 @@ payment processing.
   math requires every number to come from `run_python`. Four modes: Guide me
   (hints first), Explain, Check my work and Quiz me. Courses are private to
   their owner, and nothing about them is configuration: any subject works.
+- **Practice problems with checked keys**: in Practice mode the tutor
+  writes a set as cards you answer in the chat. A numeric key must come
+  with the code that computes it (run in the sandbox; a disagreeing key is
+  sent back), a key from the materials can carry its quote (looked up), and
+  answers are graded by the server. Progress is kept per topic.
 - **Quotations are checked**: when an answer quotes a document or a page,
   the server looks for the words, word for word, in what the model read,
   and in the page it cites, and flags any that aren't there.

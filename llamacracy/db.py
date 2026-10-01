@@ -41,6 +41,7 @@ _MIGRATIONS = [
     "ALTER TABLE messages ADD COLUMN tools_json TEXT",
     "ALTER TABLE conversations ADD COLUMN course_id TEXT",
     "ALTER TABLE conversations ADD COLUMN study_mode TEXT",
+    "ALTER TABLE courses ADD COLUMN web INTEGER NOT NULL DEFAULT 1",
     # here, not in schema.sql: an older DB only has the column after the line above
     "CREATE INDEX IF NOT EXISTS ix_conversations_course ON conversations(course_id, updated_at DESC)",
 ]

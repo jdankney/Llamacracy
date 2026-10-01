@@ -104,25 +104,42 @@ MODES: dict[str, list[str]] = {
     "check": [
         "They want their work checked (Check my work mode):",
         "- Go through what they show you in order and find the first step that's wrong. Say which "
-        "step and why, and let them fix it: don't fix it for them or redo the rest.",
+        "step and why, and let them fix it: don't give the corrected step, the rest of the "
+        "working or the final answer unless they ask for it.",
         "- If it's all right, say so plainly, and say what makes it right.",
         "- If they haven't shown their work yet, ask for it.",
+    ],
+    "practice": [
+        "They want practice problems (Practice mode):",
+        "- Make a short set on what they ask: 5 problems unless they say otherwise, at most 10, "
+        "easiest first, drawn from their materials (look up the relevant part first). Don't "
+        "search the web for a set.",
+        "- Add each with add_problem, one call per problem. Don't write the problems or their "
+        "answers in your reply: they appear as cards the student answers, and the answers stay "
+        "hidden until they've tried.",
+        "- number problems: `answer` is the value or an exact expression (16/5, 3*pi/4). "
+        "choice problems: four options, one right. short problems: for explaining, defining or "
+        "comparing.",
+        "- When the answer rests on the materials, give `source` (file and page) and `quote`, "
+        "the exact words: they're checked, and a problem whose quote isn't there is sent back.",
+        "- Your reply afterwards: one or two lines on what the set covers. Nothing else.",
     ],
     "quiz": [
         "They want to be tested (Quiz mode):",
         "- Ask one question at a time, drawn from their materials (say where it comes from), then "
         "stop and wait for their answer.",
-        "- Before you ask, work the answer out yourself (look it up, or compute it), but don't "
-        "reveal it.",
-        "- When they answer, say whether it's right, give the correct answer with a one-line "
-        "reason, then ask the next. Mix easy and hard, come back to what they missed, and keep "
-        "a running score (2 of 3 so far).",
+        "- Never quiz from memory: before each question, read the passage it comes from "
+        "(doc_search, then doc_read), and work the answer out (look it up, or compute it) "
+        "without revealing it.",
+        "- When they answer, check it against that passage again, say whether it's right, and "
+        "quote the line that settles it, with its page. Then ask the next. Mix easy and hard, "
+        "come back to what they missed, and keep a running score (2 of 3 so far).",
     ],
 }
 
 
 def brief(course, refs: list[DocRef], tokens: dict[str, int], *, compute: bool,
-          mode: str = "guide") -> str:
+          web: bool = False, mode: str = "guide") -> str:
     """The tutor's part of the system prompt, ahead of the tools' own."""
     lines = [
         f'You are tutoring the user in their course "{course["name"]}". The goal is that they '
@@ -145,11 +162,29 @@ def brief(course, refs: list[DocRef], tokens: dict[str, int], *, compute: bool,
             "conversion you state comes from run_python, hints included, and you check a result "
             "a second way when that's cheap."
             + (" Check each of their numeric steps with run_python before you judge it."
-               if mode == "check" else ""))
+               if mode == "check" else "")
+            + (" Every number problem gets `code`: the Python that prints its answer. add_problem "
+               "runs it for you (no need to run it first), and a problem whose code disagrees with "
+               "its answer is sent back."
+               if mode == "practice" else ""))
     elif course["quantitative"]:
         lines.append(
             "- This course has math in it, but Python isn't available right now: work carefully, "
             "and say plainly that your numbers weren't computed.")
+    if web:
+        lines += [
+            "- What you know stops at your training, and the world hasn't. Search the web "
+            "(web_search, then read_page) instead of answering from memory for anything that "
+            "changes over time (events, statistics, laws and policies, research, who holds a "
+            "post), anything about their school or course that the materials don't say, and "
+            "anything you aren't sure of. Prefer educational and official sources, and cite "
+            "them by number.",
+            "- Don't search for settled material their course materials already cover.",
+        ]
+    else:
+        lines.append(
+            "- You can't search the web in this course: when something may have changed since "
+            "your training, say so.")
     notes = (course["notes"] or "").strip()
     if notes:
         lines += ["", "About this course, in their words:", notes]
@@ -168,7 +203,8 @@ def brief(course, refs: list[DocRef], tokens: dict[str, int], *, compute: bool,
 
 def _course(row, **extra) -> dict:
     return {"id": row["id"], "name": row["name"], "notes": row["notes"],
-            "quantitative": bool(row["quantitative"]), "model_id": row["model_id"],
+            "quantitative": bool(row["quantitative"]), "web": bool(row["web"]),
+            "model_id": row["model_id"],
             "created_at": row["created_at"], "updated_at": row["updated_at"], **extra}
 
 
@@ -195,12 +231,14 @@ class CourseIn(BaseModel):
     name: str = Field(min_length=1, max_length=NAME_MAX)
     notes: str = Field("", max_length=NOTES_MAX)
     quantitative: bool = False
+    web: bool = True
 
 
 class CoursePatch(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=NAME_MAX)
     notes: str | None = Field(None, max_length=NOTES_MAX)
     quantitative: bool | None = None
+    web: bool | None = None
 
 
 class MaterialIn(BaseModel):
@@ -234,10 +272,10 @@ async def create_course(body: CourseIn,
         raise HTTPException(400, f"at most {MAX_COURSES} courses each")
     cid, ts = uuid.uuid4().hex, now()
     await db.execute(
-        "INSERT INTO courses (id, user_id, name, notes, quantitative, model_id, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO courses (id, user_id, name, notes, quantitative, web, model_id, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (cid, principal.user_id, body.name.strip(), body.notes.strip(), int(body.quantitative),
-         default_model(reg, settings), ts, ts))
+         int(body.web), default_model(reg, settings), ts, ts))
     return _course(await owned(db, cid, principal.user_id), materials=[], sessions=[])
 
 
@@ -270,8 +308,9 @@ async def update_course(course_id: str, body: CoursePatch,
             fields[k] = fields[k].strip()
     if fields.get("name") == "":
         raise HTTPException(400, "a course needs a name")
-    if "quantitative" in fields:
-        fields["quantitative"] = int(fields["quantitative"])
+    for k in ("quantitative", "web"):
+        if k in fields:
+            fields[k] = int(fields[k])
     if fields:
         # column names come from the model's fields, never from the request
         await db.execute(

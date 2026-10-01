@@ -354,6 +354,9 @@ function render() {
   if (S.view === 'chat' || (study && S.course)) {
     autosize(document.getElementById('composer'));
     const t = document.getElementById('thread');
+    // a phone scrolls the mode bar sideways: keep the chosen mode in sight
+    const bar = document.querySelector('.mode-bar'), on = bar?.querySelector('.is-on');
+    if (on && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = Math.max(0, on.offsetLeft - bar.offsetLeft - 16);
     if (S.stick) scrollThread(true);
     else if (t && keepTop != null) t.scrollTop = keepTop;
     // pictures and math finish laying out after this: keep following the
@@ -538,11 +541,13 @@ const MODES = [
   ['explain', 'Explain', 'Explains it fully, with a worked example'],
   ['check', 'Check my work', 'Finds the first mistake in your working and lets you fix it'],
   ['quiz', 'Quiz me', 'Asks questions from your materials, one at a time, and keeps score'],
+  ['practice', 'Practice', 'Writes a set of problems with checked answers, and grades yours as you go'],
 ];
 const STARTERS = [
   ['quiz', 'Quiz me on what we covered this week'],
   ['explain', 'Explain this step by step: '],
   ['check', 'Check my work on this problem: '],
+  ['practice', 'Give me 5 practice problems on '],
   ['guide', 'Help me plan my studying before the exam'],
 ];
 function modeBar() {
@@ -590,6 +595,7 @@ async function openCourse(id) {
   if (S.active) { flashInfo('One moment: the reply is still coming.'); return; }
   let c;
   try { c = await api.get('/api/courses/' + id); } catch (e) { flashError(e.message); return; }
+  try { c.progress = await api.get('/api/practice/progress?course_id=' + id); } catch { /* the page works without it */ }
   S.course = c; S.conv = null; S.messages = []; S.editing = null; S.stick = true; S.sidebarOpen = false;
   S.pickerModel = studyModelFor(c); S.studyMode = 'guide';
   S.view = 'study';
@@ -675,6 +681,8 @@ function courseHome() {
     c.notes ? h('p', { class: 'course-notes' }, c.notes) : null,
     c.quantitative ? h('p', { class: 'course-flag' }, icon('code', 'icon-sm'),
       'Math course: the tutor works every number out in Python, and Llamacracy checks the ones in its answers.') : null,
+    c.web !== false ? h('p', { class: 'course-flag' }, icon('globe', 'icon-sm'),
+      'Searches the web for anything that may have changed since the model was trained, and cites it.') : null,
     h('div', { class: 'look-label' }, 'Materials'),
     c.materials.length || S.matReading.length ? h('div', { class: 'doc-chips' },
       c.materials.map(d => docChip(d, { onRemove: () => removeMaterial(d) })),
@@ -686,6 +694,7 @@ function courseHome() {
       h('span', { class: 'muted small' }, c.materials.length
         ? 'The tutor looks things up in these and says which one, and which page, it used.'
         : 'PDF, Word, PowerPoint or text: the syllabus, notes, slides, homework, old exams. Or drop files here.')),
+    practiceProgress(c.progress),
     h('div', { class: 'look-label' }, 'Start a session'),
     h('div', { class: 'starters' }, STARTERS.map(([mode, t]) => h('button', {
       type: 'button', class: 'hint hint-link',
@@ -729,9 +738,10 @@ function courseForm(c = null) {
     placeholder: 'Anything the tutor should know: the level, the textbook, how the exams work, what you find hard.',
   });
   const quant = h('input', { type: 'checkbox', checked: !!c?.quantitative });
+  const web = h('input', { type: 'checkbox', checked: c ? c.web !== false : true });
   let busy = false;
   const save = async () => {
-    const body = { name: name.value.trim(), notes: notes.value.trim(), quantitative: quant.checked };
+    const body = { name: name.value.trim(), notes: notes.value.trim(), quantitative: quant.checked, web: web.checked };
     if (!body.name) { name.focus(); return; }
     if (busy) return;
     busy = true;
@@ -756,6 +766,9 @@ function courseForm(c = null) {
       h('span', { class: 'muted' }, S.me?.compute
         ? ' — the tutor works every number out in Python, and Llamacracy checks the answers against it.'
         : ' — the tutor is told to be careful with every number.'))),
+    h('label', { class: 'check-field' }, web, h('span', {},
+      h('strong', {}, 'Search the web for anything current'),
+      h('span', { class: 'muted' }, ' — news, statistics, research, policies: whatever may have changed since the model was trained. It cites what it finds.'))),
     h('div', { class: 'actions' },
       c ? h('button', { class: 'btn btn-ghost btn-danger', style: 'margin-right:auto', onclick: () => { close(); deleteCourse(c); } }, 'Delete course') : null,
       h('button', { class: 'btn btn-ghost', onclick: () => close() }, 'Cancel'),
@@ -937,6 +950,8 @@ function msgBubble(m) {
         : 'It used all its room thinking and never got to the answer. Ask again, or turn Think off for this one.'),
     checkLine(m.tools?.check),
     quoteLine(m.tools?.quotes),
+    memoryLine(m.tools?.memory),
+    m.tools?.practice?.length ? practiceSet(m.tools.practice) : null,
     figureStrip(m.tools?.figures),
     sourcesList(m.tools?.sources, m.content),
     m.tools?.files?.length ? h('div', { class: 'doc-chips reply-files' }, m.tools.files.map(fileChip)) : null,
@@ -996,7 +1011,7 @@ function activeBubble() {
 // short notes it wrote between them), folded under one summary line.
 const TOOL_ICON = { web_search: 'search', read_page: 'globe', doc_outline: 'file', doc_search: 'file', doc_read: 'file',
   ws_list: 'folder', ws_read: 'folder', ws_write: 'pen', ws_edit: 'pen', view_image: 'eye', image_search: 'search',
-  run_python: 'code' };
+  run_python: 'code', add_problem: 'pen' };
 function trailSummary(steps, live) {
   const tools = steps.filter(s => s.type === 'tool');
   const running = tools.find(s => s.running);
@@ -1015,7 +1030,9 @@ function trailSummary(steps, live) {
   if (wrote) bits.push(`${bits.length ? 'worked on' : 'Worked on'} ${wrote === 1 ? 'a file' : plural(wrote, 'file')}`);
   const runs = n('run_python');
   if (runs) bits.push(`${bits.length ? 'ran' : 'Ran'} Python${runs > 1 ? ` ${runs} times` : ''}`);
-  const known = searches + n('read_page') + looked + runs + tools.filter(s => s.name.startsWith('doc_') || s.name.startsWith('ws_')).length;
+  const problems = tools.filter(s => s.name === 'add_problem' && s.ok !== false).length;
+  if (problems) bits.push(`${bits.length ? 'wrote' : 'Wrote'} ${plural(problems, 'problem')}`);
+  const known = searches + n('read_page') + looked + runs + n('add_problem') + tools.filter(s => s.name.startsWith('doc_') || s.name.startsWith('ws_')).length;
   if (tools.length > known) bits.push(plural(tools.length - known, 'other step'));
   return bits.join(' · ') || 'Worked it out';
 }
@@ -1066,6 +1083,16 @@ function checkLine(chk) {
       ' — double-check ' + (chk.unmatched.length === 1 ? 'it' : 'these')
       + (chk.matched ? ` (${chk.matched} other${chk.matched === 1 ? '' : 's'} matched)` : '')));
 }
+// A study answer that looked nothing up came from the model's training alone
+function memoryLine(mem) {
+  if (!mem) return null;
+  return h('div', { class: 'check-line is-' + (mem.timely ? 'warn' : 'note'),
+    title: 'Llamacracy saw that it didn\'t search your materials or the web for this answer.' },
+    icon(mem.timely ? 'alert' : 'info', 'icon-sm'),
+    mem.timely
+      ? 'This sounds like something that changes, and it answered from memory without searching: check a current source.'
+      : 'From the model\'s own knowledge: it didn\'t look anything up for this answer.');
+}
 // Whether its quotations are word for word in what it read: the server's
 // check (quotes.py), like the number check above
 function quoteLine(q) {
@@ -1111,6 +1138,98 @@ function sourcesList(sources, text) {
       h('span', { class: 'host' }, ' · ' + hostOf(r.url))))));
 }
 const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
+/* -------------------------------------------------------------- practice */
+// A practice set's problems, as cards. The keys stay on the server until the
+// student gets one right or asks to see it; grading is the server's too.
+S.practice = {};          // problem id -> what the server says about it
+function practiceSet(ids) {
+  const box = h('div', { class: 'practice-set' });
+  const fill = () => box.replaceChildren(...ids.map(id => S.practice[id] ? problemCard(S.practice[id])
+    : h('div', { class: 'problem is-loading' }, 'Loading…')));
+  fill();
+  const missing = ids.filter(id => !S.practice[id]);
+  if (missing.length) api.get('/api/practice?ids=' + missing.join(',')).then(r => {
+    r.problems.forEach(p => { S.practice[p.id] = p; });
+    fill();
+  }).catch(e => box.replaceChildren(h('div', { class: 'muted small' }, e.message)));
+  return box;
+}
+function problemCard(p) {
+  const el = h('div', { class: 'problem is-' + p.status });
+  const update = np => { Object.assign(p, np); S.practice[p.id] = p; el.replaceWith(problemCard(p)); };
+  const send = async answer => {
+    try { update(await api.post(`/api/practice/${p.id}/answer`, { answer })); }
+    catch (e) { flashError(e.message); }
+  };
+  const done = ['right', 'revealed', 'self_right', 'self_wrong'].includes(p.status);
+  const badge = p.verified === 'code' ? 'Key checked in Python'
+    : p.verified === 'quote' ? 'Key checked in your materials' : null;
+  el.append(
+    h('div', { class: 'problem-head' },
+      h('span', { class: 'problem-n' }, `Problem ${p.n}`),
+      p.topic ? h('span', { class: 'tag' }, p.topic) : null,
+      badge ? h('span', { class: 'tag accent', title: 'The answer key was checked by Llamacracy before you saw this problem' },
+        icon('check', 'icon-sm'), ' ', badge) : null),
+    mdBlock(p.question, { class: 'prose-chat problem-q' }));
+  if (!done && p.mark_yourself) {
+    // a written answer: the model answer, and they say how they did
+    el.append(problemReveal(p),
+      h('div', { class: 'row problem-actions' }, h('span', { class: 'muted small' }, 'How did you do?'),
+        h('button', { class: 'btn btn-sm', onclick: async () => update(await api.post(`/api/practice/${p.id}/mark`, { right: true })) }, icon('check', 'icon-sm'), 'I got it'),
+        h('button', { class: 'btn btn-sm', onclick: async () => update(await api.post(`/api/practice/${p.id}/mark`, { right: false })) }, icon('x', 'icon-sm'), 'I missed it')));
+    return el;
+  }
+  if (!done) {
+    if (p.kind === 'choice') {
+      el.append(h('div', { class: 'choices' }, p.choices.map((c, i) => h('button', {
+        type: 'button', class: 'choice' + (p._picked === i ? ' is-wrong' : ''),
+        onclick: () => { p._picked = i; send(c); },
+      }, h('span', { class: 'choice-letter' }, String.fromCharCode(65 + i)), mdBlock(c, { class: 'prose-chat' })))));
+    } else {
+      const input = p.kind === 'short'
+        ? h('textarea', { class: 'textarea', rows: 3, placeholder: 'Your answer', 'aria-label': `Your answer to problem ${p.n}` })
+        : h('input', { class: 'input', placeholder: p.unit ? `Your answer, in ${p.unit}` : 'Your answer: 3.2, 16/5, 3*pi/4…',
+            'aria-label': `Your answer to problem ${p.n}`,
+            onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); if (input.value.trim()) send(input.value); } } });
+      el.append(h('div', { class: 'row problem-answer' }, input,
+        h('button', { class: 'btn btn-primary btn-sm', onclick: () => { if (input.value.trim()) send(input.value); } }, 'Check')));
+    }
+    el.append(h('div', { class: 'row problem-actions' },
+      p.status === 'wrong' ? h('span', { class: 'problem-wrong' }, icon('x', 'icon-sm'),
+        `Not quite${p.tries > 1 ? ` (${p.tries} tries)` : ''}: have another go, or`) : null,
+      p.kind !== 'short' ? h('button', { class: 'link-btn', onclick: async () => update(await api.post(`/api/practice/${p.id}/reveal`)) },
+        p.status === 'wrong' ? 'show the answer' : 'Show the answer') : null));
+    return el;
+  }
+  const verdict = { right: [`Right${p.tries > 1 ? ` on try ${p.tries}` : ' first time'}`, 'check', 'good'],
+    revealed: ['Answer shown', 'eye', 'muted'], self_right: ['You marked it right', 'check', 'good'],
+    self_wrong: ['You marked it as missed', 'x', 'muted'] }[p.status];
+  el.append(h('div', { class: 'problem-verdict is-' + verdict[2] }, icon(verdict[1], 'icon-sm'), verdict[0]), problemReveal(p));
+  return el;
+}
+function problemReveal(p) {
+  return h('div', { class: 'problem-reveal' },
+    h('div', { class: 'problem-key' }, h('span', { class: 'muted' }, 'Answer'),
+      mdBlock(p.answer + (p.unit ? ` ${p.unit}` : ''), { class: 'prose-chat' })),
+    p.solution ? mdBlock(p.solution, { class: 'prose-chat problem-solution' }) : null,
+    p.source || p.quote ? h('div', { class: 'small muted problem-source' }, p.source || '',
+      p.quote ? h('q', {}, p.quote) : null) : null,
+    p.code ? h('details', { class: 'py-run' }, h('summary', {}, 'The code that checked the key', icon('chevron', 'icon-sm')),
+      mdBlock(fence('python', p.code)), p.code_output ? mdBlock(fence('text', p.code_output)) : null) : null);
+}
+// the course page's progress: first-try results by topic, weakest first
+function practiceProgress(prog) {
+  if (!prog?.topics?.length) return null;
+  return h('div', { class: 'practice-progress' },
+    h('div', { class: 'look-label' }, 'Practice so far'),
+    prog.topics.map(t => h('div', { class: 'progress-row' },
+      h('span', { class: 'progress-topic' }, t.topic),
+      h('span', { class: 'bar' }, h('i', { style: `width:${Math.round(100 * t.first_try / t.tried)}%` })),
+      h('span', { class: 'mono small' }, `${t.first_try} of ${t.tried} first time`))),
+    prog.missed.length ? h('p', { class: 'small muted' }, 'Still to get right: ',
+      prog.missed.map(m => m.topic || m.question.slice(0, 40)).filter((x, i, a) => a.indexOf(x) === i).join(', ')) : null);
+}
+
 /* ------------------------------------------------------------- workspace */
 // Files the model wrote in this conversation. A reply's chips open the file
 // as it was after that reply; the Files panel shows each file as it is now,
@@ -1506,7 +1625,8 @@ function composer() {
               { value: md.id, selected: md.id === S.pickerModel },
               `${md.display}${md.tier ? ` · ${tierLabel(md.tier)}` : ''}${md.vision ? ' · vision' : ''}${md.thinking ? ' · thinks' : ''}${md.tools ? ' · searches' : ''}`))),
             icon('chevron', 'icon-sm')),
-          h('button', {
+          // in a study session the course decides whether the tutor searches
+          S.view === 'study' && S.course ? null : h('button', {
             type: 'button', title: m?.tools
               ? 'Let the model search the web: it picks what to look up, can search again, and cites its sources'
               : 'Search the web before answering (one search, added to your message)',
@@ -1966,6 +2086,18 @@ function helpView() {
         'first mistake and lets you fix it) or ', h('strong', {}, 'Quiz me'), ' (questions from your ' +
         'materials, one at a time, with a running score). Each session remembers its mode.'),
       h('p', {},
+        h('strong', {}, 'Practice'), ' writes a set of problems you answer right there in the chat. ' +
+        'Before you see one, Llamacracy checks its answer key: in a math course the tutor has to ' +
+        'give the Python that computes each answer, which is run, and a problem whose code ' +
+        'disagrees with its answer goes back to be fixed; a problem drawn from your materials ' +
+        'can carry the exact words it rests on, which are looked up. Type a number (3.2, 16/5 ' +
+        'and 3*pi/4 all work) or pick an option and it\'s marked at once; a wrong answer lets you ' +
+        'try again before you look. The course page keeps score by topic.'),
+      h('p', {},
+        'Your courses search the web for anything that may have changed since the model was ' +
+        'trained (you can turn that off for a course). If an answer didn\'t look anything up, ' +
+        'not your materials and not the web, a line under it says so.'),
+      h('p', {},
         'When it quotes your materials, Llamacracy checks the words: under the answer you\'ll see a ' +
         'check mark when every quotation is word for word in what it read, or a warning naming any ' +
         'that aren\'t, and any quoted from a different page than it says. Like the number check, ' +
@@ -2252,7 +2384,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
   // a first message on a course's page starts a session in that course
   const course = S.view === 'study' && !S.conv ? S.course : null;
   const pm = S.models.find(x => x.id === S.pickerModel);
-  const body = { model: S.pickerModel, message: text, search: S.searchOn, think: !!(S.thinkOn && pm?.thinking), files: S.filesOn };
+  const body = { model: S.pickerModel, message: text, search: S.searchOn && !(S.view === 'study' && S.course), think: !!(S.thinkOn && pm?.thinking), files: S.filesOn };
   if (img) body.image_id = img.id;
   if (docs.length) body.doc_ids = docs.map(d => d.id);
   if (S.conv) body.conversation_id = S.conv.id;

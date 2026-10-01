@@ -1106,3 +1106,11 @@ def test_a_failed_run_shows_the_error(compute_client):
     end = next(e for e in ev if e["type"] == "tool_end")
     assert end["ok"] is False and end["summary"] == "ValueError" and end["label"] == "Running Python"
     assert "check" not in ev[-1]["tools"]         # no numbers in the answer: nothing to say
+
+
+def test_a_tool_call_written_out_as_text_is_not_the_answer(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [{"content": ["Here you go.\n\n<tool_call>\n<function=web_search>\n"
+                                   "<parameter=query>x</parameter>\n</function>\n</tool_call>"]}]
+    ev = _chat(agent_client, model="small", message="q", search=True)
+    assert client_messages(agent_client, ev[0]["conversation_id"])[1]["content"] == "Here you go."
