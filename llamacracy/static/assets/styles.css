@@ -230,6 +230,8 @@ code, pre, kbd { font-family: var(--mono); }
 .thread { flex: 1; overflow-y: auto; scroll-behavior: auto;
   padding: 24px calc(20px + var(--safe-right)) 12px calc(20px + var(--safe-left)); }
 .thread-inner { max-width: var(--thread-w); margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+/* the reply being written is redrawn on every token: never anchor scrolling to it */
+#active-msg { overflow-anchor: none; }
 
 .empty { margin: clamp(24px, 12vh, 96px) auto 0; text-align: center; max-width: 34rem; display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .empty img { width: 132px; height: 132px; opacity: .95; filter: drop-shadow(0 12px 28px rgba(0,0,0,.5)); }

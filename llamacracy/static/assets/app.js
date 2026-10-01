@@ -336,6 +336,10 @@ function connectQueue() {
 
 /* --------------------------------------------------------------- rendering */
 function render() {
+  // a redraw rebuilds the thread, which would start at the top: someone
+  // reading further up stays where they were
+  const was = document.getElementById('thread');
+  const keepTop = was && !S.stick ? was.scrollTop : null;
   const study = S.view === 'study';
   const main = S.view === 'usage' ? usageView()
     : S.view === 'help' ? helpView()
@@ -348,7 +352,9 @@ function render() {
   );
   if (S.view === 'chat' || (study && S.course)) {
     autosize(document.getElementById('composer'));
+    const t = document.getElementById('thread');
     if (S.stick) scrollThread(true);
+    else if (t && keepTop != null) t.scrollTop = keepTop;
   }
   syncUrl();
 }
@@ -749,9 +755,14 @@ function studyBar() {
 function chatView() {
   const thread = h('div', {
     id: 'thread', class: 'thread',
+    // Following new text stops the moment they scroll up (wheel or finger),
+    // not once they're some distance from the bottom: in between, the next
+    // token would pull them back down. It resumes only at the very bottom.
+    onwheel: e => { if (e.deltaY < 0 && S.stick) { S.stick = false; renderJump(); } },
+    ontouchmove: () => { if (S.stick && S.active) { S.stick = false; renderJump(); } },
     onscroll: e => {
       const t = e.target;
-      const stick = t.scrollHeight - t.scrollTop - t.clientHeight < 80;
+      const stick = t.scrollHeight - t.scrollTop - t.clientHeight < 24;
       if (stick !== S.stick) { S.stick = stick; renderJump(); }
     },
   },
