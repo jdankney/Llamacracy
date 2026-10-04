@@ -110,6 +110,10 @@
   pulled straight back down. Reopening a chat whose last answer has a
   picture now lands at the bottom.
 
+- The auth edge listened on port 80, not the 4180 everything else (the
+  installer, the example redirect URL, the docs) expects. It's 4180 again,
+  and `LLAMACRACY_AUTH_PORT` in `deploy/oauth2-proxy.env` changes it.
+
 - Sign-in sometimes didn't come up after a reboot. The user units start
   a few seconds before NetBird creates wt0, so Dex and the auth edge were
   skipped outright, and Docker's own boot-time start of the Dex container
@@ -130,6 +134,9 @@
   database migrates itself on start.
 - Rerun `./deploy/setup-sandbox.sh` (or `./deploy/install.sh`) for the new
   sandbox libraries and chart defaults.
+- If your auth edge is on port 80 on purpose (that was the shipped unit's
+  port), add `LLAMACRACY_AUTH_PORT=80` to `deploy/oauth2-proxy.env` before
+  updating the units.
 - Rerun `./deploy/install.sh` (or copy the two units by hand), then
   `systemctl --user daemon-reload` and restart `llamacracy-dex` and
   `llamacracy-auth`, for the boot fix.

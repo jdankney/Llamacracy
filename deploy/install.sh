@@ -127,15 +127,17 @@ if ip -4 -o addr show wt0 >/dev/null 2>&1 && [ -n "$fqdn" ]; then
     secret_set=false
   fi
 
+  port="$(sed -n 's/^LLAMACRACY_AUTH_PORT=\([0-9]\+\).*/\1/p' "$REPO/deploy/oauth2-proxy.env" | tail -n 1)"
+  port="${port:-4180}"
   if $dex_ok && $secret_set; then
     systemctl --user enable --now llamacracy-auth.service
-    say "auth edge up -- users reach Llamacracy at  http://$fqdn:4180"
+    say "auth edge up -- users reach Llamacracy at  http://$fqdn:$port"
   else
     warn "not starting llamacracy-auth yet (need Dex up + OAUTH2_PROXY_CLIENT_SECRET set). Then:"
     warn "  systemctl --user enable --now llamacracy-auth.service"
   fi
   echo
-  echo "  Everyone must use  http://$fqdn:4180  -- NOT http://$addr:4180"
+  echo "  Everyone must use  http://$fqdn:$port  -- NOT http://$addr:$port"
   echo "  (the login redirect is pinned to the FQDN; the raw IP will loop)."
 else
   warn "wt0 not present or FQDN unknown -- run 'netbird up' first, then re-run this script"

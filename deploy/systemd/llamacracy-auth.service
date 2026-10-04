@@ -18,10 +18,11 @@ Type=simple
 WorkingDirectory=@REPO@
 # NetBird brings wt0 up a few seconds after this unit starts at boot, so wait
 # for its address (a ConditionPathExists= skip would never be retried) and
-# write it where oauth2-proxy will read it
+# write it, with the port (LLAMACRACY_AUTH_PORT in deploy/oauth2-proxy.env,
+# 4180 by default), where oauth2-proxy will read it
 ExecStartPre=/bin/sh -c 'for i in $(seq 60); do \
   a=$(ip -4 -o addr show wt0 2>/dev/null | awk "{print \\$4}" | cut -d/ -f1); \
-  [ -n "$a" ] && { echo "OAUTH2_PROXY_HTTP_ADDRESS=$a:80" > %t/llamacracy-auth.env; exit 0; }; sleep 1; done; \
+  [ -n "$a" ] && { echo "OAUTH2_PROXY_HTTP_ADDRESS=$a:$${LLAMACRACY_AUTH_PORT:-4180}" > %t/llamacracy-auth.env; exit 0; }; sleep 1; done; \
   echo "wt0 has no address after 60s: is NetBird up?" >&2; exit 1'
 # written by ExecStartPre above; `-` so a missing file isn't fatal before it runs
 EnvironmentFile=-%t/llamacracy-auth.env
