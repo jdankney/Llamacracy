@@ -12,20 +12,30 @@ Description=Llamacracy Dex (OIDC identity provider, Docker, on wt0)
 After=docker.service network-online.target
 Wants=docker.service network-online.target
 Before=llamacracy-auth.service
-# don't even try if NetBird isn't up
-ConditionPathExists=/sys/class/net/wt0
+# keep retrying (Restart= below) for as long as NetBird or Docker is down
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=@REPO@/deploy/dex
-# discover the wt0 address and write it where `docker compose` will read it
-ExecStartPre=/bin/sh -c 'a=$(ip -4 -o addr show wt0 | awk "{print \\$4}" | cut -d/ -f1); \
-  echo "DEX_BIND_ADDR=$a" > %t/llamacracy-dex.env'
+# NetBird brings wt0 up a few seconds after this unit starts at boot, so wait
+# for its address (a ConditionPathExists= skip would never be retried) and
+# write it where `docker compose` will read it
+ExecStartPre=/bin/sh -c 'for i in $(seq 60); do \
+  a=$(ip -4 -o addr show wt0 2>/dev/null | awk "{print \\$4}" | cut -d/ -f1); \
+  [ -n "$a" ] && { echo "DEX_BIND_ADDR=$a" > %t/llamacracy-dex.env; exit 0; }; sleep 1; done; \
+  echo "wt0 has no address after 60s: is NetBird up?" >&2; exit 1'
 # written by ExecStartPre above; `-` so a missing file isn't fatal before it runs
 EnvironmentFile=-%t/llamacracy-dex.env
-ExecStart=/usr/bin/docker compose up -d
+# --force-recreate: Docker's own `restart: unless-stopped` tries the container
+# at boot, before wt0 exists, fails to bind its port, and a plain `up` then
+# starts that same container with the port left unpublished (running, but
+# nothing listening on 5556). A fresh container binds it properly.
+ExecStart=/usr/bin/docker compose up -d --force-recreate
 ExecStop=/usr/bin/docker compose down
+Restart=on-failure
+RestartSec=10
 # the container itself is kept alive by `restart: unless-stopped` in the
 # compose file; this unit just needs to (re)issue `up` with the right address
 

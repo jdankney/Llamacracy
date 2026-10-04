@@ -17,7 +17,11 @@ so Llamacracy runs its own Dex.
 
 Both `llamacracy-dex` and `llamacracy-auth` discover the current `wt0` address
 themselves at every start (`ExecStartPre`), so they survive NetBird reconnects
-and peer re-enrols. Just restart the affected unit, or use `llamacracy restart`
+and peer re-enrols. At boot they wait up to a minute for `wt0` to get its
+address (NetBird creates it a few seconds after the user units start) and keep
+retrying after that, so a slow NetBird only delays sign-in. Dex's container is
+recreated on every start: Docker tries it at boot before `wt0` exists, and the
+container it leaves behind would run with its port unpublished. Just restart the affected unit, or use `llamacracy restart`
 for everything at once. The Dex issuer + oauth2-proxy redirect are pinned to
 the NetBird **FQDN** (`<peer>.netbird.selfhosted`, see `netbird status`),
 which never changes.

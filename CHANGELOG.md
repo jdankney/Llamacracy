@@ -104,6 +104,14 @@
   pulled straight back down. Reopening a chat whose last answer has a
   picture now lands at the bottom.
 
+- Sign-in sometimes didn't come up after a reboot. The user units start
+  a few seconds before NetBird creates wt0, so Dex and the auth edge were
+  skipped outright, and Docker's own boot-time start of the Dex container
+  failed to bind its port and left it running with the port unpublished:
+  a later start of the unit didn't fix it, and the auth edge looped on
+  "connection refused". Both units now wait for wt0's address and retry
+  until it's there, and Dex's container is recreated on every start.
+
 ### Upgrading
 
 - For `run_python`: install bubblewrap (`bwrap`), then rerun
@@ -114,6 +122,9 @@
   then rerun `python3 bench/gen_llamaswap_config.py` and restart llamacracy.
 - New dependencies (pypdf, openpyxl, defusedxml): run `uv sync`. The
   database migrates itself on start.
+- Rerun `./deploy/install.sh` (or copy the two units by hand), then
+  `systemctl --user daemon-reload` and restart `llamacracy-dex` and
+  `llamacracy-auth`, for the boot fix.
 
 ## 0.2.0 (2026-09-23)
 
