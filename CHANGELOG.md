@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-04)
+
+Documents, a model that looks things up and reads what it finds, a
+workspace, a Python sandbox for computing and charts, and Study.
 
 ### Added
 
@@ -146,24 +149,30 @@
   "connection refused". Both units now wait for wt0's address and retry
   until it's there, and Dex's container is recreated on every start.
 
-### Upgrading
+### Upgrading from 0.2.0
 
-- For `run_python`: install bubblewrap (`bwrap`), then rerun
-  `./deploy/install.sh`, which now builds the sandbox's Python in
-  `data/sandbox` (or run `./deploy/setup-sandbox.sh` on its own). Without
-  it, everything else works and the tool just isn't offered.
-- Add `"tools": true` to the inventory entries that handle tool calls well,
-  then rerun `python3 bench/gen_llamaswap_config.py` and restart llamacracy.
-- New dependencies (pypdf, openpyxl, defusedxml): run `uv sync`. The
-  database migrates itself on start.
-- Rerun `./deploy/setup-sandbox.sh` (or `./deploy/install.sh`) for the new
-  sandbox libraries and chart defaults.
+Before updating:
+
+- For `run_python`, install bubblewrap (`bwrap`) and rsvg-convert (package
+  `librsvg` or `librsvg2-bin`). Without bubblewrap everything else works and
+  the tool just isn't offered; without rsvg-convert, pictures a model saves
+  as SVG aren't shown.
 - If your auth edge is on port 80 on purpose (that was the shipped unit's
-  port), add `LLAMACRACY_AUTH_PORT=80` to `deploy/oauth2-proxy.env` before
-  updating the units.
-- Rerun `./deploy/install.sh` (or copy the two units by hand), then
-  `systemctl --user daemon-reload` and restart `llamacracy-dex` and
-  `llamacracy-auth`, for the boot fix.
+  port), add `LLAMACRACY_AUTH_PORT=80` to `deploy/oauth2-proxy.env`.
+- Add `"tools": true` to the inventory entries that handle tool calls well:
+  they get searching, reading, the workspace and `run_python`.
+
+Then:
+
+```bash
+git pull
+uv sync && ./deploy/install.sh     # new dependencies, the sandbox, the units
+python3 bench/gen_llamaswap_config.py
+systemctl --user restart llamacracy llamacracy-dex llamacracy-auth
+```
+
+The database migrates itself on start. `install.sh` builds the sandbox's
+Python in `data/sandbox`; `./deploy/setup-sandbox.sh` rebuilds just that.
 
 ## 0.2.0 (2026-09-23)
 
