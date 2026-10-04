@@ -72,3 +72,19 @@ async def test_it_has_the_charting_libraries_and_crisp_defaults():
     r = await _run("import seaborn as sns, pandas as pd, openpyxl, PIL\n"
                    "import matplotlib as mpl\nmpl.rcParams['savefig.dpi']")
     assert r.ok and r.output == "150.0"
+
+
+async def test_an_svg_comes_back_as_a_png():
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80">'
+           '<rect width="120" height="80" fill="teal"/></svg>')
+    r = await _run(f"open('/tmp/out/box.svg', 'w').write({svg!r})")
+    assert r.ok and [n for n, _ in r.figures] == ["box.png"]
+    assert r.figures[0][1].startswith(b"\x89PNG")
+
+
+async def test_it_has_the_diagram_libraries():
+    r = await _run("import schemdraw, matplotlib_venn, squarify, wordcloud\n"
+                   "import schemdraw.elements as elm\n"
+                   "d = schemdraw.Drawing(show=False)\nd += elm.Resistor().label('2.2 kΩ')\n"
+                   "d += elm.Capacitor().label('470 µF')\nd.save('/tmp/out/rc.png')")
+    assert r.ok and [n for n, _ in r.figures] == ["rc.png"], r.output

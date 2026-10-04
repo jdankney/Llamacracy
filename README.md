@@ -70,10 +70,11 @@ payment processing.
   you ask for changes. Files fork with the conversation: edit an earlier
   message and that branch keeps the files as they were.
 - **It does the math with code**: models that use tools get a `run_python`
-  tool (sympy, numpy, scipy, units, pandas, matplotlib, seaborn) and are told
-  to calculate with it rather than in their heads. Spreadsheets attached to the
-  chat (CSV, Excel, JSON) are readable by the code, read-only, for charts and
-  analysis. The code runs in a bubblewrap sandbox with no network and no view
+  tool (sympy, numpy, scipy, units, pandas, matplotlib, seaborn, plus
+  schemdraw, Venn diagrams, treemaps and word clouds) and are told to
+  calculate with it rather than in their heads. Spreadsheets and photos
+  attached to the chat are readable by the code, read-only, for charts,
+  analysis, or marking up a picture. The code runs in a bubblewrap sandbox with no network and no view
   of the rest of the server, charts it draws appear under the reply,
   and the server checks which numbers in the answer actually came from the
   code's output, flagging any that didn't.
@@ -147,7 +148,8 @@ installer scaffolds from committed examples.
 - For `run_python`: [bubblewrap](https://github.com/containers/bubblewrap)
   (`bwrap`) and util-linux's `prlimit`. `deploy/install.sh` builds the
   sandbox's own Python environment (`deploy/setup-sandbox.sh`); without
-  them the tool is simply not offered.
+  them the tool is simply not offered. Optional: librsvg's `rsvg-convert`,
+  so pictures the code saves as SVG are shown too.
 - For multi-user use: [NetBird](https://netbird.io) (or any private
   network), Docker for Dex, and oauth2-proxy (`deploy/install.sh` downloads it).
 

@@ -833,6 +833,7 @@ async def chat(req: ChatRequest,
     compute = (model.tools and settings.python_tool
                and sandbox.available(settings.sandbox_python) is None)
     data: list[tuple[str, str]] = []
+    photo_notes: dict[str, str] = {}
     if web or refs or course_refs or use_files or use_pictures or compute or course is not None:
         tools = []
         if use_pictures:
@@ -859,9 +860,28 @@ async def chat(req: ChatRequest,
                     (file_id, principal.user_id, path, "image/png", len(png), now()))
                 return file_id
             # the data files shared on this branch (and the course's), for
-            # code to chart and analyse: read-only, under /data
+            # code to chart and analyse, and its photos, to crop or mark up:
+            # read-only, under /data. Photos are img1, img2, ... in order,
+            # as view_image names them; this message's comes last.
+            with_photo = [r for r in prior if r["image_upload_id"]]
+            photo_ids = [r["image_upload_id"] for r in with_photo] + ([image_id] if image_id else [])
+            rows = {r["id"]: r for r in await db.fetch_all(
+                "SELECT id, path, mime FROM uploads WHERE user_id = ? AND kind = 'image' AND id IN ("
+                + ",".join("?" * len(photo_ids)) + ")",
+                (principal.user_id, *photo_ids))} if photo_ids else {}
+            captions = {r["image_upload_id"]: r["content"].strip().replace("\n", " ")[:60]
+                        for r in with_photo}
+            photos = []
+            for i in photo_ids:          # not deduplicated: numbered as view_image numbers them
+                if i in rows and rows[i]["mime"] in sandbox.IMAGE_SUFFIX:
+                    photos.append((f"img{len(photos) + 1}{sandbox.IMAGE_SUFFIX[rows[i]['mime']]}",
+                                   rows[i]["path"], captions.get(i)))
             data = sandbox.data_files([(d.filename, d.path) for d in docs.values()]
-                                      + [(d.filename, d.path) for d in course_docs])
+                                      + [(d.filename, d.path) for d in course_docs]
+                                      + [(name, path) for name, path, _ in photos])
+            photo_notes = {f"{sandbox.DATA_DIR}/{name}": (f'sent with "{cap}"' if cap is not None
+                                                          else "sent with this message")
+                           for name, _, cap in photos}
             tools.append(python_tool(python=settings.sandbox_python,
                                      timeout_s=settings.sandbox_timeout_seconds,
                                      memory_mb=settings.sandbox_memory_mb,
@@ -898,9 +918,11 @@ async def chat(req: ChatRequest,
             notes.append("Earlier photos in this chat: " + "; ".join(
                 f'{p.ref} (sent with "{p.caption}")' for p in pictures) + ".")
         if data:
-            notes.append("run_python can read the data files shared here: " + "; ".join(
-                f"{inner}" for inner, _ in data) + ". Load them with pandas (read_csv, "
-                "read_excel, read_json) to chart or analyse them.")
+            notes.append("run_python can read the files shared here: " + "; ".join(
+                inner + (f" (a photo {photo_notes[inner]})" if inner in photo_notes else "")
+                for inner, _ in data) + ". Load tables with pandas (read_csv, read_excel, "
+                "read_json) to chart or analyse them, and photos with PIL.Image.open to crop, "
+                "resize, annotate or measure them (save the result to /tmp/out to show it).")
         if folded_refs:
             notes.append("Documents shared earlier in this conversation (before the summary):\n"
                          + "".join(r.stub(documents.estimate_tokens(r.text)) for r in folded_refs).strip())

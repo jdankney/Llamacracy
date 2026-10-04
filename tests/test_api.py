@@ -1058,6 +1058,23 @@ def compute_client(agent_client, monkeypatch):
     return agent_client
 
 
+def test_the_chats_photos_are_readable_by_run_python(compute_client):
+    c = compute_client
+    reg = c.registry
+    reg._models["small-vision"] = replace(reg.require("small"), key="small-vision", in_picker=False)
+    reg._models["small"] = replace(reg.require("small"), vision_key="small-vision")
+    conv = _photo_turn(c, "my garden")
+    img = c.post("/api/uploads", files={"file": ("q.png", PNG, "image/png")}).json()["id"]
+    c.fake_upstream.agent_steps = [{"tool_calls": [("run_python", {"code": "from PIL import Image"})]},
+                                   {"content": ["Cropped."]}]
+    _chat(c, model="small", message="crop this one", image_id=img, conversation_id=conv)
+    # numbered in order, as view_image names them: the earlier photo, then this one
+    assert [inner for inner, _ in c.mounted[-1]] == ["/data/img1.png", "/data/img2.png"]
+    system = c.fake_upstream.payloads[-2]["messages"][0]["content"]
+    assert '/data/img1.png (a photo sent with "my garden")' in system
+    assert "/data/img2.png (a photo sent with this message)" in system
+
+
 def test_attached_data_files_are_readable_by_run_python(compute_client):
     up = compute_client.fake_upstream
     csv = _upload_doc(compute_client, "Q3 sales (final).csv", b"month,units\nJul,12\nAug,19\n")

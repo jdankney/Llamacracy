@@ -1,7 +1,8 @@
 # The Python that run_python runs model-written code with (deploy/setup-sandbox.sh
 # installs these into data/sandbox, separate from the app's own environment).
 # Math, science, units, plots and graphs: what homework and quick checks need,
-# plus tables and charts for the data people attach (CSV, Excel, JSON).
+# plus tables and charts for the data people attach (CSV, Excel, JSON), and
+# diagrams: circuits (schemdraw), Venn diagrams, treemaps, word clouds.
 sympy>=1.13
 numpy>=2.1
 scipy>=1.14
@@ -12,3 +13,7 @@ pandas>=2.2
 seaborn>=0.13
 openpyxl>=3.1
 pillow>=10.4
+schemdraw>=0.19
+matplotlib-venn>=1.1
+squarify>=0.4
+wordcloud>=1.9

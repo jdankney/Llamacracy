@@ -231,6 +231,14 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   for it (pandas, seaborn, openpyxl, Pillow) and a matplotlibrc with crisper
   defaults (150 dpi, constrained layout) live in the sandbox environment, so
   the app's own dependencies don't grow.
+  Photos in the chat are mounted the same way, as `img1.png`, `img2.jpg`,
+  ... in the order `view_image` numbers them, so one name means one picture
+  to the model whichever tool it uses.
+- **SVG is converted inside the sandbox.** A model-written SVG can point at
+  files (`<image href="file:///…">`), so converting it on the host would
+  hand the converter whatever the server can read. `rsvg-convert` runs in
+  the runner instead, after the code, seeing only what the code could. The
+  page still only ever receives PNG.
 - **The server checks the numbers, not the model.** After a turn that ran
   code, every number in the answer is looked up in what the code printed
   (rounding, percentages and scientific notation allowed), and in what the

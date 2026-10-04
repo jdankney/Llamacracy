@@ -204,7 +204,8 @@ class Toolbox:
         if "run_python" in self.tools:
             lines.append(
                 "run_python runs Python 3 with sympy, numpy, scipy, pint (units), pandas, matplotlib, "
-                "seaborn, networkx and Pillow: no internet, and nothing is kept between runs, so "
+                "seaborn, networkx, Pillow, and for diagrams schemdraw (circuits), matplotlib_venn, "
+                "squarify (treemaps) and wordcloud: no internet, and nothing is kept between runs, so "
                 "each run imports and defines what it needs. Print what you need; a last bare "
                 "expression is shown too. "
                 "Do every calculation with it (arithmetic, algebra, calculus, statistics, unit "
@@ -213,10 +214,13 @@ class Toolbox:
                 "symbolic answer with a numeric one. Quote numbers in your answer as the code "
                 "printed them (rounding is fine), and print the steps you'll show too, not just "
                 "the result: the user is shown which numbers came from code. For a chart or "
-                "diagram, plt.savefig('/tmp/out/<name>.png') and the user will see it: give it a "
+                "diagram, plt.savefig('/tmp/out/<name>.png') (or write an .svg there) and the user "
+                "will see it: give it a "
                 "title, axis labels with units and a legend when there's more than one series, "
                 "and prefer seaborn for statistical plots (distributions, regressions, "
-                "comparisons across groups).")
+                "comparisons across groups). schemdraw saves small unless asked: "
+                "d.save(path, dpi=200). For text drawn on a picture with Pillow, "
+                "ImageFont.load_default(size=...) at a size that suits the image.")
         lines.extend(self.notes)
         return "\n".join(lines)
 
@@ -783,8 +787,10 @@ def python_tool(*, python: str, timeout_s: float, memory_mb: int, output_chars: 
     return Tool(
         name="run_python",
         description="Run Python 3 in a sandbox (sympy, numpy, scipy, pint, pandas, matplotlib, "
-                    "seaborn, networkx, Pillow; no internet; fresh each run) and get back what it "
-                    "prints. Start with a comment line saying what it computes."
+                    "seaborn, networkx, Pillow, schemdraw, matplotlib_venn, squarify, wordcloud; "
+                    "no internet; fresh each run) and get back what it prints. Pictures saved "
+                    "under /tmp/out (PNG or SVG) are shown to the user. Start with a comment line "
+                    "saying what it computes."
                     + (" The chat's data files are readable at: "
                        + ", ".join(inner for inner, _ in files) + "." if files else ""),
         parameters={"type": "object", "properties": {

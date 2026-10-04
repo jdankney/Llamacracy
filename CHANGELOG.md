@@ -60,6 +60,13 @@
   numbers copied into the prompt. The sandbox gains pandas, seaborn, openpyxl
   and Pillow, and chart defaults (150 dpi, constrained layout, light grid)
   from `deploy/sandbox-matplotlibrc`.
+- **Diagrams, SVG, and your photos.** The sandbox also has schemdraw
+  (circuit diagrams), matplotlib-venn, squarify (treemaps) and wordcloud. A
+  picture saved as SVG is shown too: it's converted to PNG with
+  `rsvg-convert` inside the sandbox (install librsvg for it). And the chat's
+  photos are readable by the code at `/data/img1.png`, `/data/img2.jpg`, ...
+  (the names the model already uses for them), so it can crop, resize or
+  mark up a picture you sent.
 - **Study.** A Study section (at `/study`) where each person adds their own
   courses: a name, a few lines about the class, and its materials (syllabus,
   notes, slides, homework, old exams). A session runs a tutor on a model

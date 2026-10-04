@@ -11,15 +11,17 @@ sandbox:
   (data/sandbox, built by deploy/setup-sandbox.sh), and nothing else of the
   host: not the repo, not .env, not the database, not /home;
 - a small private /tmp (tmpfs, size-capped) as its only writable place;
-- the data files attached to the conversation (CSV, Excel, JSON), read-only
-  under /data, so it can chart and analyse what the user shared;
+- the data files and photos attached to the conversation (CSV, Excel,
+  JSON; PNG, JPEG, WebP), read-only under /data, so it can chart and
+  analyse what the user shared, or crop and annotate a picture;
 - limits: wall clock (killed, with everything it started), CPU seconds,
   file size, and, when systemd can give it a scope, a memory cap and a cap
   on the number of processes. Without systemd it falls back to an
   address-space rlimit.
 
 Nothing survives a run. Its output comes back on stdout; pictures it saved
-anywhere under /tmp (or drew and left open, unsaved) come back at the end of
+anywhere under /tmp (PNG, or SVG, which is converted to PNG inside the
+sandbox; or drew and left open, unsaved) come back at the end of
 that stream, after a marker line carrying a random nonce, as base64 PNG, and
 are checked to be PNGs here.
 """
@@ -49,8 +51,11 @@ _PNG = b"\x89PNG\r\n\x1a\n"
 # Runs inside the sandbox as `python -I -c RUNNER nonce`, with the model's code
 # on stdin. Notebook-style: the value of a final bare expression is printed.
 RUNNER = r'''
-import ast, base64, json, os, sys, traceback
+import ast, base64, json, os, sys, traceback, warnings
 nonce = sys.argv[1]
+# schemdraw asks for a layout the chart defaults' constrained layout overrides:
+# harmless, and noise in what the model reads back
+warnings.filterwarnings("ignore", message="This figure was using a layout engine")
 src = sys.stdin.read()
 os.makedirs("/tmp/out", exist_ok=True)
 g = {"__name__": "__main__"}
@@ -82,6 +87,31 @@ def pngs():
             if n.lower().endswith(".png") and os.path.isfile(p) and not os.path.islink(p):
                 found.append(p)
     return found
+def svgs():
+    # an SVG it drew becomes a PNG beside it, converted in here, where the
+    # converter sees only what the code could (unless it saved a PNG too)
+    import shutil, subprocess
+    tool = shutil.which("rsvg-convert")
+    for d, dirs, files in os.walk("/tmp"):
+        dirs.sort()
+        for n in sorted(files):
+            p = os.path.join(d, n)
+            png = p[:-4] + ".png"
+            if not n.lower().endswith(".svg") or os.path.islink(p) or os.path.exists(png):
+                continue
+            if tool is None:
+                print("[" + n + " wasn't shown: no SVG converter here; save a PNG instead]")
+                continue
+            for zoom in ("2", "1"):
+                try:
+                    subprocess.run([tool, "-z", zoom, "-o", png, p], timeout=10, check=True,
+                                   capture_output=True)
+                except Exception:
+                    print("[" + n + " couldn't be converted to show it]")
+                    break
+                if os.path.getsize(png) <= MAX_FIGURE_BYTES:
+                    break
+svgs()
 paths = pngs()
 if not paths and "matplotlib.pyplot" in sys.modules:
     # drawn but never saved (plt.show() does nothing here): save what's open
@@ -158,8 +188,9 @@ def _scope_works() -> bool:
 
 INNER_ENV = "/opt/py"     # where the sandbox environment appears inside: no host paths
 DATA_DIR = "/data"        # where a conversation's data files appear inside
-# what code can usefully read: tables and structured data
-DATA_SUFFIXES = (".csv", ".tsv", ".xlsx", ".xlsm", ".json")
+# what code can usefully read: tables and structured data, and photos
+DATA_SUFFIXES = (".csv", ".tsv", ".xlsx", ".xlsm", ".json", ".png", ".jpg", ".jpeg", ".webp")
+IMAGE_SUFFIX = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 

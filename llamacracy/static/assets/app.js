@@ -2108,8 +2108,10 @@ function helpView() {
         'code and what it printed. Charts and diagrams it draws appear under the reply.'),
       h('p', {},
         'Attach a spreadsheet (CSV, Excel or JSON) and ask for a chart or an analysis: the code can ' +
-        'read the file itself, with pandas and seaborn, so it works from your actual numbers. It can ' +
-        'only read what you attached to that chat, and can\'t change it.'),
+        'read the file itself, with pandas and seaborn, so it works from your actual numbers. Photos ' +
+        'you sent in the chat work the same way, so it can crop, resize or mark one up. It can also ' +
+        'draw diagrams: circuits, Venn diagrams, treemaps, word clouds. It can only read what was ' +
+        'shared in that chat, and can\'t change it.'),
       h('p', { class: 'muted' },
         'Under the answer, Llamacracy says whether its numbers came from that code: a check mark ' +
         'when they all did, a warning naming any that didn\'t. That is Llamacracy checking, not the ' +

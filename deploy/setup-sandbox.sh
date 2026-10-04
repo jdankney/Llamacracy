@@ -16,10 +16,11 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!! \033[0m %s\n' "$*"; }
 
 command -v bwrap >/dev/null 2>&1 || warn "bubblewrap isn't installed: run_python stays off until it is (package: bubblewrap)"
+command -v rsvg-convert >/dev/null 2>&1 || warn "rsvg-convert isn't installed: pictures saved as SVG won't be shown (package: librsvg)"
 
 say "building the sandbox Python in $DEST"
 uv venv --quiet --allow-existing "$DEST"
 uv pip install --quiet --python "$DEST/bin/python" -r "$REPO/deploy/sandbox-requirements.txt"
 # crisper chart defaults; the sandbox points MATPLOTLIBRC at this copy
 cp "$REPO/deploy/sandbox-matplotlibrc" "$DEST/matplotlibrc"
-"$DEST/bin/python" -c "import sympy, numpy, scipy, pint, matplotlib, networkx, pandas, seaborn, openpyxl, PIL; print('    ok: sympy', sympy.__version__, '· numpy', numpy.__version__, '· pandas', pandas.__version__, '· seaborn', seaborn.__version__)"
+"$DEST/bin/python" -c "import sympy, numpy, scipy, pint, matplotlib, networkx, pandas, seaborn, openpyxl, PIL, schemdraw, matplotlib_venn, squarify, wordcloud; print('    ok: sympy', sympy.__version__, '· numpy', numpy.__version__, '· pandas', pandas.__version__, '· seaborn', seaborn.__version__)"
