@@ -765,3 +765,7 @@ a.btn { text-decoration: none; }
 @media (min-width: 768px) {
   .gauges .gauge-compact { display: none; }
 }
+
+/* an equation still being written: its source, dimmed, until it closes */
+.math-pending { opacity: .55; font-family: var(--mono, ui-monospace, monospace); font-size: .92em; white-space: pre-wrap; }
+.math-pending.is-display { display: block; margin: .6em 0; }

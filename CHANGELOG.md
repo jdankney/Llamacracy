@@ -99,6 +99,10 @@
 - In a study session the tutor has to look something up before it
   answers: on a session's first turn, and on every Quiz and Practice turn.
 
+- **Math renders as it's written.** Equations in a streaming reply render as
+  soon as they close, instead of all at once at the end; the one still being
+  written shows as dimmed LaTeX until it does.
+
 ### Fixed
 
 - LaTeX in tool arguments: models write `\frac` and `\theta` with one

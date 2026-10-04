@@ -385,8 +385,14 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   `target=_blank rel=noopener`.
 - **Math is extracted before markdown**, rendered with KaTeX, and swapped
   back in through private-use-codepoint placeholders, so markdown never eats
-  the backslashes in `\(...\)`. Heavy passes (highlighting, math) run once
-  on the settled message, not per streamed token.
+  the backslashes in `\(...\)`. Math renders while a reply streams (it
+  used to wait for the end, so a math-heavy answer was raw LaTeX for its
+  whole run): rendered equations are cached by source, so a finished one
+  costs a lookup on every later redraw; redraws are batched to one per
+  animation frame; and an equation that has opened but not closed is shown
+  as dimmed source rather than handed to markdown, which would italicise
+  its underscores. Code highlighting still runs once, on the settled
+  message.
 - **Copy copies the raw source**, not the rendered HTML, and falls back to
   `execCommand('copy')` because the async Clipboard API needs a secure
   context.

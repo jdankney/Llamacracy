@@ -146,22 +146,54 @@ const copyBtn = (text, label = 'Copy') => h('button', {
 // Handles $$…$$, \[…\], \(…\) and a guarded $…$ (skips currency-looking text).
 // private-use code points: never appear in real text, survive marked untouched
 const _KA = '\uE000', _KB = '\uE001';
-function extractMath(src) {
+// Rendered equations, by source: a reply is re-rendered on every token while
+// it streams, and an equation that's already finished costs a lookup, not a
+// KaTeX run.
+const _katexCache = new Map();
+function katexHtml(tex, display) {
+  const key = (display ? 'D' : 'I') + tex;
+  let html = _katexCache.get(key);
+  if (html === undefined) {
+    html = katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'html' });
+    if (_katexCache.size > 4000) _katexCache.clear();
+    _katexCache.set(key, html);
+  }
+  return html;
+}
+// `streaming`: the text is still arriving, so an equation that has started
+// but not closed yet ("$$\int_0^" ...) is shown dimmed as it is, rather than
+// left for markdown to mangle; it renders as soon as its closing delimiter
+// arrives.
+function extractMath(src, streaming = false) {
   if (!window.katex) return { src, spans: [] };
   const spans = [];
   const stash = (tex, display, orig) => {
     try {
-      spans.push(katex.renderToString(tex.trim(), { displayMode: display, throwOnError: false, output: 'html' }));
+      spans.push(katexHtml(tex.trim(), display));
       return _KA + (spans.length - 1) + _KB;
     } catch { return orig; }
   };
   const code = [];                        // shield code so we don't scan $ inside it
-  src = src.replace(/```[\s\S]*?```|`[^`\n]+`/g, m => (code.push(m), `\uE002${code.length - 1}\uE003`));
+  // (a fence still being written runs to the end of the text)
+  src = src.replace(/```[\s\S]*?```|```[\s\S]*$|`[^`\n]+`/g, m => (code.push(m), `\uE002${code.length - 1}\uE003`));
   src = src.replace(/\$\$([\s\S]+?)\$\$/g, (m, t) => stash(t, true, m));
   src = src.replace(/\\\[([\s\S]+?)\\\]/g, (m, t) => stash(t, true, m));
   src = src.replace(/\\\(([\s\S]+?)\\\)/g, (m, t) => stash(t, false, m));
   src = src.replace(/(^|[^\\$\d])\$(?!\s)((?:\\.|[^\\$\n])+?)\$(?!\d)/g,
     (m, pre, t) => (/\s$/.test(t) || /^[\s\d.,]*$/.test(t)) ? m : pre + stash(t, false, '$' + t + '$'));
+  if (streaming) {
+    // what's left of an opener is unclosed: display math anywhere in the
+    // tail, inline math only on the last line
+    const open = /(?:\$\$|\\\[|\\\()[^\uE002]*$/.exec(src);
+    const inline = !open && /(?:^|[^\\$\d])\$(?![\s\d$])[^$\n\uE002]*$/.exec(src);
+    const at = open ? open.index : inline ? inline.index + inline[0].indexOf('$') : -1;
+    if (at >= 0) {
+      const raw = src.slice(at).replace(/\uE002(\d+)\uE003/g, (_, i) => code[+i]);
+      const display = /^(\$\$|\\\[)/.test(raw);
+      spans.push(`<span class="math-pending${display ? ' is-display' : ''}">${esc(raw)}</span>`);
+      src = src.slice(0, at) + _KA + (spans.length - 1) + _KB;
+    }
+  }
   src = src.replace(/\uE002(\d+)\uE003/g, (_, i) => code[+i]);
   return { src, spans };
 }
@@ -170,7 +202,7 @@ if (window.marked) marked.setOptions({ gfm: true, breaks: true });
 // Markdown (+ math) -> sanitised HTML. marked + DOMPurify + KaTeX come from the
 // CDN; if they didn't load we fall back to escaped text with fenced code
 // blocks so a message is never unreadable.
-function renderMD(src, math = true) {
+function renderMD(src, math = true, streaming = false) {
   src = src || '';
   if (!src) return '';
   if (!window.marked || !window.DOMPurify) {
@@ -179,19 +211,32 @@ function renderMD(src, math = true) {
       .replace(/`([^`\n]+)`/g, '<code>$1</code>')
       .split(/\n{2,}/).map(p => p.startsWith('<pre>') ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
   }
-  const { src: pre, spans } = math ? extractMath(src) : { src, spans: [] };
+  const { src: pre, spans } = math ? extractMath(src, streaming) : { src, spans: [] };
   let html = marked.parse(pre);
   if (spans.length) html = html.replace(new RegExp(_KA + '(\\d+)' + _KB, 'g'), (_, i) => spans[+i] ?? '');
   return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
 }
-// render markdown into a live element; the heavy passes (highlight, math) run
-// only once the text has stopped streaming
+// render markdown into a live element. Math renders as it streams (see
+// extractMath); syntax highlighting waits until the text has stopped.
 function mdInto(el, src, finalize = true) {
-  el.innerHTML = renderMD(src, finalize) || '<span class="faint">…</span>';
+  el.innerHTML = renderMD(src, true, !finalize) || '<span class="faint">…</span>';
   if (finalize && window.hljs) {
     el.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch { /* unknown language */ } });
   }
   el.querySelectorAll('a[href]').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
+}
+// A streaming body is redrawn at most once a frame, however fast tokens come:
+// with math rendered live, a redraw per token would be wasted work.
+const _paints = new Map();
+function paintStreaming(id, text) {
+  if (_paints.has(id)) { _paints.set(id, text); return; }
+  _paints.set(id, text);
+  requestAnimationFrame(() => {
+    const get = _paints.get(id);
+    _paints.delete(id);
+    const b = document.getElementById(id), t = get();
+    if (b && t != null) { mdInto(b, t, false); scrollThread(); }
+  });
 }
 const mdBlock = (src, attrs = {}, finalize = true) => { const el = h('div', { class: 'prose-chat', ...attrs }); mdInto(el, src, finalize); return el; };
 const fmtDur = s => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
@@ -2417,8 +2462,8 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
       else if (ev.type === 'token') {
         const first = S.active.state !== 'generating';
         S.active.state = 'generating'; S.active.text += ev.text;
-        if (first) render(); else { const b = document.getElementById('active-body'); if (b) { mdInto(b, S.active.text, false); scrollThread(); } }
-        // (math + highlight are applied on the final render, see the 'done' branch)
+        if (first) render(); else paintStreaming('active-body', () => S.active?.text);
+        // (code highlighting is applied on the final render, see the 'done' branch)
       }
       else if (ev.type === 'reasoning') {
         const first = !S.active.reasoning;
@@ -2431,7 +2476,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
           S.active.thinkStart = Date.now() - S.active.thoughtSeconds * 1000;
           S.active.thoughtSeconds = null; render(); startThinkTicker();
         }
-        else { const b = document.getElementById('think-body'); if (b) { mdInto(b, S.active.reasoning, false); scrollThread(); } }
+        else paintStreaming('think-body', () => S.active?.reasoning);
       }
       else if (ev.type === 'tool_start') {
         const a = S.active;
