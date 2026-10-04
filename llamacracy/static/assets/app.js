@@ -228,12 +228,13 @@ function mdInto(el, src, finalize = true) {
 // A streaming body is redrawn at most once a frame, however fast tokens come:
 // with math rendered live, a redraw per token would be wasted work.
 const _paints = new Map();
-function paintStreaming(id, text) {
+function paintStreaming(id, text, paint = null) {
   if (_paints.has(id)) { _paints.set(id, text); return; }
   _paints.set(id, text);
   requestAnimationFrame(() => {
     const get = _paints.get(id);
     _paints.delete(id);
+    if (paint) return paint();
     const b = document.getElementById(id), t = get();
     if (b && t != null) { mdInto(b, t, false); scrollThread(); }
   });
@@ -1093,10 +1094,33 @@ function trailBlock(steps, { live = false, open = false, onToggle } = {}) {
       : h('li', { class: 'step' + (st.running ? ' is-running' : st.ok === false ? ' is-bad' : '') },
           st.running ? h('i', { class: 'pulse' }) : icon(st.ok === false ? 'alert' : (TOOL_ICON[st.name] || 'zap'), 'icon-sm'),
           h('span', { class: 'lbl' }, st.label),
-          st.running ? null : h('span', { class: 'res' }, [st.summary, st.ms != null ? fmtMs(st.ms) : null].filter(Boolean).join(' · ')),
+          st.writing ? h('span', { class: 'res', id: draftId(st.draftKey) + '-n' }, draftCount(st.draft))
+            : st.running ? null : h('span', { class: 'res' }, [st.summary, st.ms != null ? fmtMs(st.ms) : null].filter(Boolean).join(' · ')),
+          // code it's still writing: the last few lines, as they arrive
+          st.writing && st.draft ? h('pre', { class: 'draft-code' + (draftLong(st.draft) ? ' is-long' : ''), id: draftId(st.draftKey) },
+            draftTail(st.draft)) : null,
           // an earlier photo it looked at again (our own upload, never a remote image)
           st.upload_id ? h('img', { class: 'trail-thumb', src: '/api/uploads/' + st.upload_id, alt: '' }) : null,
           st.name === 'run_python' && !st.running && st.args?.code ? pyRun(st) : null))));
+}
+// A tool call the model is still writing (tool_draft events): a long
+// program takes as long to write as a long answer, so it shows as it comes
+const DRAFT_LABEL = { run_python: 'Writing Python', web_search: 'Choosing a search', read_page: 'Choosing a page',
+  ws_write: 'Writing a file', ws_edit: 'Editing a file', add_problem: 'Writing a problem' };
+const draftId = key => 'draft-' + String(key).replace(/\W/g, '-');
+const draftTail = (code, n = 8) => code.split('\n').slice(-n).join('\n');
+const draftLong = code => code.split('\n').length > 8;
+const draftCount = code => { const n = code ? code.split('\n').length : 0; return n ? plural(n, 'line') : ''; };
+function paintDraft(st) {
+  paintStreaming(draftId(st.draftKey), () => null, () => {
+    const pre = document.getElementById(draftId(st.draftKey));
+    if (!pre) { render(); scrollThread(); return; }
+    pre.textContent = draftTail(st.draft);
+    pre.classList.toggle('is-long', draftLong(st.draft));
+    const n = document.getElementById(draftId(st.draftKey) + '-n');
+    if (n) n.textContent = draftCount(st.draft);
+    scrollThread();
+  });
 }
 // A Python step, unfolded: the code it ran and what that printed
 const fence = (lang, text) => '```' + lang + '\n' + String(text).replace(/```/g, '`\u200b``') + '\n```';
@@ -2480,13 +2504,30 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
         }
         else paintStreaming('think-body', () => S.active?.reasoning);
       }
+      else if (ev.type === 'tool_draft') {
+        const a = S.active;
+        a.trail = a.trail || [];
+        let st = a.trail.find(x => x.draftKey === ev.key);
+        if (st) { st.draft += ev.delta; paintDraft(st); }
+        else {
+          // whatever it wrote before starting the call was a preamble
+          if (a.text.trim()) a.trail.push({ type: 'note', text: a.text.trim() });
+          a.text = '';
+          a.trail.push({ type: 'tool', id: draftId(ev.key), draftKey: ev.key, name: ev.name,
+            label: DRAFT_LABEL[ev.name] || 'Getting a step ready', running: true, writing: true, draft: ev.delta || '' });
+          a.state = 'generating'; render(); scrollThread();
+        }
+      }
       else if (ev.type === 'tool_start') {
         const a = S.active;
         a.trail = a.trail || [];
         // whatever it wrote before deciding to call a tool was a preamble
         if (a.text.trim()) a.trail.push({ type: 'note', text: a.text.trim() });
         a.text = '';
-        a.trail.push({ type: 'tool', id: ev.id, name: ev.name, label: ev.label, running: true });
+        // the call it was writing is now running: same row, new label
+        const st = a.trail.find(x => x.writing && x.name === ev.name);
+        if (st) Object.assign(st, { id: ev.id, label: ev.label, writing: false, draft: undefined, draftKey: undefined });
+        else a.trail.push({ type: 'tool', id: ev.id, name: ev.name, label: ev.label, running: true });
         a.state = 'generating'; render(); scrollThread();
       }
       else if (ev.type === 'tool_end') {

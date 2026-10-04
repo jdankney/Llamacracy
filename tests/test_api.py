@@ -1058,6 +1058,51 @@ def compute_client(agent_client, monkeypatch):
     return agent_client
 
 
+def test_a_tool_call_cut_off_by_the_budget_is_not_run(compute_client):
+    # from a live run: the cap cut a program off mid-string, and the loop ran
+    # the half-written call ("bad arguments") and retried it, four times
+    up = compute_client.fake_upstream
+    up.agent_steps = [{"content": ["Let me draw it."],
+                       "tool_calls": [("run_python", '{"code": "import matplotlib\\nfor i in ra')],
+                       "finish": "length"},
+                      {"content": ["I ran out of room before the code was finished."]}]
+    ev = _chat(compute_client, model="small", message="draw yourself")
+    assert compute_client.ran == []
+    end = next(e for e in ev if e["type"] == "tool_end")
+    assert not end["ok"] and end["summary"] == "cut off"
+    assert len(up.payloads) == 2 and up.payloads[1]["tool_choice"] == "none"
+    assert "cut off" in up.payloads[1]["messages"][-1]["content"]
+    reply = client_messages(compute_client, ev[0]["conversation_id"])[1]
+    assert reply["content"] == "I ran out of room before the code was finished."
+
+
+def test_a_turn_that_can_run_code_answers_when_its_budget_is_spent(compute_client):
+    from llamacracy.config import get_settings
+    budget = get_settings().thinking_max_tokens
+    up = compute_client.fake_upstream
+    # the first step uses nearly all of the turn's budget
+    up.agent_steps = [{"tool_calls": [("run_python", {"code": "print(1)"})],
+                       "usage": {"prompt_tokens": 5, "completion_tokens": budget - 100}},
+                      {"content": ["Done."]}]
+    _chat(compute_client, model="small", message="chart it")
+    # a turn that can run code gets the thinking-sized budget...
+    assert up.payloads[0]["max_tokens"] == budget
+    # ...and with it spent, the next request answers rather than calls
+    assert up.payloads[1]["tool_choice"] == "none"
+
+
+def test_a_tool_call_is_shown_while_it_is_being_written(compute_client):
+    up = compute_client.fake_upstream
+    code = 'import numpy as np\nprint("π ≈", np.pi)\n'
+    up.agent_steps = [{"tool_calls": [("run_python", {"code": code})]}, {"content": ["Done."]}]
+    ev = _chat(compute_client, model="small", message="pi?")
+    drafts = [e for e in ev if e["type"] == "tool_draft"]
+    assert drafts and {e["name"] for e in drafts} == {"run_python"}
+    assert "".join(e["delta"] for e in drafts) == code
+    # all of it before the call runs
+    assert ev.index(drafts[-1]) < ev.index(next(e for e in ev if e["type"] == "tool_start"))
+
+
 def test_the_chats_photos_are_readable_by_run_python(compute_client):
     c = compute_client
     reg = c.registry

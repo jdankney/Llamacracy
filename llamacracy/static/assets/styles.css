@@ -769,3 +769,13 @@ a.btn { text-decoration: none; }
 /* an equation still being written: its source, dimmed, until it closes */
 .math-pending { opacity: .55; font-family: var(--mono, ui-monospace, monospace); font-size: .92em; white-space: pre-wrap; }
 .math-pending.is-display { display: block; margin: .6em 0; }
+
+/* code the model is still writing, under its "Writing Python" step */
+.trail-steps .step.is-running { flex-wrap: wrap; }
+.trail-steps .draft-code { flex-basis: 100%; margin: .35rem 0 .1rem 1.3rem; padding: .45rem .65rem; max-height: 10.6em; overflow: hidden;
+  font-family: var(--mono); font-size: .78rem; line-height: 1.3; color: var(--code-text); opacity: .8; background: var(--code-bg);
+  border: 1px solid var(--line); border-radius: var(--r-md); white-space: pre; }
+/* older lines scroll away under a fade */
+.trail-steps .draft-code.is-long { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.3em); mask-image: linear-gradient(to bottom, transparent 0, #000 1.3em); }
+.trail-steps .draft-code::after { content: '▍'; color: var(--accent); animation: blink 1s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }

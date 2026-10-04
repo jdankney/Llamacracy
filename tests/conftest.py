@@ -89,7 +89,7 @@ class FakeUpstream:
                         {"index": i, "function": {"arguments": raw[j:j + 7]}}])
             if step.get("finish"):
                 yield StreamChunk(raw={}, finish_reason=step["finish"])
-            yield StreamChunk(raw={}, usage=dict(self.usage), timings=dict(self.timings))
+            yield StreamChunk(raw={}, usage=dict(step.get("usage") or self.usage), timings=dict(self.timings))
             return
         # a model asked to think streams its reasoning before the answer
         ctk = payload.get("chat_template_kwargs") or {}

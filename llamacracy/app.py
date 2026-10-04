@@ -981,7 +981,10 @@ async def chat(req: ChatRequest,
     # problem, its solution, its code): it gets the thinking-sized budget too,
     # or the last problems are cut off mid-call.
     practicing = course is not None and mode == "practice"
-    budget = (settings.thinking_max_tokens if think or practicing
+    # So is a turn that can run code: one chart program alone can be 1,500
+    # tokens, and the budget is shared by every step (a live run spent the
+    # everyday 2,048 on its first program and had nothing left to fix it).
+    budget = (settings.thinking_max_tokens if think or practicing or compute
               else min(model.max_tokens_default, settings.max_tokens_per_request))
     cap = min(req.max_tokens or budget, budget)
     if doc_blocks:

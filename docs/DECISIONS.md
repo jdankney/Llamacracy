@@ -239,6 +239,18 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   hand the converter whatever the server can read. `rsvg-convert` runs in
   the runner instead, after the code, seeing only what the code could. The
   page still only ever receives PNG.
+- **A turn that can run code gets the thinking-sized budget.** The output
+  budget is shared by every step of a turn, and the everyday 2,048 was
+  spent by a single chart program in a live run. When the budget is nearly
+  gone (under a short program's worth) the loop answers instead of starting
+  another call, and a call the cap cut off mid-arguments is shown as cut
+  off and never run: running half a JSON object only fails, and retrying it
+  with the same few tokens left is cut at the same place every time.
+- **Tool calls are shown while they're written.** llama.cpp streams a
+  call's arguments as they're generated; the server forwards them as
+  `tool_draft` events (for code, the newly decoded part of the `code`
+  string, throttled to a few a second), so a program that takes a minute to
+  write appears line by line instead of after a silent gap.
 - **The server checks the numbers, not the model.** After a turn that ran
   code, every number in the answer is looked up in what the code printed
   (rounding, percentages and scientific notation allowed), and in what the

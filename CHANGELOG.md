@@ -110,6 +110,11 @@
   soon as they close, instead of all at once at the end; the one still being
   written shows as dimmed LaTeX until it does.
 
+- **You see the code being written.** A tool call shows up the moment the
+  model starts writing it: "Writing Python" with the last few lines of code
+  appearing as they're written, which then becomes the step that runs. A
+  long program used to leave a silent gap of up to a minute.
+
 ### Fixed
 
 - LaTeX in tool arguments: models write `\frac` and `\theta` with one
@@ -124,6 +129,14 @@
 - The auth edge listened on port 80, not the 4180 everything else (the
   installer, the example redirect URL, the docs) expects. It's 4180 again,
   and `LLAMACRACY_AUTH_PORT` in `deploy/oauth2-proxy.env` changes it.
+
+- A turn that wrote a long program could break: the reply budget (shared
+  by every step) ran out partway through a tool call, the half-written call
+  was run anyway and failed, and each retry was cut off at the same place
+  until the turn gave up with no answer. A call cut off by the budget is
+  now shown as cut off and not run, the turn answers once its budget is
+  nearly spent, and turns that can run code get the thinking-sized budget
+  (`THINKING_MAX_TOKENS`), since one chart program can be 1,500 tokens.
 
 - Sign-in sometimes didn't come up after a reboot. The user units start
   a few seconds before NetBird creates wt0, so Dex and the auth edge were

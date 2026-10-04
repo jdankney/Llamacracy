@@ -38,11 +38,18 @@ from .upstream import Upstream, UpstreamError, UsageSniffer, get_upstream
 log = logging.getLogger("llamacracy.queue")
 
 ANSWER_ROOM_TOKENS = 2048   # context an agent keeps free for its final answer
+# Below this much budget left, a step can't write a useful tool call (a short
+# program is a few hundred tokens): answer instead of starting one that the
+# cap cuts off mid-call.
+STEP_FLOOR_TOKENS = 384
+DRAFT_EVERY_S = 0.15        # how often a tool call being written is shown
 # Sent after the tool results when a limit ends the turn. tool_choice "none"
 # alone isn't enough: some chat templates still let the model write a tool
 # call out as plain text, which would then be the answer.
 FINAL_NUDGE = ("(No more tool calls this turn. Write your final answer now from the results "
                "above; if they weren't enough, say what you found and what's still missing.)")
+CUT_NUDGE = ("(Your last tool call was cut off: the reply ran out of room before you finished "
+             "writing it, so it didn't run. Don't say it ran or describe its output.)")
 
 
 class JobState(enum.StrEnum):
@@ -440,13 +447,15 @@ class QueueManager:
         t0 = now()
         out_tokens = prompt_total = 0
         cut_off = False                 # the last step ran out of room or time mid-thought
+        cut_call = False                # ...or mid-way through writing a tool call
         for step in range(box.max_steps + 1):
             # stop calling tools while there is still room to answer: an
             # answer's worth, not the whole (thinking-sized) output budget
             est_prompt = int(len(json.dumps(messages)) / 3.6)
             room = min(budget - out_tokens, ANSWER_ROOM_TOKENS)
             final = (cut_off or step == box.max_steps or now() - t0 > box.deadline_s
-                     or est_prompt + room > ctx)
+                     or est_prompt + room > ctx
+                     or (step > 0 and budget - out_tokens < STEP_FLOOR_TOKENS))
             left = budget - out_tokens
             if thinking and not final:
                 left -= min(ANSWER_ROOM_TOKENS, budget // 4)
@@ -455,13 +464,16 @@ class QueueManager:
             if final:
                 payload["tool_choice"] = "none"
                 if step:
-                    payload["messages"] = [*messages, {"role": "user", "content": FINAL_NUDGE}]
+                    nudge = FINAL_NUDGE + (" " + CUT_NUDGE if cut_call else "")
+                    payload["messages"] = [*messages, {"role": "user", "content": nudge}]
                 if thinking:
                     payload["chat_template_kwargs"] = {**ctk, "enable_thinking": False}
             elif step == 0 and box.lookup_first:
                 # it has to look something up before it may answer at all
                 payload["tool_choice"] = "required"
             calls: dict[int, dict] = {}
+            drafts: dict[int, str] = {}     # the code shown so far, per call being written
+            last_draft = 0.0
             text: list[str] = []
             reasoning: list[str] = []
             finish = None
@@ -496,6 +508,9 @@ class QueueManager:
                         c["id"] = d.get("id") or c["id"]
                         c["name"] += fn.get("name") or ""
                         c["arguments"] += fn.get("arguments") or ""
+                    if chunk.tool_call_deltas and now() - last_draft >= DRAFT_EVERY_S:
+                        last_draft = now()
+                        await self._emit_drafts(job, step, calls, drafts)
                     if chunk.usage:
                         if step == 0:
                             job.context_tokens = chunk.usage.get("prompt_tokens")
@@ -506,12 +521,36 @@ class QueueManager:
                         # only the first step's timings: the cold-load split in
                         # _run subtracts that step's prompt processing
                         job.last_timings = chunk.timings
+            if calls and not job._cancel.is_set():
+                await self._emit_drafts(job, step, calls, drafts)
             if closed:
                 # no usage chunk arrives from a stream we closed: count what it thought
                 out_tokens += int(len("".join(reasoning)) / 3.6)
                 job.completion_tokens = out_tokens
             elif not final and not calls and not text and finish == "length":
                 cut_off = True          # thought through its share of the budget
+            elif not final and calls and finish == "length":
+                # the cap cut it off mid-call: its arguments are half a JSON
+                # object. Running it would only fail ("bad arguments"), and a
+                # retry with what's left of the budget is cut at the same
+                # place, so show it as cut off and answer instead.
+                cut_off = cut_call = True
+                said = "".join(text).rsplit("</think>", 1)[-1].strip()
+                if said:
+                    job.trail.append({"type": "note", "text": said})
+                job.content_parts.clear()
+                for i in sorted(calls):
+                    c = calls[i]
+                    c["id"] = c["id"] or f"call_{step}_{i}"
+                    args = _loose_json(c["arguments"])
+                    label = box.label(c["name"], args)
+                    await self._emit(job, {"type": "tool_start", "id": c["id"], "name": c["name"],
+                                           "label": label, "said": said})
+                    said = ""
+                    rec = {"type": "tool", "id": c["id"], "name": c["name"], "label": label,
+                           "args": args, "ok": False, "summary": "cut off", "ms": 0}
+                    job.trail.append(rec)
+                    await self._emit(job, {**rec, "type": "tool_end", "sources": []})
             if cut_off and not final and not job._cancel.is_set():
                 continue
             if job._cancel.is_set() or not calls or final:
@@ -565,6 +604,23 @@ class QueueManager:
                     {"type": "text", "text": "The picture(s) you asked to see: "
                                              + ", ".join(name for name, _ in seen)},
                     *({"type": "image_url", "image_url": {"url": u}} for _, u in seen)]})
+
+    async def _emit_drafts(self, job: Job, step: int, calls: dict[int, dict],
+                           drafts: dict[int, str]) -> None:
+        """Show tool calls while the model is still writing them: a long
+        program takes as long to write as a long answer, and without this the
+        step only appears once it's finished. `tool_draft` carries the name
+        and, for code, the newly written part of it."""
+        for i in sorted(calls):
+            c = calls[i]
+            if not c["name"]:
+                continue
+            code = _draft_code(c["arguments"])
+            shown = drafts.get(i)
+            if shown is None or len(code) > len(shown):
+                drafts[i] = code
+                await self._emit(job, {"type": "tool_draft", "key": f"{step}.{i}", "name": c["name"],
+                                       "delta": code[len(shown or ""):]})
 
     async def _pump_raw(self, job: Job, t_start: float,
                         sampler: GpuPowerSampler) -> None:
@@ -793,6 +849,42 @@ def _text_of(content) -> str:
     if isinstance(content, str):
         return content
     return "".join(p.get("text", "") for p in content or [] if isinstance(p, dict))
+
+
+_CODE_ARG = re.compile(r'"code"\s*:\s*"')
+_JSON_ESC = {"n": "\n", "t": "\t", "r": "", "b": "", "f": "", '"': '"', "\\": "\\", "/": "/"}
+
+
+def _draft_code(raw: str) -> str:
+    """The "code" argument of a tool call still being written, as far as it
+    goes: decoded up to the last complete character, "" before it starts."""
+    m = _CODE_ARG.search(raw)
+    if not m:
+        return ""
+    out, s, i = [], raw, m.end()
+    while i < len(s):
+        ch = s[i]
+        if ch == '"':
+            break
+        if ch == "\\":
+            if i + 1 >= len(s):
+                break
+            e = s[i + 1]
+            if e == "u":
+                if i + 6 > len(s):
+                    break
+                try:
+                    out.append(chr(int(s[i + 2:i + 6], 16)))
+                except ValueError:
+                    pass
+                i += 6
+                continue
+            out.append(_JSON_ESC.get(e, e))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 _LEAKED_CALL = re.compile(r"<tool_call>.*?(?:</tool_call>|$)|<function=[\w-]+>.*?(?:</function>|$)", re.DOTALL)
