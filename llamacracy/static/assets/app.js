@@ -2061,6 +2061,10 @@ function helpView() {
         'they\'re told to calculate with it rather than in their heads: integrals, physics problems, ' +
         'statistics, unit conversions, checking code. "Ran Python" in the steps above a reply opens the ' +
         'code and what it printed. Charts and diagrams it draws appear under the reply.'),
+      h('p', {},
+        'Attach a spreadsheet (CSV, Excel or JSON) and ask for a chart or an analysis: the code can ' +
+        'read the file itself, with pandas and seaborn, so it works from your actual numbers. It can ' +
+        'only read what you attached to that chat, and can\'t change it.'),
       h('p', { class: 'muted' },
         'Under the answer, Llamacracy says whether its numbers came from that code: a check mark ' +
         'when they all did, a warning naming any that didn\'t. That is Llamacracy checking, not the ' +

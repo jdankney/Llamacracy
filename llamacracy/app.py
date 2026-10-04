@@ -760,8 +760,10 @@ async def chat(req: ChatRequest,
     # of notes doesn't fill the window on every turn
     course_refs: list[DocRef] = []
     course_tokens: dict[str, int] = {}
+    course_docs: list[documents.Loaded] = []
     if course is not None:
-        for d in await study.materials(db, course["id"], principal.user_id):
+        course_docs = await study.materials(db, course["id"], principal.user_id)
+        for d in course_docs:
             r = DocRef(f"d{len(refs) + len(course_refs) + 1}", d.filename, d.text,
                        d.meta.get("units"), d.meta.get("unit"))
             course_refs.append(r)
@@ -830,6 +832,7 @@ async def chat(req: ChatRequest,
     # run_python: a tools model always has a calculator, when the sandbox is built
     compute = (model.tools and settings.python_tool
                and sandbox.available(settings.sandbox_python) is None)
+    data: list[tuple[str, str]] = []
     if web or refs or course_refs or use_files or use_pictures or compute or course is not None:
         tools = []
         if use_pictures:
@@ -855,10 +858,14 @@ async def chat(req: ChatRequest,
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (file_id, principal.user_id, path, "image/png", len(png), now()))
                 return file_id
+            # the data files shared on this branch (and the course's), for
+            # code to chart and analyse: read-only, under /data
+            data = sandbox.data_files([(d.filename, d.path) for d in docs.values()]
+                                      + [(d.filename, d.path) for d in course_docs])
             tools.append(python_tool(python=settings.sandbox_python,
                                      timeout_s=settings.sandbox_timeout_seconds,
                                      memory_mb=settings.sandbox_memory_mb,
-                                     output_chars=8000, save_figure=save_figure))
+                                     output_chars=8000, save_figure=save_figure, files=data))
         if course is not None and mode == "practice":
             # the conversation row is made below: the tool runs later, in the queue
             async def save_problem(p: dict) -> str:
@@ -890,6 +897,10 @@ async def chat(req: ChatRequest,
         if pictures:
             notes.append("Earlier photos in this chat: " + "; ".join(
                 f'{p.ref} (sent with "{p.caption}")' for p in pictures) + ".")
+        if data:
+            notes.append("run_python can read the data files shared here: " + "; ".join(
+                f"{inner}" for inner, _ in data) + ". Load them with pandas (read_csv, "
+                "read_excel, read_json) to chart or analyse them.")
         if folded_refs:
             notes.append("Documents shared earlier in this conversation (before the summary):\n"
                          + "".join(r.stub(documents.estimate_tokens(r.text)) for r in folded_refs).strip())

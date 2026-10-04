@@ -11,6 +11,8 @@ sandbox:
   (data/sandbox, built by deploy/setup-sandbox.sh), and nothing else of the
   host: not the repo, not .env, not the database, not /home;
 - a small private /tmp (tmpfs, size-capped) as its only writable place;
+- the data files attached to the conversation (CSV, Excel, JSON), read-only
+  under /data, so it can chart and analyse what the user shared;
 - limits: wall clock (killed, with everything it started), CPU seconds,
   file size, and, when systemd can give it a scope, a memory cap and a cap
   on the number of processes. Without systemd it falls back to an
@@ -29,6 +31,7 @@ import base64
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -85,7 +88,7 @@ if not paths and "matplotlib.pyplot" in sys.modules:
     try:
         plt = sys.modules["matplotlib.pyplot"]
         for i in plt.get_fignums()[:MAX_FIGURES]:
-            plt.figure(i).savefig("/tmp/out/figure-%d.png" % i, dpi=110)
+            plt.figure(i).savefig("/tmp/out/figure-%d.png" % i)
     except Exception:
         pass
     paths = pngs()
@@ -154,9 +157,31 @@ def _scope_works() -> bool:
 
 
 INNER_ENV = "/opt/py"     # where the sandbox environment appears inside: no host paths
+DATA_DIR = "/data"        # where a conversation's data files appear inside
+# what code can usefully read: tables and structured data
+DATA_SUFFIXES = (".csv", ".tsv", ".xlsx", ".xlsm", ".json")
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _bwrap_args(python: str) -> list[str]:
+def data_files(files: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """(path inside, host path) for the data files among (name as uploaded,
+    host path): a plain, unique name each, under DATA_DIR. The name people
+    gave a file is only ever a label here: it can't reach the host path."""
+    out, taken = [], set()
+    for name, host in files:
+        if not name or Path(name).suffix.lower() not in DATA_SUFFIXES or not os.path.isfile(host):
+            continue
+        stem, suffix = Path(Path(name).name).stem, Path(name).suffix.lower()
+        stem = _UNSAFE.sub("_", stem).strip("._-")[:60] or "data"
+        inner, n = f"{DATA_DIR}/{stem}{suffix}", 2
+        while inner in taken:
+            inner, n = f"{DATA_DIR}/{stem}-{n}{suffix}", n + 1
+        taken.add(inner)
+        out.append((inner, host))
+    return out
+
+
+def _bwrap_args(python: str, files: list[tuple[str, str]] = ()) -> list[str]:
     venv = str(Path(python).parent.parent)       # .../data/sandbox
     base = _base_prefix(python)
     args = ["bwrap", "--unshare-all", "--unshare-user", "--die-with-parent", "--new-session",
@@ -178,6 +203,8 @@ def _bwrap_args(python: str) -> list[str]:
               "/etc/fonts"):
         if os.path.exists(f):
             args += ["--ro-bind", f, f]
+    for inner, host in files:
+        args += ["--ro-bind", host, inner]
     args += ["--proc", "/proc", "--dev", "/dev",
              "--size", str(64 * 1024 * 1024), "--tmpfs", "/tmp",
              "--chdir", "/tmp", "--disable-userns", "--clearenv",
@@ -187,19 +214,23 @@ def _bwrap_args(python: str) -> list[str]:
              # one BLAS thread: many threads each reserve a big buffer
              "--setenv", "OPENBLAS_NUM_THREADS", "1", "--setenv", "OMP_NUM_THREADS", "1",
              "--setenv", "MKL_NUM_THREADS", "1"]
+    if (Path(venv) / "matplotlibrc").is_file():
+        # crisper defaults for charts (deploy/sandbox-matplotlibrc)
+        args += ["--setenv", "MATPLOTLIBRC", INNER_ENV + "/matplotlibrc"]
     return args
 
 
 async def run(code: str, *, python: str, timeout_s: float = 20, memory_mb: int = 1024,
-              output_chars: int = 8000) -> RunResult:
-    """Run `code` in a fresh sandbox and return what it printed."""
+              output_chars: int = 8000, files: list[tuple[str, str]] = ()) -> RunResult:
+    """Run `code` in a fresh sandbox and return what it printed. `files` are
+    (path inside, host path) pairs from data_files(), mounted read-only."""
     python = os.path.abspath(python)       # not resolved: a venv's python is a link
     why = available(python)
     if why:
         raise SandboxUnavailable(why)
     nonce = "=" * 8 + secrets.token_hex(16)
     inner = INNER_ENV + "/" + str(Path(python).relative_to(Path(python).parent.parent))
-    cmd = [*_bwrap_args(python), inner, "-I", "-c", RUNNER, nonce]
+    cmd = [*_bwrap_args(python, files), inner, "-I", "-c", RUNNER, nonce]
     scoped = _scope_works()
     # rlimits via prlimit(1), not preexec_fn, which isn't safe in a threaded server
     cpu = int(timeout_s) + 5

@@ -54,3 +54,21 @@ async def test_it_is_stopped_at_its_limits():
     assert not mem.ok
     err = await _run("1/0")
     assert not err.ok and err.output.splitlines()[-1] == "ZeroDivisionError: division by zero"
+
+
+async def test_it_reads_attached_data_files_but_cannot_change_them(tmp_path):
+    host = tmp_path / "upload-1234.csv"
+    host.write_text("x,y\n1,2\n3,5\n")
+    files = sandbox.data_files([("My data.csv", str(host)), ("notes.pdf", str(host))])
+    assert files == [("/data/My_data.csv", str(host))]
+    r = await _run("import pandas as pd\nint(pd.read_csv('/data/My_data.csv')['y'].sum())", files=files)
+    assert r.ok and r.output == "7"
+    w = await _run("open('/data/My_data.csv', 'a').write('9,9')", files=files)
+    assert not w.ok and "Read-only" in w.output
+    assert host.read_text().endswith("3,5\n")
+
+
+async def test_it_has_the_charting_libraries_and_crisp_defaults():
+    r = await _run("import seaborn as sns, pandas as pd, openpyxl, PIL\n"
+                   "import matplotlib as mpl\nmpl.rcParams['savefig.dpi']")
+    assert r.ok and r.output == "150.0"

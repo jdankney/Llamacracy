@@ -220,6 +220,17 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   small setuid-free binary with no daemon, and over a Python-level
   restriction (RestrictedPython and the like) because those have a long
   history of escapes.
+- **The sandbox reads the chat's data files, read-only.** Asked to chart an
+  attached spreadsheet, a model would otherwise copy numbers out of the
+  extracted text into its code, which is slow, capped by the context, and
+  one more place for a digit to slip. So the originals of the data files on
+  the branch (CSV, TSV, Excel, JSON; a course's too) are bind-mounted
+  read-only at `/data/<name>`, named from a sanitised copy of the upload
+  name, so the host path never shows. Only data formats: a PDF or a slide
+  deck is text for the model to read, not input for pandas. The libraries
+  for it (pandas, seaborn, openpyxl, Pillow) and a matplotlibrc with crisper
+  defaults (150 dpi, constrained layout) live in the sandbox environment, so
+  the app's own dependencies don't grow.
 - **The server checks the numbers, not the model.** After a turn that ran
   code, every number in the answer is looked up in what the code printed
   (rounding, percentages and scientific notation allowed), and in what the

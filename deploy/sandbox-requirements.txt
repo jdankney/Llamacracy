@@ -1,9 +1,14 @@
 # The Python that run_python runs model-written code with (deploy/setup-sandbox.sh
 # installs these into data/sandbox, separate from the app's own environment).
-# Math, science, units, plots and graphs: what homework and quick checks need.
+# Math, science, units, plots and graphs: what homework and quick checks need,
+# plus tables and charts for the data people attach (CSV, Excel, JSON).
 sympy>=1.13
 numpy>=2.1
 scipy>=1.14
 pint>=0.24
 matplotlib>=3.9
 networkx>=3.3
+pandas>=2.2
+seaborn>=0.13
+openpyxl>=3.1
+pillow>=10.4

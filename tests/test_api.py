@@ -1042,10 +1042,11 @@ def test_a_resident_vision_entry_is_reused_for_plain_turns(vision_client):
 def compute_client(agent_client, monkeypatch):
     """A tools model with a (fake) sandbox: records the code, returns canned output."""
     from llamacracy import sandbox
-    ran = []
+    ran, mounted = [], []
 
-    async def fake_run(code, *, python, timeout_s, memory_mb, output_chars):
+    async def fake_run(code, *, python, timeout_s, memory_mb, output_chars, files=()):
         ran.append(code)
+        mounted.append(list(files))
         if "raise" in code:
             return sandbox.RunResult("Traceback (most recent call last):\nValueError: nope", ok=False)
         figs = [("area.png", PNG)] if "savefig" in code else []
@@ -1053,7 +1054,22 @@ def compute_client(agent_client, monkeypatch):
     monkeypatch.setattr(sandbox, "available", lambda python: None)
     monkeypatch.setattr(sandbox, "run", fake_run)
     agent_client.ran = ran
+    agent_client.mounted = mounted
     return agent_client
+
+
+def test_attached_data_files_are_readable_by_run_python(compute_client):
+    up = compute_client.fake_upstream
+    csv = _upload_doc(compute_client, "Q3 sales (final).csv", b"month,units\nJul,12\nAug,19\n")
+    notes = _upload_doc(compute_client, "notes.md", b"# Notes\nnothing to chart")
+    up.agent_steps = [{"tool_calls": [("run_python", {"code": "import pandas as pd"})]},
+                      {"content": ["Charted."]}]
+    _chat(compute_client, model="small", message="Chart it", doc_ids=[csv["id"], notes["id"]])
+    # the data file, under a plain name; not the notes
+    [(inner, host)] = compute_client.mounted[0]
+    assert inner == "/data/Q3_sales_final.csv" and Path(host).read_bytes().startswith(b"month,")
+    system = up.payloads[0]["messages"][0]["content"]
+    assert "/data/Q3_sales_final.csv" in system
 
 
 def test_a_tools_model_gets_python_only_with_a_sandbox(agent_client):

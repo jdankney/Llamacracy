@@ -190,6 +190,7 @@ class Loaded:
     filename: str
     text: str
     meta: dict
+    path: str = ""          # the original file on disk (run_python reads data files)
 
     @property
     def tokens(self) -> int:
@@ -205,7 +206,7 @@ async def load(db, upload_ids: list[str], user_id: int) -> dict[str, Loaded]:
         return {}
     marks = ",".join("?" * len(upload_ids))
     rows = await db.fetch_all(
-        f"SELECT id, filename, text_path, meta_json FROM uploads "
+        f"SELECT id, filename, path, text_path, meta_json FROM uploads "
         f"WHERE user_id = ? AND kind = 'document' AND id IN ({marks})",
         (user_id, *upload_ids))
     out = {}
@@ -215,7 +216,8 @@ async def load(db, upload_ids: list[str], user_id: int) -> dict[str, Loaded]:
         except OSError:
             log.warning("extracted text missing for upload %s", r["id"])
             text = "(this document's text is no longer available)"
-        out[r["id"]] = Loaded(r["id"], r["filename"], text, json.loads(r["meta_json"] or "{}"))
+        out[r["id"]] = Loaded(r["id"], r["filename"], text, json.loads(r["meta_json"] or "{}"),
+                              r["path"])
     return out
 
 

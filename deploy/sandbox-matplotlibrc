@@ -1,0 +1,16 @@
+# Chart defaults for run_python (deploy/setup-sandbox.sh copies this into the
+# sandbox environment; the sandbox points MATPLOTLIBRC at it). Code can still
+# override any of it.
+figure.figsize:              8, 5
+figure.dpi:                  100
+savefig.dpi:                 150
+figure.constrained_layout.use: True
+axes.grid:                   True
+grid.alpha:                  0.3
+axes.spines.top:             False
+axes.spines.right:           False
+axes.titlesize:              large
+axes.titleweight:            bold
+axes.prop_cycle:             cycler('color', ['1f77b4', 'ff7f0e', '2ca02c', 'd62728', '9467bd', '8c564b', 'e377c2', '7f7f7f', 'bcbd22', '17becf'])
+legend.frameon:              False
+lines.linewidth:             2

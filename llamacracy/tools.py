@@ -203,16 +203,20 @@ class Toolbox:
                    if "image_search" in self.tools else ""))
         if "run_python" in self.tools:
             lines.append(
-                "run_python runs Python 3 with sympy, numpy, scipy, pint (units), matplotlib and "
-                "networkx: no internet, and nothing is kept between runs, so each run imports and "
-                "defines what it needs. Print what you need; a last bare expression is shown too. "
+                "run_python runs Python 3 with sympy, numpy, scipy, pint (units), pandas, matplotlib, "
+                "seaborn, networkx and Pillow: no internet, and nothing is kept between runs, so "
+                "each run imports and defines what it needs. Print what you need; a last bare "
+                "expression is shown too. "
                 "Do every calculation with it (arithmetic, algebra, calculus, statistics, unit "
                 "conversions, checking code) instead of working numbers out in your head, and "
                 "check a result a second way when that's cheap: substitute it back, or compare a "
                 "symbolic answer with a numeric one. Quote numbers in your answer as the code "
                 "printed them (rounding is fine), and print the steps you'll show too, not just "
                 "the result: the user is shown which numbers came from code. For a chart or "
-                "diagram, plt.savefig('/tmp/out/<name>.png') and the user will see it.")
+                "diagram, plt.savefig('/tmp/out/<name>.png') and the user will see it: give it a "
+                "title, axis labels with units and a legend when there's more than one series, "
+                "and prefer seaborn for statistical plots (distributions, regressions, "
+                "comparisons across groups).")
         lines.extend(self.notes)
         return "\n".join(lines)
 
@@ -725,7 +729,10 @@ MAX_CODE_CHARS = 20_000
 
 
 def python_tool(*, python: str, timeout_s: float, memory_mb: int, output_chars: int,
-                save_figure: Callable[[bytes], Awaitable[str]] | None = None) -> Tool:
+                save_figure: Callable[[bytes], Awaitable[str]] | None = None,
+                files: list[tuple[str, str]] = ()) -> Tool:
+    """`files`: (path inside, host path) pairs from sandbox.data_files(),
+    readable by every run."""
     from . import sandbox
 
     async def run(args: dict, box: Toolbox) -> ToolOutcome:
@@ -737,7 +744,7 @@ def python_tool(*, python: str, timeout_s: float, memory_mb: int, output_chars: 
                                f"{MAX_CODE_CHARS:,}.", ok=False, summary="too long")
         try:
             r = await sandbox.run(code, python=python, timeout_s=timeout_s, memory_mb=memory_mb,
-                                  output_chars=output_chars)
+                                  output_chars=output_chars, files=files)
         except sandbox.SandboxUnavailable as e:
             log.warning("run_python unavailable: %s", e)
             return ToolOutcome("Python isn't available right now. Work it out without it, and say "
@@ -775,9 +782,11 @@ def python_tool(*, python: str, timeout_s: float, memory_mb: int, output_chars: 
 
     return Tool(
         name="run_python",
-        description="Run Python 3 in a sandbox (sympy, numpy, scipy, pint, matplotlib, networkx; "
-                    "no internet; fresh each run) and get back what it prints. Start with a "
-                    "comment line saying what it computes.",
+        description="Run Python 3 in a sandbox (sympy, numpy, scipy, pint, pandas, matplotlib, "
+                    "seaborn, networkx, Pillow; no internet; fresh each run) and get back what it "
+                    "prints. Start with a comment line saying what it computes."
+                    + (" The chat's data files are readable at: "
+                       + ", ".join(inner for inner, _ in files) + "." if files else ""),
         parameters={"type": "object", "properties": {
             "code": {"type": "string", "description": "The program. Print the results you need."}},
             "required": ["code"]},

@@ -54,6 +54,12 @@
   limits on time, memory, CPU and processes. New settings: `PYTHON_TOOL`,
   `SANDBOX_PYTHON`, `SANDBOX_TIMEOUT_SECONDS` (20), `SANDBOX_MEMORY_MB`
   (1024).
+- **Charts from your data.** Spreadsheets attached to a chat (CSV, TSV,
+  Excel, JSON), and a course's, are mounted read-only at `/data/<name>` in
+  the sandbox, so the model charts and analyses the actual file instead of
+  numbers copied into the prompt. The sandbox gains pandas, seaborn, openpyxl
+  and Pillow, and chart defaults (150 dpi, constrained layout, light grid)
+  from `deploy/sandbox-matplotlibrc`.
 - **Study.** A Study section (at `/study`) where each person adds their own
   courses: a name, a few lines about the class, and its materials (syllabus,
   notes, slides, homework, old exams). A session runs a tutor on a model
@@ -122,6 +128,8 @@
   then rerun `python3 bench/gen_llamaswap_config.py` and restart llamacracy.
 - New dependencies (pypdf, openpyxl, defusedxml): run `uv sync`. The
   database migrates itself on start.
+- Rerun `./deploy/setup-sandbox.sh` (or `./deploy/install.sh`) for the new
+  sandbox libraries and chart defaults.
 - Rerun `./deploy/install.sh` (or copy the two units by hand), then
   `systemctl --user daemon-reload` and restart `llamacracy-dex` and
   `llamacracy-auth`, for the boot fix.

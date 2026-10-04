@@ -70,9 +70,11 @@ payment processing.
   you ask for changes. Files fork with the conversation: edit an earlier
   message and that branch keeps the files as they were.
 - **It does the math with code**: models that use tools get a `run_python`
-  tool (sympy, numpy, scipy, units, plots) and are told to calculate with it
-  rather than in their heads. The code runs in a bubblewrap sandbox with no
-  network and no view of the server, charts it draws appear under the reply,
+  tool (sympy, numpy, scipy, units, pandas, matplotlib, seaborn) and are told
+  to calculate with it rather than in their heads. Spreadsheets attached to the
+  chat (CSV, Excel, JSON) are readable by the code, read-only, for charts and
+  analysis. The code runs in a bubblewrap sandbox with no network and no view
+  of the rest of the server, charts it draws appear under the reply,
   and the server checks which numbers in the answer actually came from the
   code's output, flagging any that didn't.
 - **Study** (`/study`): each person adds their own courses, with materials

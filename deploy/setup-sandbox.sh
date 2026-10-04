@@ -20,4 +20,6 @@ command -v bwrap >/dev/null 2>&1 || warn "bubblewrap isn't installed: run_python
 say "building the sandbox Python in $DEST"
 uv venv --quiet --allow-existing "$DEST"
 uv pip install --quiet --python "$DEST/bin/python" -r "$REPO/deploy/sandbox-requirements.txt"
-"$DEST/bin/python" -c "import sympy, numpy, scipy, pint, matplotlib, networkx; print('    ok: sympy', sympy.__version__, '· numpy', numpy.__version__)"
+# crisper chart defaults; the sandbox points MATPLOTLIBRC at this copy
+cp "$REPO/deploy/sandbox-matplotlibrc" "$DEST/matplotlibrc"
+"$DEST/bin/python" -c "import sympy, numpy, scipy, pint, matplotlib, networkx, pandas, seaborn, openpyxl, PIL; print('    ok: sympy', sympy.__version__, '· numpy', numpy.__version__, '· pandas', pandas.__version__, '· seaborn', seaborn.__version__)"
