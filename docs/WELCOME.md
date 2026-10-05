@@ -21,9 +21,19 @@ bill has a face, and that face is mine.
   message so you can pull the raw markdown/LaTeX straight into your own notes.
 - Drop an image into the composer and the vision-capable models can see it
   (describe it, read text in it, answer questions about it).
-- A **search toggle** in the composer — flip it on and that message gets a
-  real web search first, with sources cited underneath, before the model
-  answers. Off by default.
+- Attach **documents** (PDFs, Word, Excel, PowerPoint, text, code) and ask
+  about them. Click a file's name to see exactly what the model is reading.
+- A **Search** toggle in the composer. Flip it on and the model looks things
+  up on the web, reads the pages it needs, and cites its sources with
+  numbered links. You can watch each step as it goes. Off by default.
+- Some models can **run Python**. They do the maths with real code instead of
+  in their heads, and can draw charts, diagrams and graphs from your
+  spreadsheets right under the answer. With **Files** on, they can also write
+  drafts, plans or code into the chat for you to download.
+- **Study** (in the top bar): add your courses and their materials (syllabus,
+  notes, slides, old exams), then get a tutor that gives hints before
+  answers, checks your work, quizzes you, or writes practice problems and
+  grades them.
 - Your own conversation history and a personal Account page, where you can
   also change how the whole thing looks (themes, your own colours, bigger
   text) just for you. Long chats can be
@@ -117,9 +127,8 @@ answer, and you can tap it to read what it was thinking.
 
 ## What it can't do (yet)
 
-- Image input only works on the vision-capable models, and only the current
-  message's image is "seen" — it won't re-look at a photo from three messages
-  ago on a follow-up.
+- Image input only works on the vision-capable models. Only some of them
+  can look again at a photo from earlier in the chat when you ask about it.
 - Each conversation stands on its own — no shared memory between chats (your
   history is saved, though, and you can compact a long one instead of losing
   it).

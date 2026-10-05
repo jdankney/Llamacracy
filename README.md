@@ -6,7 +6,7 @@
 
 <p align="center">
   A self-hosted, multi-model LLM chat hub for you and a few friends.<br>
-  One GPU, a strict FIFO queue, per-person credit metering, and an admin dashboard that knows what everyone's usage costs in electricity.
+  One GPU, a strict FIFO queue, per-person credits, and an admin dashboard that knows what everyone's usage costs in electricity.
 </p>
 
 <p align="center">
@@ -18,98 +18,71 @@
   <img src="docs/screenshot.png" alt="Llamacracy chat UI" width="900">
 </p>
 
-## What it is
+Llamacracy turns one box with a consumer GPU into a private "ChatGPT for the
+group chat". Friends sign in over a private network, pick a local GGUF model,
+and take turns on the GPU. Every second it spends on someone is measured and
+charged to them as a credit, so one heavy user can't monopolise the machine.
 
-Llamacracy turns a single box with one consumer GPU into a small, private
-"ChatGPT for the group chat". Friends sign in over a WireGuard mesh (NetBird),
-pick a local GGUF model, and get streaming answers with markdown, code
-highlighting and LaTeX. Every second the GPU spends on someone is measured and
-charged to them as a credit, with session and weekly limits, so one heavy
-user can never monopolise the machine.
-
-It is deliberately small: a FastAPI backend, SQLite, a vanilla-JS front-end
-with no build step, and [llama-swap](https://github.com/mostlygeek/llama-swap)
-doing the model loading. No Docker for the app itself, no cloud APIs, no
-payment processing.
+It's deliberately small: FastAPI, SQLite, a vanilla-JS front end with no
+build step, and [llama-swap](https://github.com/mostlygeek/llama-swap) for
+loading models. No cloud APIs, no Docker for the app itself.
 
 ## Features
 
-- **Multi-model chat** with a model picker, per-model sampling defaults, and
-  live "loaded / cold start ~4s" hints so people know what a switch costs.
-- **Strict FIFO queue**, exactly one inference at a time, with a live queue
-  view for everyone, cancellation that really aborts the upstream request, and
-  an idle TTL that frees VRAM when nobody is around.
-- **Credit metering**: `1 credit = 1 second of exclusive GPU time`, measured
-  from the app's own timers, never estimated. Rolling 5-hour session and
-  7-day weekly limits, per-user overrides, overshoot allowed, and a cost
-  model that uses measured GPU watts and your real electricity tariff
-  (time-of-use aware).
-- **Rich rendering**: markdown, syntax-highlighted code, KaTeX math, a copy
-  button that copies the raw source, and a context-window ring that shows how
-  full the prompt is before you send.
-- **Thinking on demand**: models that can reason get a Think toggle. Off by
-  default; when on, the reasoning streams live under "Thinking…" and folds
-  away to "Thought for 1m 26s", with a larger token budget for that turn.
-- **Edit any message you sent**: the conversation forks instead of being
-  rewritten. The original and its reply are kept, and `‹ 1 / 2 ›` arrows flip
-  between versions, each with its own follow-ups.
-- **Web search that the model drives**: with Search on, a model marked
-  `tools: true` decides what to look up, opens the pages it needs (public
-  addresses only), searches again when the first try misses, and cites
-  numbered sources you can click; a live trail shows each step. The whole
-  turn is one queued job. Other models get one SearXNG search added to the
-  message.
-- **Documents**: attach (or drag in) PDFs, Word, LibreOffice, Excel and
-  PowerPoint files, text, CSV, HTML and code, on any model. The text is
-  extracted once at upload, in a sandboxed child process, and stays part of
-  the conversation; click a file to see exactly what the model reads. A file
-  too long to send whole is looked through instead (outline, search, read a
-  part) by the models that use tools.
-- **Files the model writes**: with Files on, a tool-using model saves drafts,
-  plans, CSV or code to the chat's workspace and edits them in place when
-  you ask for changes. Files fork with the conversation: edit an earlier
-  message and that branch keeps the files as they were.
-- **It does the math with code**: models that use tools get a `run_python`
-  tool (sympy, numpy, scipy, units, pandas, matplotlib, seaborn, plus
-  schemdraw, Venn diagrams, treemaps and word clouds) and are told to
-  calculate with it rather than in their heads. Spreadsheets and photos
-  attached to the chat are readable by the code, read-only, for charts,
-  analysis, or marking up a picture. The code runs in a bubblewrap sandbox with no network and no view
-  of the rest of the server, charts it draws appear under the reply,
-  and the server checks which numbers in the answer actually came from the
-  code's output, flagging any that didn't.
-- **Study** (`/study`): each person adds their own courses, with materials
-  (syllabus, notes, slides, old exams) and a few lines about the class. A
-  session is a tutor that asks before it tells, looks things up in those
-  materials and says which file and page it used. A course marked as using
-  math requires every number to come from `run_python`. Four modes: Guide me
-  (hints first), Explain, Check my work and Quiz me. Courses are private to
-  their owner, and nothing about them is configuration: any subject works.
-- **Practice problems with checked keys**: in Practice mode the tutor
-  writes a set as cards you answer in the chat. A numeric key must come
-  with the code that computes it (run in the sandbox; a disagreeing key is
-  sent back), a key from the materials can carry its quote (looked up), and
-  answers are graded by the server. Progress is kept per topic.
-- **Quotations are checked**: when an answer quotes a document or a page,
-  the server looks for the words, word for word, in what the model read,
-  and in the page it cites, and flags any that aren't there.
-- **Vision on demand**: attach an image and the turn routes to the model's
-  vision variant. Images live on disk, never base64 in the database. A
-  tool-using vision model can look again at an earlier photo when you ask
-  about it, and with Search on find and view pictures on the web.
-- **Compact history**: fold the older part of a long conversation into a
-  running summary, on request, billed like any other reply.
-- **Account page** per user: a 30-day usage chart, self-service API keys, and
-  **appearance settings** (themes, custom colours, chat text size) saved per
-  account, so each person can make the app their own.
-- **OpenAI-compatible `/v1` endpoint** for IDE tools such as Continue.dev,
-  sharing the same queue and limits. A raw passthrough, so tool calling and
-  agent mode work as well as the model underneath does. There's a ready-made
-  Continue config in [`examples/continue/`](examples/continue/).
-- **Admin dashboard**: live GPU stats, users, per-model performance, "queue
-  impact" fairness, billing with draft invoices and CSV export, API-key
-  revocation, and per-user controls.
-- **Installable PWA** on phones, over plain HTTP inside the tunnel.
+**Chat**
+
+- Streaming markdown, highlighted code and KaTeX math (rendered as it
+  streams), with a ring showing how full the context is before you send.
+- A model picker with per-model defaults and "loaded / cold start ~4s" hints.
+- **Think** toggle for models that can reason; the reasoning streams live and
+  folds away afterwards.
+- Edit any message you sent: the conversation forks, and `‹ 1 / 2 ›` arrows
+  flip between versions.
+- Attach documents (PDF, Word, LibreOffice, Excel, PowerPoint, text, CSV,
+  code) on any model, and photos on models with vision.
+- Fold a long conversation's older part into a summary on request.
+
+**Tools**, for models marked `"tools": true`
+
+- **Search**: the model writes its own queries, opens the pages it needs and
+  cites numbered sources, with a live trail of each step. Other models get
+  one search added to the message.
+- **Files**: the model writes drafts, plans, CSV or code to the chat's
+  workspace and edits them in place. Files fork with the conversation.
+- **`run_python`**: the model calculates and draws with code instead of in
+  its head (sympy, numpy, scipy, pandas, matplotlib, seaborn, schemdraw and
+  more), in a bubblewrap sandbox with no network. It can read the chat's
+  spreadsheets and photos, and the charts it makes appear under the reply.
+- **Checks**: the server flags numbers in an answer that didn't come from
+  the code's output, and quotations that aren't word for word in what the
+  model read.
+
+**Study** (`/study`)
+
+- Each person adds their own courses, with materials (syllabus, notes,
+  slides, old exams). The tutor asks before it tells, and says which file and
+  page it used.
+- Five modes: Guide me, Explain, Check my work, Quiz me and Practice.
+  Practice problems come with keys that are computed or quoted and then
+  checked, and answers are graded by the server.
+
+**Sharing one GPU**
+
+- A strict FIFO queue, one inference at a time, visible to everyone.
+  Cancelling really aborts, and an idle timeout frees VRAM.
+- `1 credit = 1 second of GPU time`, measured, never estimated. Rolling
+  5-hour and 7-day limits, with per-user overrides.
+- The cost model uses measured GPU watts and your electricity tariff,
+  time-of-use included.
+
+**Around the app**
+
+- An admin dashboard: live GPU stats, users, per-model performance, queue
+  fairness, billing with draft invoices and CSV export.
+- An account page per user: usage chart, API keys, themes and text size.
+- An OpenAI-compatible `/v1` endpoint for IDE tools, on the same queue and
+  limits. There's a [Continue config](examples/continue/) ready to use.
+- Installable as a PWA on phones.
 
 ## How it works
 
@@ -121,76 +94,60 @@ payment processing.
                               (users + passwords)  jobs · credits · chats
 ```
 
-- **Identity** comes from oauth2-proxy's forwarded headers. The app never
-  writes auth code and refuses to serve if the headers are missing (unless
-  `DEV_MODE=1`). Users are keyed on the OIDC `sub`, not the email.
-- **The queue** (`llamacracy/queue.py`) is the core: a single worker task
-  drains jobs in order, streams tokens back over SSE, learns per-model load
-  times, and asks llama-swap which model is resident rather than guessing.
-- **Metering** (`llamacracy/metering.py`) bills at finalisation and freezes
-  the rate on each job row, so historical costs never change.
+- **Identity** comes from oauth2-proxy's headers; the app has no login code
+  of its own and refuses to serve without them (outside `DEV_MODE`).
+- **The queue** (`llamacracy/queue.py`) drains jobs in order, streams tokens
+  over SSE, and runs the tool loop as one job.
 - **Models** are declared once in `bench/inventory.json`; a generator turns
-  that into the llama-swap config and the app's registry.
+  that into the llama-swap config and the app's model list.
 
-Nothing about a specific machine is committed. Your models, measurements,
-generated config, secrets and hostname all live in gitignored files that the
-installer scaffolds from committed examples.
+Nothing about your machine is committed. Your models, measurements,
+secrets and hostname live in gitignored files that the installer creates
+from committed examples.
 
 ## Requirements
 
-- Linux with an NVIDIA GPU (`nvidia-smi` is used for power sampling; the app
-  falls back to a per-model estimate without it).
-- Python 3.14+ and [uv](https://docs.astral.sh/uv/).
-- A [llama.cpp](https://github.com/ggml-org/llama.cpp) build providing
-  `llama-server`, and [llama-swap](https://github.com/mostlygeek/llama-swap)
-  (a single binary, put it in `~/.local/bin`).
-- GGUF models on disk.
-- For `run_python`: [bubblewrap](https://github.com/containers/bubblewrap)
-  (`bwrap`) and util-linux's `prlimit`. `deploy/install.sh` builds the
-  sandbox's own Python environment (`deploy/setup-sandbox.sh`); without
-  them the tool is simply not offered. Optional: librsvg's `rsvg-convert`,
-  so pictures the code saves as SVG are shown too.
-- For multi-user use: [NetBird](https://netbird.io) (or any private
-  network), Docker for Dex, and oauth2-proxy (`deploy/install.sh` downloads it).
+- Linux, Python 3.14+ and [uv](https://docs.astral.sh/uv/).
+- [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`,
+  [llama-swap](https://github.com/mostlygeek/llama-swap), and GGUF models.
+- An NVIDIA GPU for measured power (`nvidia-smi`); without one, costs use a
+  per-model estimate.
 
-Developed on a GTX 1080 Ti (11 GB) with 32 GB RAM. Anything llama.cpp runs
-on will do; the benchmark measures what your card can actually serve.
+Optional:
+
+| For | You need |
+| --- | --- |
+| Search | A [SearXNG](https://docs.searxng.org) instance (`SEARXNG_URL`) |
+| `run_python` | [bubblewrap](https://github.com/containers/bubblewrap) and util-linux's `prlimit`; librsvg's `rsvg-convert` for SVG pictures |
+| Friends signing in | [NetBird](https://netbird.io) (or any private network) and Docker for Dex; the installer fetches oauth2-proxy |
+
+Developed on a GTX 1080 Ti (11 GB) with 32 GB RAM. The benchmark measures
+what your card can actually serve.
 
 ## Quick start (single user, no auth)
 
 ```bash
-git clone <this repo> && cd Llamacracy
+git clone https://github.com/jdankney/Llamacracy && cd Llamacracy
 uv sync
 
 cp bench/inventory.example.json bench/inventory.json
-$EDITOR bench/inventory.json              # 1. your models: paths + a `seed` block each
-python3 bench/gen_llamaswap_config.py     # 2. writes config/llama-swap.yaml + models.json
+$EDITOR bench/inventory.json              # your models
+python3 bench/gen_llamaswap_config.py     # writes config/
 
 cp .env.example .env
-$EDITOR .env                              # 3. DEV_MODE=1, ADMIN_EMAILS=dev@localhost, your $/kWh
+$EDITOR .env                              # DEV_MODE=1, ADMIN_EMAILS=dev@localhost
 
 llama-swap -config config/llama-swap.yaml -listen 127.0.0.1:8091 &
 uv run uvicorn llamacracy.app:app --host 127.0.0.1 --port 8000
 ```
 
-Open <http://127.0.0.1:8000>. In dev mode you are a fake user with the email
-from `DEV_EMAIL`; putting that email in `ADMIN_EMAILS` shows the admin
-dashboard. `uv run pytest -q` runs the test suite (no GPU needed).
+Open <http://127.0.0.1:8000>. In dev mode you're signed in as `DEV_EMAIL`,
+and listing it in `ADMIN_EMAILS` shows the admin dashboard.
+`./deploy/setup-sandbox.sh` builds the sandbox `run_python` needs.
 
-## Adding, changing and removing models
+## Models
 
-Every model is one entry in `bench/inventory.json`, and the two generated
-files under `config/` are derived from it. The full schema is in
-[bench/README.md](bench/README.md); the loop is:
-
-```bash
-$EDITOR bench/inventory.json              # add / edit / delete an entry
-python3 bench/gen_llamaswap_config.py     # regenerate config/
-llama-swap -config config/llama-swap.yaml -validate
-systemctl --user restart llamacracy       # llama-swap reloads its config by itself
-```
-
-A minimal entry:
+Each model is one entry in `bench/inventory.json`:
 
 ```json
 "llama31-8b": {
@@ -198,95 +155,63 @@ A minimal entry:
   "path": "Llama-3.1-8B-Instruct/Llama-3.1-8B-Instruct-Q5_K_M.gguf",
   "tier": "daily",
   "blurb": "Daily driver. Fully on GPU.",
+  "tools": true,
   "sampling": { "temperature": 0.6, "top_p": 0.9 },
   "serve": { "ctx": 65536, "kv_type": "q8_0", "args": ["-b", "2048", "-ub", "512"] },
   "seed": { "cold_load_s": 4, "tg_tok_s": 32, "pp_tok_s": 700, "vram_used_mib": 7800 }
 }
 ```
 
-- `path` is relative to `models_dir` (default `~/models`) or absolute.
-- `seed` is what the queue's estimates and the cost model use **until you
-  benchmark**. Guess generously; nothing breaks if it is off.
-- `serve` is how `llama-server` runs it: context size, KV cache type, MoE
-  expert offload (`n_cpu_moe`), loading into RAM instead of memory-mapping
-  (`no_mmap`), extra flags.
-- Add a `vision` block with the `mmproj` path and the model can read images.
-- `"thinking": true` offers the Think toggle, for models whose chat template
-  takes `enable_thinking` (Qwen3 and later, among others).
-- `"kind": "fim"` or `"in_picker": false` keeps a model out of the picker.
+`seed` holds rough numbers the app uses until you benchmark. Add
+`"thinking": true` for the Think toggle, or a `vision` block with an
+`mmproj` path for images. The full schema is in
+[bench/README.md](bench/README.md).
 
-Benchmark when convenient, then regenerate:
+After any change, regenerate and restart:
 
 ```bash
-python3 bench/phase0_bench.py --only llama31-8b     # cold load, tok/s, VRAM, watts
-python3 bench/phase0_bench.py --ctx-sweep --only llama31-8b   # find the largest context that fits
+python3 bench/phase0_bench.py --only llama31-8b    # optional: measure load time, tok/s, VRAM, watts
 python3 bench/gen_llamaswap_config.py
-systemctl --user restart llamacracy
+systemctl --user restart llamacracy               # llama-swap reloads its config by itself
 ```
 
-Removing a model is deleting its entry and regenerating. Its billing history
-stays in the database under the old key.
-
-## Production (friends over NetBird)
+## Running it for friends
 
 ```bash
-netbird up                                     # this box joins your NetBird network
-./deploy/install.sh                            # scaffolds every local file, installs the units
+netbird up                                     # join your NetBird network
+./deploy/install.sh                            # local files, secrets, sandbox, systemd units
 $EDITOR bench/inventory.json && python3 bench/gen_llamaswap_config.py
 $EDITOR .env                                   # ADMIN_EMAILS, electricity rate
 cd deploy/dex && ./gen-hash.sh 'a-password'    # one staticPasswords entry per user in config.yaml
 cd ../.. && llamacracy restart && llamacracy status
 ```
 
-The installer discovers your NetBird FQDN, generates the secrets, wires the
-Dex issuer and the oauth2-proxy callback to that FQDN, and installs four
-systemd user units: `llama-swap`, `llamacracy`, `llamacracy-dex` and
-`llamacracy-auth`. `llamacracy {up,down,restart,status,logs}` drives them
-together. Users sign in at `http://<your-fqdn>:4180`.
-
-Full runbook: [deploy/OPERATIONS.md](deploy/OPERATIONS.md). Identity provider
-notes: [deploy/dex/README.md](deploy/dex/README.md). A template for the
-onboarding note to send to users: [docs/WELCOME.md](docs/WELCOME.md).
+The installer finds your NetBird FQDN, wires Dex and oauth2-proxy to it, and
+installs four systemd user units, which `llamacracy up|down|restart|status|logs`
+drives together. Users sign in at `http://<your-fqdn>:4180`.
 
 ## Configuration
 
-Everything is an environment variable, documented with defaults in
-[`.env.example`](.env.example): credit limits, session window, load-time
-multiplier, output caps (chat, Think and API), electricity rate or
-time-of-use table, idle TTL, search, uploads, and compaction. Per-user overrides are set from the admin dashboard.
+Every setting is an environment variable, listed with its default in
+[`.env.example`](.env.example): credit limits, output caps, electricity rate
+or time-of-use table, idle timeout, search, tools, uploads and Study.
+Per-user limits are set from the admin dashboard.
 
-## Project layout
+## Documentation
 
-```
-llamacracy/        FastAPI app: queue, metering, identity, admin, OpenAI-compatible API
-llamacracy/static/ the SPA (index.html, assets/app.js, assets/styles.css), no build step
-bench/             model inventory (yours, gitignored), benchmark, config generator
-config/            generated llama-swap config + model registry (gitignored)
-deploy/            systemd units, install script, oauth2-proxy + Dex config, the CLI
-docs/              SPEC.md (the brief), DECISIONS.md (design decisions with the why), WELCOME.md
-examples/          a Continue.dev config for the /v1 endpoint
-tests/             pytest suite: queue, metering, search, conversation trees, HTTP-level API
-```
-
-## Design notes
-
-- [docs/SPEC.md](docs/SPEC.md) is the original brief. The project has since
-  grown past some of its non-goals (images, web search, tool calling over
-  `/v1`); each of those is explained in DECISIONS.
-- [docs/DECISIONS.md](docs/DECISIONS.md) explains every non-obvious choice:
-  why strict FIFO, why credits are seconds, why a second Dex, why no service
-  worker, and so on.
-- [CHANGELOG.md](CHANGELOG.md) lists what changed in each release and how to
-  upgrade.
+| | |
+| --- | --- |
+| [deploy/OPERATIONS.md](deploy/OPERATIONS.md) | Running it day to day: services, logs, backups, users |
+| [bench/README.md](bench/README.md) | The model inventory, benchmark and config generator |
+| [deploy/dex/README.md](deploy/dex/README.md) | Accounts and the identity provider |
+| [docs/WELCOME.md](docs/WELCOME.md) | A template for the note you send new users |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | Why things are the way they are |
+| [docs/SPEC.md](docs/SPEC.md) | The original brief |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release, and how to upgrade |
 
 ## License
 
-Llamacracy is free software, released under the
-[GNU Affero General Public License v3.0 or later](LICENSE)
-(`AGPL-3.0-or-later`).
-
-In short: you can use, study, change and share it. If you run a modified
-version as a service that other people use over a network, you must offer
-those users the source code of your modified version, under the same license.
-Running it unmodified, or changing it only for your own use, asks nothing of
-you. The [full text](LICENSE) is what actually applies.
+[AGPL-3.0-or-later](LICENSE). You can use, study, change and share it. If you
+run a modified version as a service that other people use over a network,
+you must offer those users its source code under the same license. Running
+it unmodified, or changing it only for yourself, asks nothing of you.
