@@ -34,7 +34,9 @@ bill has a face, and that face is mine.
   notes, slides, old exams), then get a tutor that gives hints before
   answers, checks your work, quizzes you, or writes practice problems and
   grades them.
-- Your own conversation history and a personal Account page, where you can
+- Your own conversation history and a personal Account page. Tell the
+  models your name and a bit about yourself there (**About you**), so they
+  talk to you like someone they know, or switch it off. You can
   also change how the whole thing looks (themes, your own colours, bigger
   text) just for you. Long chats can be
   **compacted** on demand (a button in the context panel) to free up room

@@ -703,6 +703,22 @@ a.btn { text-decoration: none; }
 .check-field { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; font-size: 13px; line-height: 1.5; cursor: pointer; }
 .check-field input { margin-top: 3px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
 
+/* About you (Account): a name, a few lines, and a switch for sending them */
+.profile { margin-bottom: 16px; }
+.profile .form-field:first-child { margin-top: 4px; }
+.profile.is-off .profile-fields { opacity: .55; }
+.field-head { display: flex; justify-content: space-between; align-items: baseline; }
+.field-head .faint { font-weight: 400; }
+.profile-foot { min-height: 18px; margin-top: 8px; text-align: right; }
+.switch { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-2); flex: none; white-space: nowrap; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch-track { position: relative; width: 36px; height: 20px; border-radius: 999px; background: var(--panel-3); border: 1px solid var(--line); transition: background .15s, border-color .15s; flex: none; }
+.switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-3); transition: transform .15s, background .15s; }
+.switch input:checked + .switch-track { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + .switch-track::after { transform: translateX(16px); background: var(--accent-ink); }
+.switch input:focus-visible + .switch-track { box-shadow: 0 0 0 3px var(--accent-soft); }
+@media (max-width: 560px) { .profile .look-head { flex-direction: column; align-items: flex-start; gap: 10px; } }
+
 /* -------------------------------------------------------- responsive */
 @media (max-width: 900px) {
   .page { padding: 20px calc(16px + var(--safe-right)) calc(40px + var(--safe-bottom)) calc(16px + var(--safe-left)); }

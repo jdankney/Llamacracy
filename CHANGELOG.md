@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **About you.** Each person can give their name and a few lines about
+  themselves under **Account → About you** (what they do, what they're into,
+  how they like answers). It goes to the model with their own chats and
+  study sessions, so replies can feel more personal. A switch, on by
+  default, stops sending it without deleting it. Nothing is sent until
+  someone writes something, and it never goes over `/v1`.
+
 ## 0.3.0 (2026-10-04)
 
 Documents, a model that looks things up and reads what it finds, a

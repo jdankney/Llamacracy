@@ -79,7 +79,8 @@ loading models. No cloud APIs, no Docker for the app itself.
 
 - An admin dashboard: live GPU stats, users, per-model performance, queue
   fairness, billing with draft invoices and CSV export.
-- An account page per user: usage chart, API keys, themes and text size.
+- An account page per user: a name and a few lines about themselves for the
+  models, themes and text size, a usage chart and API keys.
 - An OpenAI-compatible `/v1` endpoint for IDE tools, on the same queue and
   limits. There's a [Continue config](examples/continue/) ready to use.
 - Installable as a PWA on phones.

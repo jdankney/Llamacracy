@@ -461,6 +461,17 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   blocks keep a dark ground under every theme, since highlight.js's colours
   are a dark theme. It lives on the renamed **Account** tab (was Usage)
   rather than a fifth tab the phone top bar has no room for.
+- **"About you" is the user's own words in the system message.** A name and
+  up to 2,000 characters, stored with the rest of the prefs, and added to
+  the one system message of a chat or study turn (after the tools and study
+  briefs) while its switch is on. That's around 500 tokens a turn at most,
+  paid in prompt time, and only by the person who wrote it. The model is
+  told to let it shape the conversation, not to recite it. It isn't added
+  to compaction summaries or `/v1` requests: an IDE tool's requests are its
+  own. The switch is on by default, but an empty profile sends nothing, so
+  nobody shares anything they didn't write. Saving prefs merges by
+  section, so a page that saves only its appearance (an open tab from an
+  older build, say) can't wipe someone's profile.
 - The composer auto-focus only fires on devices with a fine pointer, so a
   phone never gets its keyboard summoned by a re-render.
 

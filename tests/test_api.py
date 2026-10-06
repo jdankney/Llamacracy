@@ -329,6 +329,47 @@ def test_appearance_rejects_anything_but_plain_values(client, bad):
     assert client.get("/api/me").json()["prefs"]["appearance"]["preset"] == "llamacracy"
 
 
+def test_the_profile_reaches_the_model_while_it_is_on(client):
+    up = client.fake_upstream
+    me = client.get("/api/me").json()["prefs"]["profile"]
+    assert me == {"enabled": True, "name": "", "about": ""}     # on, but nothing to say yet
+    _chat(client, model="small")
+    assert up.seen_payload["messages"][0]["role"] == "user"     # so no system message
+
+    prof = {"enabled": True, "name": "  Sam ", "about": "Second-year student. Likes birds."}
+    r = client.put("/api/me/prefs", json={"profile": prof})
+    assert r.json()["prefs"]["profile"]["name"] == "Sam"
+    _chat(client, model="small")
+    first = up.seen_payload["messages"][0]
+    assert first["role"] == "system"
+    assert "Name: Sam" in first["content"] and "Likes birds." in first["content"]
+
+    # saving the appearance alone leaves the profile be
+    client.put("/api/me/prefs", json={"appearance": {"preset": "llamacracy", "chat_text": "lg"}})
+    assert client.get("/api/me").json()["prefs"]["profile"]["about"] == prof["about"]
+
+    # off: kept, but not sent
+    client.put("/api/me/prefs", json={"profile": {**prof, "enabled": False}})
+    _chat(client, model="small")
+    assert all("Likes birds" not in str(m["content"]) for m in up.seen_payload["messages"])
+    assert client.get("/api/me").json()["prefs"]["profile"]["about"] == prof["about"]
+
+
+def test_the_profile_shares_the_one_system_message(agent_client):
+    up = agent_client.fake_upstream
+    up.agent_steps = [{"content": ["Hi Sam."]}]
+    agent_client.put("/api/me/prefs", json={"profile": {"name": "Sam", "about": ""}})
+    _chat(agent_client, model="small", search=True)
+    sys = [m for m in up.payloads[0]["messages"] if m["role"] == "system"]
+    assert len(sys) == 1 and "Name: Sam" in sys[0]["content"]
+
+
+def test_the_profile_has_limits(client):
+    assert client.put("/api/me/prefs", json={"profile": {"about": "x" * 2001}}).status_code == 422
+    assert client.put("/api/me/prefs", json={"profile": {"name": "x" * 61}}).status_code == 422
+    assert client.put("/api/me/prefs", json={"profile": {"mood": "great"}}).status_code == 422
+
+
 def _chat(client, **body) -> list[dict]:
     with client.stream("POST", "/api/chat", json={"message": "hi", **body}) as r:
         assert r.status_code == 200

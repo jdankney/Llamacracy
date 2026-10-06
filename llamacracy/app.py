@@ -111,9 +111,33 @@ class Appearance(BaseModel):
     chat_text: Literal["sm", "md", "lg", "xl"] = "md"
 
 
+class Profile(BaseModel):
+    """A few words the user writes about themselves, so the models can talk
+    to them as someone they know. Their own words, sent only on their own
+    chats and study sessions, and only while `enabled`."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    enabled: bool = True
+    name: str = Field(default="", max_length=60)
+    about: str = Field(default="", max_length=2000)
+
+    def brief(self) -> str | None:
+        if not self.enabled or not (self.name or self.about):
+            return None
+        lines = ["About the person you're talking with, in their own words. Let it shape "
+                 "how you talk with them (use their name now and then, pitch explanations "
+                 "to what they know, draw on their interests when it helps), but don't "
+                 "recite it back or bring it up where it doesn't fit."]
+        if self.name:
+            lines.append(f"Name: {self.name}")
+        if self.about:
+            lines.append(self.about)
+        return "\n".join(lines)
+
+
 class Prefs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     appearance: Appearance = Field(default_factory=Appearance)
+    profile: Profile = Field(default_factory=Profile)
 
 
 async def _load_prefs(db: Database, user_id: int) -> Prefs:
@@ -165,8 +189,12 @@ async def me(principal: Principal = Depends(get_principal),
 async def put_prefs(prefs: Prefs,
                     principal: Principal = Depends(get_principal),
                     db: Database = Depends(get_db)):
-    """Replace the caller's preferences. Scoped to the signed-in user: there
-    is no way to read or write anyone else's through this route."""
+    """Replace the caller's preferences, section by section: a section left
+    out of the body keeps what's stored (so a page saving its appearance
+    can't wipe the profile). Scoped to the signed-in user: there is no way to
+    read or write anyone else's through this route."""
+    stored = await _load_prefs(db, principal.user_id)
+    prefs = stored.model_copy(update={k: getattr(prefs, k) for k in prefs.model_fields_set})
     await db.execute("UPDATE users SET prefs_json = ? WHERE id = ?",
                      (prefs.model_dump_json(), principal.user_id))
     return {"prefs": prefs.model_dump()}
@@ -962,13 +990,20 @@ async def chat(req: ChatRequest,
     else:
         user_content = prompt_content
     messages = history + [{"role": "user", "content": user_content}]
+    briefs = []
     if agent is not None:
+        briefs.append(agent.system_prompt())
+        if course is not None:
+            briefs.insert(0, study.brief(course, course_refs, course_tokens, compute=compute,
+                                         web=web, mode=mode or "guide"))
+    # who they are, when they've said and want the models to know
+    about = (await _load_prefs(db, principal.user_id)).profile.brief()
+    if about:
+        briefs.append(about)
+    if briefs:
         # one system message, first: several chat templates reject a second
         # one, and a compacted history already starts with its summary
-        brief = agent.system_prompt()
-        if course is not None:
-            brief = (study.brief(course, course_refs, course_tokens, compute=compute, web=web,
-                                 mode=mode or "guide") + "\n\n" + brief)
+        brief = "\n\n".join(briefs)
         if messages[0]["role"] == "system":
             messages[0] = {"role": "system", "content": brief + "\n\n" + messages[0]["content"]}
         else:

@@ -1768,6 +1768,7 @@ function usageView() {
   if (!u) return h('main', { class: 'main' }, h('div', { class: 'page muted' }, 'Loading…'));
   return h('main', { class: 'main' }, h('div', { class: 'page page-narrow' },
     h('h1', {}, 'Your account'),
+    profileCard(),
     appearanceCard(),
     h('h2', { class: 'section-h' }, 'Usage'),
     h('div', { class: 'grid grid-2' },
@@ -1793,6 +1794,55 @@ function usageView() {
     apiKeysCard(),
   ));
 }
+// ---- About you: a name and a few lines the models get with each chat
+const PROFILE_DEFAULT = { enabled: true, name: '', about: '' };
+let _profileTimer = null;
+function profileCard() {
+  const p = { ...PROFILE_DEFAULT, ...(S.me?.prefs?.profile || {}) };
+  const status = h('span', { class: 'faint small', 'aria-live': 'polite' });
+  const count = h('span', { class: 'faint small' });
+  const save = (patch, delay) => {
+    const next = { ...PROFILE_DEFAULT, ...(S.me.prefs?.profile || {}), ...patch };
+    S.me.prefs = { ...(S.me.prefs || {}), profile: next };
+    card.classList.toggle('is-off', !next.enabled);
+    status.textContent = '';
+    clearTimeout(_profileTimer);
+    _profileTimer = setTimeout(async () => {
+      try {
+        await api.put('/api/me/prefs', { profile: S.me.prefs.profile });
+        status.textContent = 'Saved';
+      } catch (e) { flashError('Your profile could not be saved: ' + e.message); }
+    }, delay);
+  };
+  const name = h('input', {
+    class: 'input', value: p.name, maxlength: 60, 'aria-label': 'Your name',
+    placeholder: S.me?.display_name || 'What should the models call you?',
+    oninput: () => save({ name: name.value }, 800),
+  });
+  const about = h('textarea', {
+    class: 'textarea', rows: 5, maxlength: 2000, value: p.about, 'aria-label': 'About you',
+    placeholder: 'What you do or study, what you\'re into, how you like answers (short and direct, or with lots of examples)...',
+    oninput: () => { count.textContent = `${about.value.length} / 2000`; save({ about: about.value }, 800); },
+  });
+  count.textContent = `${p.about.length} / 2000`;
+  const on = h('input', {
+    type: 'checkbox', role: 'switch', checked: p.enabled,
+    onchange: () => save({ enabled: on.checked }, 0),
+  });
+  const card = h('div', { id: 'profile-card', class: 'card profile' + (p.enabled ? '' : ' is-off') },
+    h('div', { class: 'look-head' },
+      h('div', {},
+        h('h3', {}, 'About you'),
+        h('p', { class: 'sub' }, 'Tell the models a little about yourself, so they can talk with you like someone they know. It goes with your own chats and study sessions, nowhere else.')),
+      h('label', { class: 'switch' }, on, h('span', { class: 'switch-track', 'aria-hidden': 'true' }),
+        h('span', { class: 'switch-label' }, 'Share with the models'))),
+    h('div', { class: 'profile-fields' },
+      h('label', { class: 'form-field' }, h('span', {}, 'Name'), name),
+      h('label', { class: 'form-field' }, h('span', { class: 'field-head' }, 'A bit about you', count), about)),
+    h('div', { class: 'profile-foot' }, status));
+  return card;
+}
+
 // ---- Appearance: presets, four colour pickers, chat text size
 const LOOK_FIELDS = [['bg', 'Background'], ['surface', 'Panels'], ['text', 'Text'], ['accent', 'Accent']];
 let _lookTimer = null;
