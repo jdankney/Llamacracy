@@ -404,6 +404,9 @@ def _pdf(path: str) -> tuple[str, int | None, str | None]:
     for i, page in enumerate(reader.pages):
         if i >= MAX_PAGES:
             _WARN.append(f"only the first {MAX_PAGES} pages were read")
+            out.append(f"[The document goes on to page {n}; only the first {MAX_PAGES} "
+                       "pages were read, so nothing after this is available.]")
+            n = MAX_PAGES       # the pages there is text for
             break
         try:
             text = page.extract_text() or ""
@@ -490,7 +493,9 @@ def main() -> None:
         return
     md = re.sub(r"\n{3,}", "\n\n", md).strip()
     if len(md) > max_chars:
-        md = md[:max_chars]
+        # said in the text itself: the model reads this, not the warnings
+        md = (md[:max_chars] + "\n\n[The document is cut off here: it was too long to read "
+              "in full, so nothing after this point is available.]")
         _WARN.append("truncated")
     print(json.dumps({"ok": True, "markdown": md, "units": units, "unit": unit,
                       "warnings": _WARN}))

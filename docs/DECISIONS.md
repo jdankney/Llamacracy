@@ -18,8 +18,13 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   `SUM ... WHERE finished_at >= ?`.
 - **Vanilla JS front-end, no build step, no framework.** One `app.js`, one
   hand-written `styles.css`. Markdown, sanitising, code highlighting and
-  math come from cdnjs as classic scripts, with a regex fallback so a blocked
-  CDN degrades to readable text instead of nothing.
+  math are vendored under `llamacracy/static/assets/vendor/` (unmodified
+  builds; its README lists versions and licenses) and load as classic
+  scripts. They used to come from cdnjs, but on a private network that meant
+  no rendering without internet, a blank page for as long as a dropped CDN
+  connection took to time out, and a third party able to change the code
+  that renders every chat. The regex fallback stays, so a library that fails
+  to load still leaves readable text.
 - **Generated config from a declarative inventory.** Your models live in
   `bench/inventory.json`; the benchmark measures them; the generator writes
   both the llama-swap config and the app's registry from those two files.
@@ -39,6 +44,54 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   connection.
 - Idle TTL unloads the resident model after N minutes with an empty queue.
   llama-swap's own `ttl` is only a backstop.
+- **An admin can lock one model in VRAM.** The idle timer then skips it, and
+  a `GET /upstream/<model>/health` once a minute keeps llama-swap's `ttl`
+  backstop from firing: it does no inference, but it is a request to that
+  model's process, and llama-swap counts its idle time from the last one.
+  llama-swap has no "load" endpoint, so the same request is how a locked
+  model is preloaded. The lock doesn't block swaps: the queue stays strictly
+  FIFO and someone asking for another model still gets it. Once the queue
+  has been idle for the idle TTL, the locked model is loaded back instead of
+  the GPU being left empty. A preload holds the same slot lock as a job, so
+  the two never overlap, and a job that arrives during one waits in the
+  queue, unbilled. Nobody is charged for a preload: the admin chose it. The
+  lock is kept in a new `app_settings` table, so it survives a restart.
+  Force-unload releases it, or the idle monitor would put the model straight
+  back. A preload gives way: a job that arrives during one cancels it and
+  goes ahead. It's also bounded (three times the model's usual load time, a
+  minute at least), and a failed or abandoned one is retried after five
+  minutes, not every tick.
+- **A new chat is named by the model that answered it.** The brief said the
+  first 50 characters, no model call. That stands in until the first reply,
+  and stays if anything goes wrong. Once the first reply is written, the same
+  job, still holding the slot on a warm model, asks for a 3-6 word title (32
+  tokens at most, thinking off, a 20 s timeout). The question is appended to
+  the conversation as sent, so llama.cpp's prompt cache already holds
+  everything but the question, and the chat's next turn finds its history
+  cached as before. That needs the prompt to start the same way, so an agent
+  turn's tool list goes along too (with `tool_choice: "none"`): chat
+  templates write it near the top. A picture is left out rather than read
+  again. The `done` event goes out before the naming, so the UI has the
+  finished reply and a Stop can't take it off the screen; the title follows
+  as one more event. A second, tiny title model was considered and rejected: on one
+  GPU it would evict the chat model, and on the CPU it's one more GGUF to
+  install. The title's second or so is billed as occupancy, like the rest of
+  the turn, but `gen_seconds`, and so tok/s, stop at the answer. Stop during
+  naming stops only the naming. The UPDATE only replaces the stand-in, so a
+  title the user set meanwhile stays theirs. `SMART_TITLES=false` turns it off.
+- **Stop is immediate.** The pump runs as a task that Stop (or an admin's
+  Kill) cancels, rather than a loop that checks a flag when the next chunk
+  arrives: during a cold load, a long prompt read or a tool run, none does
+  for a long time. Cancelling closes the upstream request and kills a
+  running sandbox. A job stopped before its model was up is billed as load
+  time (at `LOAD_TIME_MULTIPLIER`), not as generation.
+- **The worker outlives any one job.** A job's cleanup that fails (a write
+  that raises) is logged, and the stream still gets its close and `_done`
+  is still set. Deleting a chat first drops its queued jobs and cuts a
+  running one loose, so nothing is written back into it.
+- **A few jobs per person at a time** (`MAX_JOBS_PER_USER`, 4). Credits
+  are counted when a job finishes, so without it parallel requests could
+  all be admitted just under a limit and overshoot it many times over.
 - `SMALL_MODEL_FAST_LANE` is wired (jobs carry a `lane`, only exclusive-lane
   seconds are full price) but not implemented; everything runs exclusive.
 
@@ -474,6 +527,23 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   older build, say) can't wipe someone's profile.
 - The composer auto-focus only fires on devices with a fine pointer, so a
   phone never gets its keyboard summoned by a re-render.
+
+- **Markdown from a model can't load or draw anything.** Model output (and
+  a document or page the model was talked into quoting) is rendered as
+  markdown, so DOMPurify drops images, media, frames, embeds, forms and
+  inputs, and every inline style: a remote image URL can carry the chat out
+  to whoever wrote a hostile page, and a form or overlay could fake a
+  sign-in on this origin. KaTeX's output needs inline style, so it's put in
+  after sanitising, into text nodes only (a placeholder in an attribute is
+  dropped, as equation HTML there could close the attribute). The page also
+  sends a Content-Security-Policy: scripts, styles and fonts from this
+  origin only, images only from this origin (`data:` and `blob:` too), forms that
+  post nowhere else, no framing.
+- Every message shows its date and time: "Today, 3:42 PM", "Yesterday, …",
+  or the weekday and date, with the year once it isn't this one, and the
+  full timestamp in the tooltip. It's local time, from the `created_at`
+  that every message row already had. A message just sent uses the
+  browser's clock until the chat reloads.
 
 ## Operations
 

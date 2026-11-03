@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     compact_keep_recent: int = 6          # most-recent messages always kept verbatim
     compact_summary_max_tokens: int = 600  # cap on the generated summary itself
 
+    # --- chat titles ------------------------------------------------------
+    # After a new chat's first reply, the model that wrote it names the chat
+    # in a few words, in the same job (well under a second on a warm model,
+    # billed like the rest of the reply). Off, or if naming fails, the title
+    # stays the first 50 characters of the first message.
+    smart_titles: bool = True
+
     # --- queue -----------------------------------------------------------
     idle_ttl_minutes: int = 15
     idle_ttl_seconds: float | None = None    # if set, wins over idle_ttl_minutes
@@ -99,6 +106,10 @@ class Settings(BaseSettings):
     session_window_hours: float = 5
     load_time_multiplier: float = 0.5
     max_tokens_per_request: int = 2048
+    # Jobs one person may have queued or running at once (0 = no cap). Usage
+    # is only counted when a job finishes, so this is what bounds how far
+    # past a credit limit parallel requests can go.
+    max_jobs_per_user: int = 4
     # Output budget for a turn with thinking on. The reasoning and the answer
     # share max_tokens, and a model can easily think for a few thousand
     # tokens, so the ordinary cap would cut the answer off. Also the bound on
@@ -149,6 +160,14 @@ class Settings(BaseSettings):
         if table is None:
             return self.electricity_rate
         return table.get(hour_local % 24, self.electricity_rate)
+
+    @field_validator("idle_ttl_seconds", "study_model", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v):
+        # `KEY=` with nothing after it leaves an optional setting unset (a
+        # blank float would otherwise fail to parse and stop the app). Only
+        # these: a blank SOURCE_URL or SEARXNG_URL means "none", on purpose.
+        return None if isinstance(v, str) and not v.strip() else v
 
     @field_validator("tou_schedule")
     @classmethod

@@ -90,7 +90,8 @@ async def test_long_text_is_cut_with_a_warning(tmp_path):
     p = tmp_path / "big.txt"
     p.write_text("word " * 1000)
     ex = await documents.extract(str(p), "text", 100)
-    assert len(ex.markdown) == 100 and "truncated" in ex.warnings
+    assert ex.markdown.startswith(("word " * 20)[:100]) and "truncated" in ex.warnings
+    assert ex.markdown.endswith("nothing after this point is available.]")   # the model is told
 
 
 def test_refusals_explain_themselves():

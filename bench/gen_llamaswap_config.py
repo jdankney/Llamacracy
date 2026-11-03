@@ -263,7 +263,10 @@ def generate(inv: dict, bench: dict) -> tuple[str, dict]:
         y.append(f'  "{gname}":')
         y.append("    swap: true")
         y.append("    exclusive: true")
-        y.append(f"    members: [{', '.join(f'\"{k}\"' for k in members)}]")
+        # (no backslash inside the f-string: that needs Python 3.12+, and this
+        # script is run with whatever python3 the system has)
+        quoted = ", ".join('"' + k + '"' for k in members)
+        y.append(f"    members: [{quoted}]")
 
     return "\n".join(y) + "\n", registry
 

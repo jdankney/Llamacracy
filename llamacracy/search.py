@@ -156,7 +156,9 @@ class SearchClient:
         results = []
         for item in data.get("results", []):
             url = (item.get("url") or "").strip()
-            if not url:
+            # shown as a link and opened by read_page: web addresses only (a
+            # javascript: or file: "result" would be a link that runs or reads)
+            if not url.lower().startswith(("http://", "https://")):
                 continue
             title = (item.get("title") or "").strip() or url
             content = (item.get("content") or "").strip()

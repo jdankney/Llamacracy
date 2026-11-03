@@ -46,6 +46,9 @@ class Tool:
     parameters: dict               # JSON schema of the arguments
     run: Callable[[dict, Toolbox], Awaitable[ToolOutcome]]
     label: Callable[[dict], str]   # "Searching “llama.cpp release”"
+    # arguments the user mustn't see: never in the trail, its stored record
+    # or the live preview of a call being written (a practice problem's key)
+    private: frozenset[str] = frozenset()
 
     def schema(self) -> dict:
         return {"type": "function", "function": {
@@ -112,6 +115,18 @@ class Toolbox:
 
     def schemas(self) -> list[dict]:
         return [t.schema() for t in self.tools.values()]
+
+    def shown_args(self, name: str, args: dict) -> dict:
+        """A call's arguments as the trail may show them. Unparseable
+        arguments ({"raw": ...}) of a tool with private ones show nothing."""
+        t = self.tools.get(name)
+        if t is None or not t.private:
+            return args
+        return {k: v for k, v in args.items() if k not in t.private and k != "raw"}
+
+    def shows_code(self, name: str) -> bool:
+        t = self.tools.get(name)
+        return t is None or "code" not in t.private
 
     def label(self, name: str, args: dict) -> str:
         t = self.tools.get(name)

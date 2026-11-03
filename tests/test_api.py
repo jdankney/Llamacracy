@@ -45,6 +45,9 @@ def client(tmp_db_path, tmp_path, monkeypatch, request):
     # no run_python unless a test brings its own sandbox: whether this machine
     # has one built must not change what the other tests see
     monkeypatch.setenv("SANDBOX_PYTHON", str(tmp_path / "no-sandbox" / "python"))
+    # chats keep their stand-in title unless a test turns naming on: the extra
+    # request would otherwise be the last payload every other test inspects
+    monkeypatch.setenv("SMART_TITLES", "0")
     marker = request.node.get_closest_marker("env")
     for k, v in (marker.kwargs if marker else {}).items():
         monkeypatch.setenv(k, str(v))
@@ -1233,3 +1236,225 @@ def test_a_tool_call_written_out_as_text_is_not_the_answer(agent_client):
                                    "<parameter=query>x</parameter>\n</function>\n</tool_call>"]}]
     ev = _chat(agent_client, model="small", message="q", search=True)
     assert client_messages(agent_client, ev[0]["conversation_id"])[1]["content"] == "Here you go."
+
+
+# --------------------------------------------------------------------------- #
+# smart titles
+# --------------------------------------------------------------------------- #
+def _send(client, **body) -> list[dict]:
+    with client.stream("POST", "/api/chat", json={"model": "small", **body}) as r:
+        assert r.status_code == 200
+        return _sse_events(r)
+
+
+@pytest.mark.env(SMART_TITLES="1")
+def test_a_new_chat_is_named_by_the_model_that_answered(client):
+    from llamacracy.queue import TITLE_ASK
+    up = client.fake_upstream
+    up.script["small"] = ["Hello", " there"]
+    up.title_deltas = ['Title: "Saying', ' hello."\nBecause you said hi.']
+    events = _send(client, message="hi there, how are you doing today?")
+    types = [e["type"] for e in events]
+    # named once the answer is complete, so a Stop during naming can't cost the reply
+    assert types[-2:] == ["done", "title"]
+    conv_id = events[0]["conversation_id"]
+    assert events[-1] == {"type": "title", "conversation_id": conv_id, "title": "Saying hello"}
+    assert client.get(f"/api/conversations/{conv_id}").json()["conversation"]["title"] == "Saying hello"
+    # the question rides on the conversation as it stands, so the prompt cache holds it
+    ask = up.payloads[-1]["messages"]
+    assert [m["role"] for m in ask] == ["user", "assistant", "user"]
+    assert ask[1]["content"] == "Hello there" and ask[2]["content"] == TITLE_ASK
+    assert up.payloads[-1]["max_tokens"] <= 32
+    # the reply is saved as written, its token counts untouched by the naming
+    msgs = client.get(f"/api/conversations/{conv_id}").json()["messages"]
+    assert msgs[1]["content"] == "Hello there" and msgs[1]["completion_tokens"] == 3
+
+    n = len(up.payloads)
+    more = _send(client, message="and again", conversation_id=conv_id)
+    assert "title" not in [e["type"] for e in more]  # named once
+    assert len(up.payloads) == n + 1
+
+
+@pytest.mark.env(SMART_TITLES="1")
+def test_naming_never_costs_the_reply(client, monkeypatch):
+    up = client.fake_upstream
+    up.title_deltas = ["   "]                        # nothing usable
+    events = _send(client, message="first message here")
+    assert "title" not in [e["type"] for e in events]
+    conv_id = events[0]["conversation_id"]
+    assert client.get(f"/api/conversations/{conv_id}").json()["conversation"]["title"] == "first message here"
+
+    real = up.stream_chat
+
+    async def broken(payload):
+        from llamacracy.queue import TITLE_ASK
+        if payload["messages"][-1].get("content") == TITLE_ASK:
+            raise RuntimeError("upstream fell over")
+        async for c in real(payload):
+            yield c
+
+    monkeypatch.setattr(up, "stream_chat", broken)
+    events = _send(client, message="second chat")
+    assert events[-1]["type"] == "done" and events[-1]["state"] == "done"
+    conv_id = events[0]["conversation_id"]
+    detail = client.get(f"/api/conversations/{conv_id}").json()
+    assert detail["conversation"]["title"] == "second chat"
+    assert [m["role"] for m in detail["messages"]] == ["user", "assistant"]
+
+
+def test_titles_stay_as_typed_when_naming_is_off(client):
+    events = _send(client, message="keep me")
+    assert "title" not in [e["type"] for e in events]
+    assert len(client.fake_upstream.payloads) == 1
+
+
+@pytest.mark.parametrize("raw, title", [
+    ("Planning a Trip to Kyoto", "Planning a Trip to Kyoto"),
+    ('"Fixing the Wi-Fi."', "Fixing the Wi-Fi"),
+    ("**Title:** Sourdough starter tips", "Sourdough starter tips"),
+    ("<think>hmm</think>\nTax questions for 2026", "Tax questions for 2026"),
+    ("Why is the sky blue?", "Why is the sky blue?"),
+    ("\n\n  Rust lifetimes  \nThis chat is about...", "Rust lifetimes"),
+    ("", ""), ("“ ”", ""),
+    ("A very long title that keeps going well past any sensible length for a sidebar entry",
+     "A very long title that keeps going well past any sensible…"),
+])
+def test_clean_title(raw, title):
+    from llamacracy.queue import clean_title
+    assert clean_title(raw) == title
+
+
+def test_admin_locks_and_unlocks_a_model(client):
+    assert client.post("/api/admin/lock", json={"model": "nope"}).status_code == 400
+    r = client.post("/api/admin/lock", json={"model": "small"})
+    assert r.status_code == 200 and r.json() == {"locked_model": "small"}
+    live = client.get("/api/admin/live").json()
+    assert live["locked_model"] == "small"
+    assert {"id": "small", "display": "Small"} in live["lockable"]
+    assert client.get("/api/queue").json()["locked_model"] == "small"
+    assert client.post("/api/admin/unload").json() == {"ok": True}   # releases it too
+    assert client.get("/api/admin/live").json()["locked_model"] is None
+    client.post("/api/admin/lock", json={"model": "small"})
+    assert client.post("/api/admin/lock", json={"model": None}).json() == {"locked_model": None}
+
+
+def test_deleting_a_chat_mid_reply_leaves_the_queue_working(client):
+    import threading
+
+    import llamacracy.queue as q
+    up = client.fake_upstream
+    up.delay = 0.2
+    up.script["small"] = ["a", "b", "c", "d", "e"]
+    with client.stream("POST", "/api/chat", json={"model": "small", "message": "hi"}) as r:
+        it = r.iter_lines()
+        first = next(line for line in it if line.startswith("data:"))
+        conv = json.loads(first[5:])["conversation_id"]
+        assert client.delete(f"/api/conversations/{conv}").status_code == 200
+        tail = [json.loads(line[5:])["type"] for line in it if line.startswith("data:")]
+    assert tail[-1] == "done" and tail[-1] != "error"     # the stream ended cleanly
+    assert all(not t.done() for t in q._qm._tasks)         # worker and monitors alive
+    assert _count(client.db, "messages") == 0              # nothing written back
+
+    up.delay = 0.01
+    out: dict = {}
+
+    def again():
+        out["events"] = _send(client, message="still there?")
+    t = threading.Thread(target=again, daemon=True)
+    t.start()
+    t.join(5)
+    assert not t.is_alive() and out["events"][-1]["type"] == "done"
+
+
+def test_cleanup_that_fails_still_ends_the_stream(client, monkeypatch):
+    import llamacracy.queue as q
+
+    async def boom(job):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(q._qm, "_persist_assistant_message", boom)
+    events = _send(client, message="hi")
+    assert events[-1]["type"] == "done"
+    monkeypatch.undo()
+    assert _send(client, message="next")[-1]["type"] == "done"   # the worker carried on
+
+
+@pytest.mark.env(SMART_TITLES="1")
+def test_naming_an_agent_turn_keeps_its_prompt_prefix(agent_client):
+    from llamacracy.queue import TITLE_ASK
+    c, up = agent_client, agent_client.fake_upstream
+    up.agent_steps = [{"content": ["It shipped in May."]}]
+    events = _send(c, message="when did it ship?", search=True)
+    assert events[-1]["type"] == "title"
+    turn, ask = up.payloads[-2], up.payloads[-1]
+    assert ask["messages"][-1]["content"] == TITLE_ASK
+    assert ask["tools"] == turn["tools"] and ask["tool_choice"] == "none"
+    assert ask["messages"][:len(turn["messages"])] == turn["messages"]   # same start, so cached
+
+
+@pytest.mark.env(SMART_TITLES="1")
+def test_naming_a_photo_turn_leaves_the_picture_out(vision_client):
+    c, up = vision_client, vision_client.fake_upstream
+    img = c.post("/api/uploads", files={"file": ("p.png", PNG, "image/png")}).json()["id"]
+    up.agent_steps = [{"content": ["A fern."]}]
+    events = _send(c, message="what plant is this?", image_id=img)
+    assert events[-1]["type"] == "title"
+    ask = up.payloads[-1]
+    assert "image_url" not in json.dumps(ask)
+    assert any(m.get("content") == "what plant is this?" for m in ask["messages"])
+
+
+def test_v1_cap_cant_be_sidestepped_with_n_predict(client):
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {key}"},
+                json={"model": "small", "max_tokens": 10, "n_predict": -1,
+                      "messages": [{"role": "user", "content": "hi"}]})
+    sent = client.fake_upstream.seen_payload
+    assert "n_predict" not in sent and sent["max_tokens"] == 10
+
+
+def test_v1_images_must_be_data_urls(client):
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    for url in ("http://192.168.1.1/admin.png", "file:///etc/passwd"):
+        r = client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {key}"},
+                        json={"model": "small", "messages": [{"role": "user", "content": [
+                            {"type": "image_url", "image_url": {"url": url}},
+                            {"type": "text", "text": "what's this?"}]}]})
+        assert r.status_code == 400 and "data:" in r.json()["detail"]
+
+
+def test_queue_impact_counts_the_wait_one_user_caused_another(client):
+    import time as _t
+    client.get("/api/me")                                    # the admin's own row (user 1)
+    db = client.db
+    db._conn.execute("INSERT INTO users (id, oidc_sub, email, created_at) VALUES (2, 's2', 'bob@x', 0)")
+    t = _t.time() - 3600
+    rows = [("a", 1, t, t, t + 10), ("b", 2, t + 2, t + 10, t + 15),   # b waited 8 s behind a
+            ("c", 2, t + 100, t + 100, t + 105)]                   # nobody waited for c
+    for jid, uid, q, p, f in rows:
+        db._conn.execute("INSERT INTO jobs (id, user_id, model_id, state, queued_at, picked_at, finished_at) "
+                         "VALUES (?, ?, 'small', 'done', ?, ?, ?)", (jid, uid, q, p, f))
+    impact = client.get("/api/admin/queue-impact").json()["impact"]
+    assert impact == [{"email": "dev@localhost", "display_name": impact[0]["display_name"],
+                       "wait_inflicted_s": 8.0, "jobs_delayed": 1}]
+
+
+@pytest.mark.env(MAX_JOBS_PER_USER="2")
+def test_one_person_can_only_have_a_few_jobs_in_flight(client):
+    import llamacracy.queue as q
+    qm = q._qm
+    key = client.post("/api/keys", json={"label": "t"}).json()["key"]
+    me = client.get("/api/me").json()
+    uid = me.get("id") or me.get("user_id") or 1
+    blockers = [q.Job(user_id=uid, owner_name="me", owner_email="dev@localhost", model_id="small",
+                      payload={"messages": []}) for _ in range(2)]
+    qm._pending.extend(blockers)                 # two already waiting (the worker is parked)
+    try:
+        r = client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {key}"},
+                        json={"model": "small", "messages": [{"role": "user", "content": "hi"}]})
+        assert r.status_code == 429 and "already have 2" in r.json()["detail"]
+        client.db._conn.execute("UPDATE users SET uncapped = 1 WHERE id = ?", (uid,))
+        assert qm.jobs_of(uid) == 2
+    finally:
+        for b in blockers:
+            if b in qm._pending:
+                qm._pending.remove(b)

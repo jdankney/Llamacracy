@@ -323,12 +323,26 @@ async def list_models(principal: Principal = Depends(get_principal),
 # --------------------------------------------------------------------------- #
 # admission -- one gate for every door (web chat, compaction, /v1)
 # --------------------------------------------------------------------------- #
+async def _uncapped(user_id: int) -> bool:
+    row = await get_db().fetch_one("SELECT uncapped FROM users WHERE id = ?", (user_id,))
+    return bool(row and row["uncapped"])
+
+
 async def _check_limits(job: Job, qm: QueueManager) -> None:
     """Enqueue-time limit check. Rejecting after a queue wait is hostile, so
     this runs before the job is submitted -- and before anything about the
     request is persisted, so a rejected send leaves no orphan rows. Opens the
     user's session if they have none. Overshoot is allowed: an admitted job
     runs to completion even if it finishes over the cap."""
+    # Credits are only counted once a job finishes, so a user who sends many
+    # at once (an IDE firing requests in parallel) would otherwise get them
+    # all past a limit they're about to hit. A few at a time is plenty.
+    cap = get_settings().max_jobs_per_user
+    mine = qm.jobs_of(job.user_id)
+    if cap and mine >= cap and not await _uncapped(job.user_id):
+        raise HTTPException(429, detail=(
+            f"You already have {mine} requests waiting or running. "
+            "Wait for one to finish, then send this again."))
     if qm.check_limits is None:
         return
     decision = await qm.check_limits(job.user_id, job.model_id)
@@ -463,13 +477,16 @@ async def switch_branch(conv_id: str, req: SwitchRequest,
 @app.delete("/api/conversations/{conv_id}")
 async def delete_conversation(conv_id: str,
                               principal: Principal = Depends(get_principal),
-                              db: Database = Depends(get_db)):
+                              db: Database = Depends(get_db),
+                              qm: QueueManager = Depends(get_queue)):
     conv = await db.fetch_one(
         "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
         (conv_id, principal.user_id),
     )
     if conv is None:
         raise HTTPException(404, "no such conversation")
+    # first: a reply still being written must not land in a deleted chat
+    await qm.drop_conversation(conv_id)
     await threads.delete(db, conv_id, principal.user_id)
     return {"deleted": conv_id}
 
@@ -585,7 +602,8 @@ async def upload(file: UploadFile = File(...),
                  db: Database = Depends(get_db)):
     ctype = (file.content_type or "").split(";")[0].strip().lower()
     if ctype.startswith("image/"):
-        data = await file.read()
+        # one byte past the cap is enough to refuse it: never read the rest into memory
+        data = await file.read(int(settings.upload_max_mb * 1024 * 1024) + 1)
         try:
             ext = validate_upload(file.content_type, len(data), settings.upload_max_mb)
         except UploadRejected as e:
@@ -689,7 +707,9 @@ async def get_upload_text(upload_id: str,
 # --------------------------------------------------------------------------- #
 class ChatRequest(BaseModel):
     model: str
-    message: str = Field(min_length=1)
+    # long pastes are fine (documents go as attachments); a request body the
+    # size of the disk isn't
+    message: str = Field(min_length=1, max_length=400_000)
     conversation_id: str | None = None
     max_tokens: int | None = None
     search: bool = False
@@ -778,8 +798,14 @@ async def chat(req: ChatRequest,
     playing = [docs[i] for i in dict.fromkeys(in_play) if i in docs]
     lookup: list[documents.Loaded] = []
     if model.tools:
+        # what's left of the window once the conversation itself is in, less
+        # room to answer: as a chat grows, its biggest documents move to
+        # lookup instead of the send being refused for size below
+        said = sum(documents.estimate_tokens(_text_of(m["content"])) + 4
+                   for m in threads.history(prior, {}))
+        room = model.ctx - said - documents.estimate_tokens(req.message) - 2048
         playing, lookup = documents.split_inline(
-            playing, int(model.ctx * settings.doc_inline_fraction))
+            playing, max(0, min(int(model.ctx * settings.doc_inline_fraction), room)))
     refs = [DocRef(f"d{n}", d.filename, d.text, d.meta.get("units"), d.meta.get("unit"))
             for n, d in enumerate(lookup + ([docs[i] for i in folded if i in docs]
                                             if model.tools else []), 1)]
@@ -1027,6 +1053,12 @@ async def chat(req: ChatRequest,
         # context window. Say so now, in words, instead of letting llama.cpp
         # fail the job after a queue wait.
         est = sum(documents.estimate_tokens(_text_of(m["content"])) + 4 for m in messages)
+        if est + min(cap, 1024) > model.ctx and model.tools:
+            # its documents are already looked up, not sent: it's the chat that's full
+            raise HTTPException(400, (
+                f"This chat is about {est:,} tokens, more than {model.display} can hold at "
+                f"once ({model.ctx:,}). Compact the chat, or start a new one; the documents "
+                "can come along."))
         if est + min(cap, 1024) > model.ctx:
             raise HTTPException(400, (
                 f"With its documents this chat is about {est:,} tokens, more than "
@@ -1059,6 +1091,8 @@ async def chat(req: ChatRequest,
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (conv_id, principal.user_id, title, req.model, course["id"] if course else None, ts, ts),
         )
+        if settings.smart_titles:
+            job.title_from = title      # the model names it once it has answered
     if course is not None:
         # the course moves up its list, and its next session starts on this model
         await db.execute("UPDATE courses SET updated_at = ?, model_id = ? WHERE id = ?",
@@ -1216,6 +1250,18 @@ async def _v1_drain(job: Job, qm: QueueManager, request: Request):
         await qm.cancel(job.id, job.user_id)
 
 
+def _remote_image(messages: list) -> bool:
+    """True if an image_url part points anywhere but a data: URL. llama-server
+    can download images itself, from wherever it can reach (this box's LAN,
+    its loopback services): a /v1 caller sends the picture's bytes instead."""
+    return any(
+        isinstance(p, dict) and p.get("type") == "image_url"
+        and not str((p.get("image_url") or {}).get("url", "")
+                    if isinstance(p.get("image_url"), dict) else p.get("image_url") or "").startswith("data:")
+        for m in messages if isinstance(m, dict) and isinstance(m.get("content"), list)
+        for p in m["content"])
+
+
 def _has_image(messages: list) -> bool:
     """True if any OpenAI-style message carries an image_url content part."""
     return any(
@@ -1251,6 +1297,8 @@ async def v1_chat_completions(request: Request,
         raise HTTPException(400, f"unknown model: {model_id}")
     if not isinstance(body.get("messages"), list) or not body["messages"]:
         raise HTTPException(400, "messages must be a non-empty array")
+    if _remote_image(body["messages"]):
+        raise HTTPException(400, "images must be sent as data: URLs (base64), not links")
     # An image anywhere in the history routes the job to the paired -vision
     # llama-swap entry, as /api/chat does: the text-only entry has no --mmproj
     # and llama.cpp rejects the whole request.
@@ -1280,6 +1328,10 @@ async def v1_chat_completions(request: Request,
     # temperature for its apply model, say).
     payload = {**model.sampling, **body, "max_tokens": cap}
     payload.pop("model", None)          # the queue sets it from job.model_id
+    # llama.cpp's own name for the output cap, which it reads before max_tokens:
+    # left in, "n_predict": -1 would make the cap above (and the bound on
+    # overshooting a credit limit) meaningless
+    payload.pop("n_predict", None)
     if stream:
         # credits come off the real usage block, never an estimate, so ask for
         # it. The client sees one extra final chunk: ordinary OpenAI behaviour.
@@ -1341,6 +1393,20 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
+# A second line behind the markdown sanitiser (app.js renderMD): even markup
+# that got through it couldn't load a remote image (which would carry the
+# chat out in its URL), post a form anywhere, or frame the app. Everything,
+# the markdown and math libraries included (assets/vendor), comes from this
+# origin; inline style is allowed because KaTeX and the theme set it per element.
+CSP = ("default-src 'self'; "
+       "script-src 'self'; "
+       "style-src 'self' 'unsafe-inline'; "
+       "font-src 'self' data:; "
+       "img-src 'self' data: blob:; media-src 'self' blob:; "
+       "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
+       "base-uri 'none'; object-src 'none'")
+
+
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets", check_dir=False),
               name="assets")
@@ -1351,5 +1417,7 @@ if STATIC_DIR.exists():
     async def index():
         idx = STATIC_DIR / "index.html"
         if idx.exists():
-            return FileResponse(idx)
+            return FileResponse(idx, headers={"Content-Security-Policy": CSP,
+                                              "X-Content-Type-Options": "nosniff",
+                                              "Referrer-Policy": "same-origin"})
         return {"service": "llamacracy", "ui": "static/index.html is missing"}

@@ -51,9 +51,22 @@ class Fetched:
             return self.body.decode("utf-8", errors="replace")
 
 
+_V4_COMPAT = ipaddress.IPv6Network("::/96")
+_NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+
+
 def _public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        # IPv6 forms that carry an IPv4 address and can reach it (mapped,
+        # the old IPv4-compatible ::a.b.c.d, NAT64, 6to4): judge the IPv4 one.
+        # Python calls some of these global, whatever the address inside.
+        n = int(ip)
+        if ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        elif ip in _V4_COMPAT or ip in _NAT64:
+            ip = ipaddress.IPv4Address(n & 0xFFFFFFFF)
+        elif ip.sixtofour:
+            ip = ip.sixtofour
     return ip.is_global and not ip.is_multicast
 
 

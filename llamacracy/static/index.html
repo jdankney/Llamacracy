@@ -27,13 +27,16 @@
 <meta name="apple-mobile-web-app-title" content="Llamacracy">
 <link rel="stylesheet" href="/assets/styles.css">
 <!-- markdown rendering: parser + HTML sanitiser + code highlighting + math.
-     Classic scripts, so they're ready before the deferred module app.js. -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.7/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.21/katex.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.21/katex.min.css">
+     Served from this app (assets/vendor/, see its README), never a CDN: it
+     works with no internet, a slow CDN can't hold the page blank, and no
+     third party can change the code that renders every chat. Classic
+     scripts, so they're ready before the deferred module app.js. -->
+<script src="/assets/vendor/marked/marked.min.js"></script>
+<script src="/assets/vendor/dompurify/purify.min.js"></script>
+<script src="/assets/vendor/highlight/highlight.min.js"></script>
+<link rel="stylesheet" href="/assets/vendor/highlight/github-dark.min.css">
+<script src="/assets/vendor/katex/katex.min.js"></script>
+<link rel="stylesheet" href="/assets/vendor/katex/katex.min.css">
 </head>
 <body>
 <div id="app"></div>

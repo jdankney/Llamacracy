@@ -45,7 +45,7 @@ With Llamacracy, generate the key under **Account → API access** in the web UI
 **3. Point it at your server.** In `~/.continue/config.yaml`, change these values:
 
 - `apiBase` under `model_defaults`: your server's `/v1` URL
-- each `model:` value: the model IDs your server exposes (`curl <apiBase>/models` lists them)
+- each `model:` value: the model IDs your server exposes (`curl -H "Authorization: Bearer llk_..." <apiBase>/models` lists them)
 - `contextLength`: the context size your server actually runs with
 
 **4. Reload.** Restart your editor, or run **Developer: Reload Window** in VS Code. Then pick your

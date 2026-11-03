@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-03)
+
+Lock a model in VRAM, chats that name themselves, timestamps, and a
+review of the whole app.
 
 ### Added
 
@@ -10,6 +13,83 @@
   study sessions, so replies can feel more personal. A switch, on by
   default, stops sending it without deleting it. Nothing is sent until
   someone writes something, and it never goes over `/v1`.
+- **Lock a model in VRAM.** Admin → Live → **Model lock**: pick a model and
+  it stays loaded. The idle timer stops unloading it, and llama-swap's own
+  `ttl` backstop is held off too. Someone using another model still swaps it
+  out, as always. Once the queue has been idle for the idle timeout
+  (`IDLE_TTL_MINUTES`), the locked model is loaded back. The lock survives restarts. **Unlock**, or
+  **Force-unload**, releases it. The top bar's model badge shows a padlock
+  while the locked model is resident.
+- **Smart chat titles.** After a new chat's first reply, the model that
+  wrote it names the chat in a few words ("Sourdough Starter Rescue"),
+  instead of the title being the first 50 characters of the message. It
+  happens in the same job on the already-loaded model, so it takes about a
+  second and is billed like the rest of the reply. If anything goes wrong,
+  the old title stays. New setting: `SMART_TITLES` (default on).
+- **The markdown and math libraries are bundled** (marked, DOMPurify,
+  highlight.js, KaTeX, under `llamacracy/static/assets/vendor/`) instead of
+  loaded from cdnjs: chats render with no internet, a slow CDN can't hold the
+  page blank, and the page only runs code from your own server.
+- **Date and time on every message**, yours and the model's: "Today,
+  3:42 PM", "Yesterday, 9:05 AM", "Mon, Oct 5, 3:42 PM". Hover for the full
+  timestamp.
+
+### Fixed
+
+From a review of the whole app before this release:
+
+- **Deleting a chat while its reply was being written stopped the queue
+  for everyone** until a restart. Deleting now stops that chat's jobs
+  first, and a job whose cleanup fails no longer takes the worker with it.
+- **Model output could load remote images and draw forms.** A hostile page
+  or document could get the model to write an image whose URL carried the
+  chat away, or a fake sign-in box. Rendered markdown now keeps no images,
+  forms, media or inline styles, and the page sends a Content-Security-Policy.
+- **A practice problem's answer reached the browser** in the live trail
+  while the tutor wrote it. The answer, solution, code and quote now stay
+  on the server until the student has tried.
+- **Multiple choice with numeric options** could grade a wrong option right
+  ("1" when the answer was the second option, "2").
+- **A fresh `.env` copied from `.env.example` stopped the app from
+  starting** (`IDLE_TTL_SECONDS=` was read as a number).
+- **oauth2-proxy is now v7.15.5** (was v7.6.0, affected by CVE-2025-54576),
+  checked against the release's checksum, and upgraded by `install.sh` when
+  the pinned version changes. The `/healthz` skip rule is anchored.
+- **Stop works at once**, including during a cold load, a long prompt or a
+  tool run, and a job stopped while its model loads is billed at the load
+  rate. An admin's Kill of a queued job now tells its window, and the
+  window recovers if a stream ends without saying how.
+- **One person can have at most 4 requests waiting or running**
+  (`MAX_JOBS_PER_USER`), so parallel requests can't run far past a credit
+  limit. Uncapped users skip it.
+- **The admin's Queue impact report** no longer freezes everyone's replies
+  while it runs, and is much faster on a long history.
+- **Photo turns can use tools again**: a picture's base64 was counted as
+  text, which made the turn look full before it started.
+- **Tools models aren't refused over documents** as a chat grows: the
+  biggest move to lookup instead.
+- `/v1`: `n_predict` can no longer lift the output cap, and images must be
+  sent as `data:` URLs (llama-server would otherwise fetch links itself).
+- Numbers: halves round up when grading (12.5 → 13); the "came from the
+  code" check reads 10²³ and SI-spaced thousands, and catches a sign the
+  code never printed. A cut-off document says so in its text.
+- The UI: New chat and opening another chat wait for the reply; the queue
+  connection reconnects after the app restarts; the admin Live tab follows
+  the queue; a waiting message's place in line updates; the phone layout of
+  message footers fits at 320px.
+- Smaller things: search results that aren't web links are dropped, IPv6
+  forms of private addresses are refused by the page fetcher, image uploads
+  stop reading at the size cap, `gen-hash.sh` asks for the password instead
+  of taking it on the command line, `install.sh` finishes a half-done setup
+  on its next run and keeps secrets files private (mode 600), and the
+  generator runs on Python older than 3.12.
+
+### Upgrading
+
+- Re-run `./deploy/install.sh` (it upgrades oauth2-proxy), then
+  `llamacracy restart`.
+- The database needs nothing: the new `app_settings` table and an index on
+  `jobs` are created on start. Titles of existing chats are left as they are.
 
 ## 0.3.0 (2026-10-04)
 

@@ -203,6 +203,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS ix_jobs_user_finished ON jobs(user_id, finished_at);
 CREATE INDEX IF NOT EXISTS ix_jobs_state ON jobs(state);
 CREATE INDEX IF NOT EXISTS ix_jobs_model_finished ON jobs(model_id, finished_at);
+-- queue impact (admin.py): which jobs waited while a given one ran
+CREATE INDEX IF NOT EXISTS ix_jobs_queued ON jobs(queued_at);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -230,6 +232,15 @@ CREATE TABLE IF NOT EXISTS model_load_stats (
     ewma_load_seconds   REAL NOT NULL,
     samples             INTEGER NOT NULL DEFAULT 0,
     updated_at          REAL NOT NULL
+);
+
+-- Instance-wide switches an admin sets from the dashboard, as key -> JSON
+-- value. `locked_model`: the model kept in VRAM instead of being unloaded
+-- when the queue goes idle (see QueueManager.set_locked).
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS schema_meta (

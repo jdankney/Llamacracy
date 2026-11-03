@@ -29,6 +29,7 @@ from . import documents, threads
 from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .identity import Principal, get_principal
+from .queue import QueueManager, get_queue
 from .registry import ModelInfo, Registry, get_registry
 from .tools import DocRef
 
@@ -322,13 +323,15 @@ async def update_course(course_id: str, body: CoursePatch,
 @router.delete("/{course_id}")
 async def delete_course(course_id: str,
                         principal: Principal = Depends(get_principal),
-                        db: Database = Depends(get_db)):
+                        db: Database = Depends(get_db),
+                        qm: QueueManager = Depends(get_queue)):
     """The course, its sessions and its materials, files included."""
     await owned(db, course_id, principal.user_id)
     sessions = await db.fetch_all(
         "SELECT id FROM conversations WHERE user_id = ? AND course_id = ?",
         (principal.user_id, course_id))
     for s in sessions:
+        await qm.drop_conversation(s["id"])
         await threads.delete(db, s["id"], principal.user_id)
     ids = await material_ids(db, course_id)
     await db.transaction([

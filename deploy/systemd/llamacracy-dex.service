@@ -9,10 +9,10 @@
 # `systemctl --user restart llamacracy-dex`, or just picked up on next boot.
 [Unit]
 Description=Llamacracy Dex (OIDC identity provider, Docker, on wt0)
-After=docker.service network-online.target
-Wants=docker.service network-online.target
 Before=llamacracy-auth.service
-# keep retrying (Restart= below) for as long as NetBird or Docker is down
+# No After=docker.service / network-online.target: those are system units,
+# which a user unit can't order against. It retries instead (Restart=
+# below) for as long as NetBird or Docker is down.
 StartLimitIntervalSec=0
 
 [Service]

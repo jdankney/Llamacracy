@@ -67,7 +67,7 @@ python3 bench/gen_llamaswap_config.py
 $EDITOR .env                        # ADMIN_EMAILS, electricity rate
 
 cd deploy/dex
-./gen-hash.sh 'your-password'       # one staticPasswords entry per person in config.yaml
+./gen-hash.sh                       # asks for the password; one staticPasswords entry per person in config.yaml
 cd ../..
 llamacracy restart
 llamacracy status
@@ -111,7 +111,7 @@ Users live in `deploy/dex/config.yaml` under `staticPasswords`. One block each:
   - email: friend@example.com
     username: friend
     userID: "u-friend"          # unique + stable: it becomes the OIDC sub
-    hash: "$2a$10$..."          # deploy/dex/gen-hash.sh 'their-password'
+    hash: "$2a$10$..."          # deploy/dex/gen-hash.sh (asks for it)
 ```
 
 Then `systemctl --user restart llamacracy-dex`. Llamacracy creates the
@@ -155,17 +155,20 @@ All live in `.env` (gitignored). Edit, then `systemctl --user restart llamacracy
 
 | Key | Meaning |
 |---|---|
-| `SESSION_CREDIT_LIMIT` | credits (= seconds of exclusive box time) per 5-hour session. Default 3600. |
+| `SESSION_CREDIT_LIMIT` | credits (= seconds of exclusive box time) per session. Default 3600. |
+| `SESSION_WINDOW_HOURS` | how long a session lasts from its first request (no extension on activity). Default 5. |
 | `WEEKLY_CREDIT_LIMIT` | rolling 7-day cap. Default 12000. |
 | `LOAD_TIME_MULTIPLIER` | fraction of a cold-start's seconds that are billed. Default 0.5. |
 | `MAX_TOKENS_PER_REQUEST` | hard output cap; bounds limit overshoot. Default 2048. |
+| `MAX_JOBS_PER_USER` | requests one person may have queued or running at once; usage only counts when a job ends, so this bounds how far parallel requests can overshoot a limit. Uncapped users skip it. Default 4 (0 = no cap). |
 | `THINKING_MAX_TOKENS` | output cap for a turn with Think on (reasoning and answer share it). Default 8192. |
 | `API_MAX_TOKENS_PER_REQUEST` | output cap on the `/v1` endpoint, where an editor's apply model may rewrite a whole file. Default 8192. |
 | `ELECTRICITY_RATE` / `TOU_SCHEDULE` | $/kWh. TOU_SCHEDULE (JSON hour→rate) wins if set. |
 | `NON_GPU_LOAD_WATTS` | added to measured GPU watts for the cost model. Default 110. |
 | `MARKUP` | multiplier on `cost_usd`. Default 1.0 -- raise to 2-3x for non-trivial invoices. |
 | `IDLE_TTL_MINUTES` | unload the resident model after this long idle. Default 15. |
-| `IDLE_TTL_SECONDS` | seconds-granularity idle unload; wins over `IDLE_TTL_MINUTES` when set. Short = frees VRAM fast but quick follow-ups re-pay the cold load. |
+| `IDLE_TTL_SECONDS` | seconds-granularity idle unload; wins over `IDLE_TTL_MINUTES` when set. Short = frees VRAM fast but quick follow-ups re-pay the cold load. A model locked from **Admin → Live → Model lock** is never unloaded for being idle; another model is unloaded after this long, and the locked one loaded back in its place. |
+| `SMART_TITLES` | after a new chat's first reply, the model names the chat in a few words, in the same job. Default on. Off: the first 50 characters of the message. |
 | `SEARXNG_URL` / `SEARCH_MAX_RESULTS` | local SearXNG instance + how many snippets get prepended when a user flips the search toggle on for a model without `tools`. Not metered. |
 | `AGENT_MAX_STEPS` / `AGENT_MAX_SECONDS` | bounds on an agent turn (a `tools: true` model with Search on): rounds of tool calls, and wall-clock seconds, before it must answer. Default 6 and 240. The turn holds the GPU slot throughout and is billed for it. |
 | `AGENT_SEARCH_RESULTS` / `AGENT_TOOL_RESULT_CHARS` | results per `web_search` call, and the cap on one tool result's text. Default 5 and 12,000. |

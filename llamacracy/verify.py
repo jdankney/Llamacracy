@@ -69,8 +69,23 @@ def _blank(m: re.Match) -> str:
     return " " * len(m.group(0))
 
 
+_SUP = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺", "0123456789-+")
+_SUP_RUN = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]+")
+# 11 264 with a thin or narrow no-break space between the groups (SI style)
+_SPACED = re.compile(r"(?<=\d)[\u2009\u202f\u00a0](?=\d{3}(?!\d))")
+
+
+def _normalize(text: str) -> str:
+    """Numbers written the typographic way, as the patterns read them:
+    10²³ as 10^23 (else 6.02 × 10²³ reads as 6.02 and 10), and SI thousands
+    groups joined (11 264 is one number, not 11 and 264)."""
+    text = _SUP_RUN.sub(lambda m: "^" + m.group(0).translate(_SUP), text)
+    return _SPACED.sub("", text)
+
+
 def _numbers(text: str) -> list[tuple[str, float, float, bool, int]]:
     """(as written, value, tolerance, small, position) for each number."""
+    text = _normalize(text)
     text = _FENCE.sub(_blank, text)
     text = _CITE.sub(_blank, text)
     text = _LIST_MARK.sub(_blank, text)
@@ -137,6 +152,10 @@ _SI = tuple(10.0 ** (3 * k) for k in (-4, -3, -2, -1, 1, 2, 3, 4))
 def _matches(value: float, tol: float, pool: list[float]) -> bool:
     a = abs(value)
     for o in pool:
+        # "fell by 4.2" from a printed -4.2 is fine; a "-4.2" the code never
+        # printed with that sign is a sign error, not a match
+        if value < 0 < o:
+            continue
         o = abs(o)
         # written rounded from o, or o itself; or as a percentage (or in cm)
         if abs(o - a) <= tol * 1.000001 or abs(o * 100 - a) <= tol * 1.000001:

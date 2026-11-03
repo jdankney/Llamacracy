@@ -115,6 +115,21 @@ class Database:
             cur = self._exec(sql, params)
             return int(cur.lastrowid or 0)
 
+    async def read_all(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
+        """A heavy read (the admin's reports) on its own read-only connection,
+        in a worker thread. WAL lets it read beside the main connection, and
+        the event loop keeps streaming tokens meanwhile: a slow report must
+        not freeze every reply, or be billed to whoever is generating."""
+        def run() -> list[sqlite3.Row]:
+            conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout = 5000")
+                return conn.execute(sql, tuple(params)).fetchall()
+            finally:
+                conn.close()
+        return await asyncio.to_thread(run)
+
     async def transaction(self, statements: list[tuple[str, Iterable[Any]]]) -> None:
         async with self._lock:
             try:

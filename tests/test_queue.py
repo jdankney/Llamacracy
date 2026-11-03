@@ -186,3 +186,185 @@ async def test_idle_ttl_unloads(tmp_db_path):
         assert up.unload_calls >= 1
     finally:
         await qm.stop()
+
+
+def _idle_cfg(seconds: float) -> Settings:
+    cfg = Settings()
+    object.__setattr__(cfg, "idle_ttl_seconds", seconds)
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_a_locked_model_is_kept_loaded_and_alive(tmp_db_path):
+    up = FakeUpstream()
+    qm = await _make_qm(tmp_db_path, up, _idle_cfg(0.0))
+    qm._idle_poll_s = 0.02
+    qm._keepalive_s = 0.05
+    try:
+        a = _job("small", user=1)
+        await qm.submit(a)
+        await _drain(a)
+        await qm.set_locked("small")
+        await asyncio.sleep(0.3)
+        assert up.unload_calls == 0             # the idle timer leaves it alone...
+        assert up.loaded == "small"
+        assert up.touches.count("small") >= 2   # ...and llama-swap's ttl is held off
+        assert qm.snapshot()["locked_model"] == "small"
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_locked_model_comes_back_after_another_models_idle_time(tmp_db_path):
+    up = FakeUpstream()
+    qm = await _make_qm(tmp_db_path, up, _idle_cfg(0.1))
+    qm._idle_poll_s = 0.02
+    try:
+        await qm.set_locked("small")
+        await asyncio.sleep(0.1)
+        assert up.loaded == "small"             # nothing was loaded: preloaded at once
+        b = _job("big", user=2)                  # someone else's model swaps it out
+        await qm.submit(b)
+        await _drain(b)
+        assert up.loaded == "big"
+        await asyncio.sleep(0.03)
+        assert up.loaded == "big"               # big gets its idle time first
+        await asyncio.sleep(0.25)
+        assert up.loaded == "small"
+        assert up.unload_calls == 0
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_lock_survives_a_restart_and_force_unload_releases_it(tmp_db_path):
+    up = FakeUpstream()
+    qm = await _make_qm(tmp_db_path, up)
+    await qm.set_locked("big")
+    await qm.stop()
+    qm = await _make_qm(tmp_db_path, up)
+    try:
+        assert qm.locked_model == "big"
+        assert await qm.force_unload() is True
+        assert qm.locked_model is None
+        qm2 = QueueManager(qm.db, up, _registry(), Settings())
+        await qm2.start()
+        assert qm2.locked_model is None          # released for good
+        await qm2.stop()
+        with pytest.raises(ValueError):
+            await qm.set_locked("nope")
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_preload_gives_way_to_a_job_that_arrives(tmp_db_path):
+    up = FakeUpstream()
+    hang = asyncio.Event()                      # a locked model that takes forever to load
+
+    async def slow_touch(model_id, timeout=600.0):
+        up.touches.append(model_id)
+        await hang.wait()
+        up.loaded = model_id
+        return True
+
+    up.touch = slow_touch
+    qm = await _make_qm(tmp_db_path, up, _idle_cfg(30.0))
+    qm._idle_poll_s = 0.01
+    try:
+        await qm.set_locked("small")
+        await asyncio.sleep(0.05)
+        assert up.touches == ["small"]           # preload under way, holding the slot
+        b = _job("big", user=2)
+        await qm.submit(b)
+        await asyncio.wait_for(_drain(b), 2)     # ...but the job doesn't wait for it
+        row = await qm.db.fetch_one("SELECT state FROM jobs WHERE id=?", (b.id,))
+        assert row["state"] == "done"
+        assert up.loaded == "big"
+    finally:
+        hang.set()
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_hung_preload_is_given_up(tmp_db_path):
+    up = FakeUpstream()
+    seen = []
+
+    async def hung_touch(model_id, timeout=600.0):
+        seen.append(timeout)
+        await asyncio.sleep(timeout)
+        return True
+
+    up.touch = hung_touch
+    qm = await _make_qm(tmp_db_path, up, _idle_cfg(0.0))
+    qm._idle_poll_s = 0.01
+    try:
+        await qm.set_locked("big")                # seed load ~25 s
+        await asyncio.sleep(0.05)
+        assert seen and seen[0] == pytest.approx(max(60.0, 3 * qm.load_estimate("big")))
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_dead_running_endpoint_doesnt_stop_the_poller(tmp_db_path):
+    up = FakeUpstream()
+    calls = []
+
+    async def garbled():
+        calls.append(1)
+        raise ValueError("not JSON")
+
+    qm = await _make_qm(tmp_db_path, up)
+    qm._running_poll_s = 0.01
+    up.loaded_model = garbled
+    try:
+        await asyncio.sleep(0.1)
+        assert len(calls) >= 3 and not qm._tasks[2].done()
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_preload_backs_off(tmp_db_path):
+    up = FakeUpstream()
+    up.touch_ok = False
+    qm = await _make_qm(tmp_db_path, up, _idle_cfg(0.0))
+    qm._idle_poll_s = 0.01
+    try:
+        await qm.set_locked("small")
+        await asyncio.sleep(0.15)
+        assert up.touches == ["small"]           # one try, then it waits
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_locking_loads_the_model_now_and_unlocking_changes_nothing(tmp_db_path):
+    up = FakeUpstream()
+    qm = await _make_qm(tmp_db_path, up, _idle_cfg(30.0))
+    qm._idle_poll_s = 0.02
+    try:
+        a = _job("big", user=1)
+        await qm.submit(a)
+        await _drain(a)
+        await qm.set_locked("small")             # big is resident and not idle long
+        await asyncio.sleep(0.1)
+        assert up.loaded == "small"               # loaded straight away anyway
+        await qm.set_locked("big")
+        await qm.set_locked(None)                 # changed their mind at once
+        await asyncio.sleep(0.1)
+        assert up.loaded == "small" and up.unload_calls == 0   # idle clock untouched
+    finally:
+        await qm.stop()
+
+
+def test_a_picture_counts_as_a_pictures_worth_of_prompt():
+    from llamacracy.queue import IMAGE_TOKENS, _estimate_prompt
+    photo = "data:image/jpeg;base64," + "A" * 3_000_000          # a ~2 MB phone photo
+    msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": photo}},
+                                         {"type": "text", "text": "what is this?"}]}]
+    est = _estimate_prompt(msgs)
+    assert IMAGE_TOKENS <= est < IMAGE_TOKENS + 100
+    assert _estimate_prompt([{"role": "user", "content": "x" * 3600}]) >= 1000

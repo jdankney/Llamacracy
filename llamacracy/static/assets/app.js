@@ -97,6 +97,7 @@ const ICONS = {
   file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8',
   download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
   folder: 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
+  lock: 'M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5z',
 };
 const icon = (name, cls = '') => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -199,6 +200,35 @@ function extractMath(src, streaming = false) {
 }
 
 if (window.marked) marked.setOptions({ gfm: true, breaks: true });
+// What a model writes (or a document or web page talks it into writing) is
+// rendered as markdown, so it may not load anything or draw anything that
+// isn't text: no remote images (an image URL can carry the chat out to
+// whoever wrote the page the model read), no forms or inputs (a fake sign-in
+// box on this origin), no media, frames or embeds, and no inline style
+// (nothing laid over the page). Pictures the app shows come from
+// /api/uploads and are built outside this path. KaTeX's output does need
+// inline style: it's spliced in after sanitising, into text only (spliceMath).
+const MD_FORBID_TAGS = ['img', 'image', 'picture', 'source', 'video', 'audio', 'track', 'iframe', 'frame',
+  'object', 'embed', 'form', 'input', 'button', 'textarea', 'select', 'option', 'style', 'link', 'meta', 'base', 'use'];
+const MD_PURIFY = { ADD_ATTR: ['target'], FORBID_TAGS: MD_FORBID_TAGS, FORBID_ATTR: ['style'] };
+// Rendered equations go where their placeholders are in the sanitised
+// HTML's text. A placeholder anywhere else (an attribute, say, if the model
+// put one in a link) is dropped: equation HTML spliced into an attribute
+// could close it and write markup of its own.
+const _KRE = new RegExp(_KA + '(\\d+)' + _KB);
+function spliceMath(html, spans) {
+  const t = document.createElement('template');
+  t.innerHTML = html;
+  const walk = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT);
+  const hits = [];
+  for (let n; (n = walk.nextNode());) if (_KRE.test(n.data)) hits.push(n);
+  for (const n of hits) {
+    const f = document.createElement('template');
+    f.innerHTML = n.data.split(new RegExp(_KA + '(\\d+)' + _KB)).map((part, i) => i % 2 ? (spans[+part] ?? '') : esc(part)).join('');
+    n.replaceWith(f.content);
+  }
+  return t.innerHTML.replace(new RegExp('[' + _KA + _KB + ']', 'g'), '');
+}
 // Markdown (+ math) -> sanitised HTML. marked + DOMPurify + KaTeX come from the
 // CDN; if they didn't load we fall back to escaped text with fenced code
 // blocks so a message is never unreadable.
@@ -212,9 +242,8 @@ function renderMD(src, math = true, streaming = false) {
       .split(/\n{2,}/).map(p => p.startsWith('<pre>') ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
   }
   const { src: pre, spans } = math ? extractMath(src, streaming) : { src, spans: [] };
-  let html = marked.parse(pre);
-  if (spans.length) html = html.replace(new RegExp(_KA + '(\\d+)' + _KB, 'g'), (_, i) => spans[+i] ?? '');
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
+  const html = DOMPurify.sanitize(marked.parse(pre), MD_PURIFY);
+  return spans.length ? spliceMath(html, spans) : html;
 }
 // render markdown into a live element. Math renders as it streams (see
 // extractMath); syntax highlighting waits until the text has stopped.
@@ -242,6 +271,27 @@ function paintStreaming(id, text, paint = null) {
 const mdBlock = (src, attrs = {}, finalize = true) => { const el = h('div', { class: 'prose-chat', ...attrs }); mdInto(el, src, finalize); return el; };
 const fmtDur = s => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 const untilStr = ts => { const d = ts * 1000 - Date.now(); return d <= 0 ? 'now' : fmtDur(d / 1000); };
+// A message's date and time: "Today, 3:42 PM", "Yesterday, 9:05 AM",
+// "Mon, Oct 5, 3:42 PM" (with the year once it isn't this one). The full
+// date and time, seconds included, is in the tooltip.
+function stampStr(ts) {
+  const d = new Date(ts * 1000), n = new Date();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const midnight = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((midnight(n) - midnight(d)) / 86400000);
+  if (days === 0 || days === 1) {
+    // "Today" / "Yesterday" in the browser's language, like the rest of the stamp
+    const word = new Intl.RelativeTimeFormat([], { numeric: 'auto' }).format(-days, 'day');
+    return `${word[0].toLocaleUpperCase() + word.slice(1)}, ${time}`;
+  }
+  const date = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric',
+    ...(d.getFullYear() !== n.getFullYear() ? { year: 'numeric' } : {}) });
+  return `${date}, ${time}`;
+}
+const stamp = ts => ts ? h('time', {
+  class: 'stamp', datetime: new Date(ts * 1000).toISOString(),
+  title: new Date(ts * 1000).toLocaleString([], { dateStyle: 'full', timeStyle: 'medium' }),
+}, stampStr(ts)) : null;
 const agoStr = ts => { const d = (Date.now() - ts * 1000) / 1000; return d < 60 ? 'just now' : fmtDur(d) + ' ago'; };
 const credits = n => n < 10 ? n.toFixed(1) : Math.round(n).toLocaleString();
 const money = n => n >= 0.01 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) : '$0';
@@ -368,16 +418,35 @@ const S = {
 };
 
 /* ------------------------------------------------------------- SSE: queue */
+let queueRetry = 1000;
+let adminLiveAt = 0;
 function connectQueue() {
   const es = new EventSource('/api/queue/events');
+  es.onopen = () => { queueRetry = 1000; };
   es.onmessage = ev => {
     const d = JSON.parse(ev.data);
     if (d.type !== 'queue') return;
-    S.queue = d; S.loadedModel = d.loaded_model;
+    S.queue = d; S.loadedModel = d.loaded_model; S.lockedModel = d.locked_model || null;
     S.models.forEach(m => m.resident = m.id === d.loaded_model);
+    // the waiting bubble's place in line moves up as jobs ahead of it finish
+    const mine = S.active?.jobId && d.jobs?.find(j => j.id === S.active.jobId);
+    if (mine && S.active.state === 'queued' && mine.position !== S.active.position) {
+      S.active.position = mine.position; render();
+    }
+    // the admin's Live tab follows the queue (loaded model, lock, jobs), at most once a second
+    if (S.view === 'admin' && S.admin.tab === 'live' && Date.now() - adminLiveAt > 1000) {
+      adminLiveAt = Date.now(); loadAdmin();
+    }
     renderTopbar(); renderQueuePanel(); renderHint();
   };
-  es.onerror = () => { /* browser auto-reconnects */ };
+  es.onerror = () => {
+    // A dropped connection retries by itself, but an error *response* (a 502
+    // from oauth2-proxy while the app restarts) closes it for good: reconnect.
+    if (es.readyState === EventSource.CLOSED) {
+      setTimeout(connectQueue, queueRetry);
+      queueRetry = Math.min(queueRetry * 2, 30000);
+    }
+  };
 }
 
 /* --------------------------------------------------------------- rendering */
@@ -489,8 +558,10 @@ function renderTopbar() {
 function loadedBadge() {
   const busy = S.queue.jobs?.some(j => j.position === 0);
   if (!S.loadedModel) return h('span', { class: 'badge', title: 'No model resident in VRAM' }, h('i', { class: 'dot' }), 'idle');
-  return h('span', { class: 'badge is-on' + (busy ? ' is-busy' : ''), title: busy ? 'Generating' : 'Resident in VRAM' },
-    h('i', { class: 'dot' }), modelName(S.loadedModel));
+  const kept = S.loadedModel === S.lockedModel;
+  return h('span', { class: 'badge is-on' + (busy ? ' is-busy' : ''),
+    title: busy ? 'Generating' : kept ? 'Kept loaded: an admin has locked it in VRAM' : 'Resident in VRAM' },
+    h('i', { class: 'dot' }), modelName(S.loadedModel), kept ? icon('lock', 'icon-sm') : null);
 }
 function gaugeTone(g) {
   return g.uncapped ? 'uncapped' : g.pct >= 90 ? 'danger' : g.pct >= 75 ? 'warn' : '';
@@ -973,6 +1044,7 @@ function msgBubble(m) {
         mdBlock(m.content)),
       searchChip(m.search),
       h('div', { class: 'msg-foot' },
+        stamp(m.created_at),
         branchNav(m),
         m.id != null && !S.active ? h('button', {
           type: 'button', class: 'btn btn-ghost btn-sm', title: 'Edit and resend (keeps the original)',
@@ -984,8 +1056,7 @@ function msgBubble(m) {
     h('div', { class: 'head' },
       h('img', { src: '/assets/llamacracy-favicon.svg', alt: '' }),
       h('span', { class: 'name' }, modelName(m.model_id) || 'Assistant'),
-      m.created_at ? h('span', { title: new Date(m.created_at * 1000).toLocaleString() },
-        new Date(m.created_at * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : null),
+      stamp(m.created_at)),
     m.reasoning ? thoughtBlock(m.reasoning, {
       seconds: m.thinking_seconds, open: !!m._thoughtOpen, onToggle: o => { m._thoughtOpen = o; },
     }) : null,
@@ -1184,7 +1255,8 @@ const fmtMs = ms => ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)}s`;
 // "[3]" in an answer becomes a link to source 3. Plain HTML, not markdown
 // link syntax: escaped brackets (\\[3\\]) would be read as display math.
 function citeLinks(src, sources) {
-  if (!sources?.length || !src) return src;
+  // the fallback renderer (no marked/DOMPurify) escapes everything: "[1]" reads fine as it is
+  if (!sources?.length || !src || !window.marked || !window.DOMPurify) return src;
   const by = Object.fromEntries(sources.map(x => [x.n, x]));
   // leave code alone: `a[1]` is an index, not a citation
   const parts = src.split(/(```[\s\S]*?```|`[^`\n]+`)/g);
@@ -2387,6 +2459,7 @@ async function loadUsage() {
 }
 
 function newChat() {
+  if (S.active) { flashInfo('One moment: the reply is still coming.'); return; }
   if (S.view !== 'chat') setView('chat');
   S.conv = null; S.messages = []; S.editing = null; S.view = 'chat'; S.sidebarOpen = false; S.ctxOpen = false; S.stick = true;
   render(); focusComposer();
@@ -2428,6 +2501,7 @@ async function switchBranch(msgId) {
   if (t2 && top != null) t2.scrollTop = top;       // stay where the arrows were
 }
 async function openConv(id) {
+  if (S.active) { flashInfo('One moment: the reply is still coming.'); return; }
   let d;
   try { d = await api.get('/api/conversations/' + id); } catch (e) { flashError(e.message); return; }
   const cid = d.conversation.course_id;
@@ -2489,7 +2563,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
     const i = S.messages.findIndex(x => x.id === editOf);
     const orig = S.messages[i];
     S.messages = S.messages.slice(0, i);
-    S.messages.push({ role: 'user', content: text, image: orig?.image, documents: orig?.documents });
+    S.messages.push({ role: 'user', content: text, image: orig?.image, documents: orig?.documents, created_at: Date.now() / 1000 });
     // a fork from above the compaction line has no summary: all of it is sent
     if (S.conv?.compact_boundary_id && editOf <= S.conv.compact_boundary_id) {
       S.conv.compact_boundary_id = null; S.conv.context_summary = null;
@@ -2498,7 +2572,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
     S.draft = '';
     img = S.pendingImage; S.pendingImage = null;
     docs = S.pendingDocs; S.pendingDocs = [];
-    S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined, documents: docs });
+    S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined, documents: docs, created_at: Date.now() / 1000 });
   }
   S.active = { state: 'queued', position: '?', model: S.pickerModel, text: '' };
   S.stick = true;
@@ -2516,9 +2590,10 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
   if (course) body.course_id = course.id;
   if (S.view === 'study' && S.course) body.mode = S.studyMode;
   if (editing) body.edit_of = editOf;
-  let accepted = false;
+  let accepted = false, ended = false;
   try {
     for await (const ev of api.chatStream(body, aborter.signal)) {
+      if (ev.type === 'done' || ev.type === 'error' || ev.type === 'cancelled') ended = true;
       if (ev.type === 'accepted') {
         accepted = true;
         S.active.jobId = ev.job_id; S.active.position = ev.position;
@@ -2588,6 +2663,12 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
         render(); scrollThread();
       }
       else if (ev.type === 'thought') { S.active.thoughtSeconds = ev.seconds; render(); }
+      else if (ev.type === 'title') {
+        // the model has named the new chat: the sidebar (and study bar) pick it up
+        for (const c of [S.conv, ...S.conversations, ...(S.course?.sessions || [])])
+          if (c?.id === ev.conversation_id) c.title = ev.title;
+        render();
+      }
       else if (ev.type === 'done') {
         S.messages.push({
           // ev.model is the model actually dispatched (may be a model's
@@ -2616,9 +2697,15 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
         await refreshConv();
         S.editing = { id: editOf, text };
       }
-      if (e2.status === 429) limitModal(e2.detail);
+      if (e2.status === 429 && typeof e2.detail === 'object') limitModal(e2.detail);
       else flashError(e2.message);
     }
+  }
+  if (accepted && !ended && S.active) {
+    // the stream closed without saying how it ended (the job was killed, the
+    // server restarted): don't leave the bubble pulsing and the box locked
+    S.active = null;
+    flashInfo('The reply was interrupted.');
   }
   S.active = S.active || null; render();
   refreshConv();
@@ -2682,7 +2769,8 @@ function adminLive(d) {
   const g = d.gpu;
   return h('div', { class: 'stack' },
     h('div', { class: 'grid grid-4' },
-      card('Loaded model', h('div', { class: 'big' }, d.loaded_model ? modelName(d.loaded_model) : h('span', { class: 'muted' }, 'idle'))),
+      card('Loaded model', h('div', { class: 'big' }, d.loaded_model ? modelName(d.loaded_model) : h('span', { class: 'muted' }, 'idle')),
+        d.locked_model ? h('div', { class: 'muted small' }, icon('lock', 'icon-sm'), ' Locked: ', modelName(d.locked_model)) : null),
       card('VRAM', g.available ? h('div', { class: 'big' }, `${(g.vram_used_mib / 1024).toFixed(1)} / ${(g.vram_total_mib / 1024).toFixed(1)} GB`) : h('span', { class: 'muted' }, 'n/a')),
       card('GPU temp · power', g.available ? h('div', { class: 'big' }, `${g.temp_c}°C · ${g.power_w}W`) : h('span', { class: 'muted' }, 'n/a')),
       card('GPU util', g.available ? h('div', { class: 'big' }, `${g.util_pct}%`) : h('span', { class: 'muted' }, 'n/a'))),
@@ -2696,10 +2784,36 @@ function adminLive(d) {
        { label: 'Started', get: r => new Date(r.started_at * 1000).toLocaleTimeString() },
        { label: 'Expires', get: r => 'in ' + untilStr(r.expires_at) }],
       d.active_sessions) : h('div', { class: 'empty-note' }, 'None')),
+    modelLockCard(d),
     h('div', {}, h('button', { class: 'btn btn-warn', onclick: async () => {
-      if (await confirmModal('Force-unload the current model?', 'Frees VRAM now. The next request pays a cold start.', 'Unload'))
+      if (await confirmModal('Force-unload the current model?',
+        'Frees VRAM now. The next request pays a cold start.' + (d.locked_model ? ' This also releases the model lock.' : ''), 'Unload'))
         adminPost('/api/admin/unload');
     } }, 'Force-unload current model')));
+}
+// Keep one model in VRAM: the idle timer stops unloading it, and after
+// someone else's model has had its idle time, it's loaded back.
+function modelLockCard(d) {
+  if (d.locked_model) {
+    const name = modelName(d.locked_model);
+    return card('Model lock',
+      h('p', { class: 'muted small' }, d.loaded_model === d.locked_model
+        ? `${name} is loaded and stays in VRAM: the idle timer won't unload it. ` +
+          'Other models still swap it out when someone uses them; it comes back once the queue has been idle for the idle timeout.'
+        : `${name} is locked and loads as soon as the queue is empty` +
+          (d.loaded_model ? ` and ${modelName(d.loaded_model)} has had its idle time.` : '.')),
+      h('button', { class: 'btn', onclick: () => adminPost('/api/admin/lock', { model: null }) }, 'Unlock'));
+  }
+  const pick = d.lockable.some(m => m.id === d.loaded_model) ? d.loaded_model : d.lockable[0]?.id;
+  if (!pick) return null;
+  return card('Model lock',
+    h('p', { class: 'muted small' }, 'Keep one model in VRAM instead of unloading it when the queue goes idle. ' +
+      'If it isn\'t loaded, it loads as soon as the queue is empty.'),
+    h('div', { class: 'row' },
+      h('span', { class: 'select-wrap' }, h('select', { class: 'select', id: 'lock-model', 'aria-label': 'Model to lock' },
+        d.lockable.map(m => h('option', { value: m.id, selected: m.id === pick }, m.display))), icon('chevron', 'icon-sm')),
+      h('button', { class: 'btn', onclick: () => adminPost('/api/admin/lock', { model: document.getElementById('lock-model').value }) },
+        icon('lock', 'icon-sm'), 'Lock in VRAM')));
 }
 
 function adminUsers(rows, controls) {

@@ -41,6 +41,8 @@ loading models. No cloud APIs, no Docker for the app itself.
 - Attach documents (PDF, Word, LibreOffice, Excel, PowerPoint, text, CSV,
   code) on any model, and photos on models with vision.
 - Fold a long conversation's older part into a summary on request.
+- Chats name themselves after the first reply, and every message shows its
+  date and time.
 
 **Tools**, for models marked `"tools": true`
 
@@ -69,7 +71,8 @@ loading models. No cloud APIs, no Docker for the app itself.
 **Sharing one GPU**
 
 - A strict FIFO queue, one inference at a time, visible to everyone.
-  Cancelling really aborts, and an idle timeout frees VRAM.
+  Cancelling really aborts, and an idle timeout frees VRAM, unless an admin
+  has locked a model in.
 - `1 credit = 1 second of GPU time`, measured, never estimated. Rolling
   5-hour and 7-day limits, with per-user overrides.
 - The cost model uses measured GPU watts and your electricity tariff,
@@ -183,7 +186,7 @@ netbird up                                     # join your NetBird network
 ./deploy/install.sh                            # local files, secrets, sandbox, systemd units
 $EDITOR bench/inventory.json && python3 bench/gen_llamaswap_config.py
 $EDITOR .env                                   # ADMIN_EMAILS, electricity rate
-cd deploy/dex && ./gen-hash.sh 'a-password'    # one staticPasswords entry per user in config.yaml
+cd deploy/dex && ./gen-hash.sh                # asks for a password; one staticPasswords entry per user in config.yaml
 cd ../.. && llamacracy restart && llamacracy status
 ```
 

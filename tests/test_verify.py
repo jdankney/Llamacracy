@@ -76,3 +76,12 @@ def test_reciprocals_in_exact_working():
 def test_section_ranges_are_labels():
     # from a live run: "Sections 15.1–15.3" isn't two results
     assert check("Based on Stewart Chapter 15 (Sections 15.1–15.3), Week 6; pages 4-7.", ["60"], []) is None
+
+
+def test_typographic_numbers_and_signs():
+    from llamacracy.verify import check
+    out = ["6.02e+23\n1.6e-19\n11264\n4.2"]
+    ok = check("N = 6.02 × 10²³, e = 1.6 × 10⁻¹⁹ C, total 11 264 and ΔT fell by 4.2", out, [])
+    assert ok and not ok["unmatched"], ok
+    bad = check("The answer is -4.2.", ["4.2"], [])
+    assert bad and bad["unmatched"], bad

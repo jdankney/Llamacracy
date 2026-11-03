@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from .db import Database, get_db, now
 from .identity import Principal, require_admin
 from .metering import Meter
-from .queue import JobState, QueueManager, get_queue
+from .queue import QueueManager, get_queue
 from .registry import Registry, get_registry
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
@@ -44,6 +44,9 @@ async def live(qm: QueueManager = Depends(get_queue),
     return {
         "queue": qm.snapshot(),
         "loaded_model": qm._loaded_model,
+        "locked_model": qm.locked_model,
+        "lockable": [{"id": m.key, "display": m.display}
+                     for m in reg.all() if qm.lockable(m.key)],
         "load_estimates": {m.key: qm.load_estimate(m.key) for m in reg.all()},
         "gpu": gpu,
         "active_sessions": [dict(r) for r in active_sessions],
@@ -146,17 +149,26 @@ async def usage(days: int = 30, db: Database = Depends(get_db)):
 # Queue impact -- seconds of wait each user inflicted on OTHER users.
 # Under strict FIFO this is the real fairness metric.
 # --------------------------------------------------------------------------- #
+MAX_WAIT_S = 6 * 3600     # the longest wait queue impact looks back over
+
+
 @router.get("/queue-impact")
 async def queue_impact(days: int = 30, db: Database = Depends(get_db)):
     since = now() - days * 86400
-    rows = await db.fetch_all(
+    # k waited while j ran: queued before j finished, picked after j started.
+    # Bounding k's queue time to within MAX_WAIT of j's start keeps this a
+    # range scan on ix_jobs_queued instead of every pair of jobs in the window
+    # (20k jobs took ~a minute). No real job waits that long; if one did, only
+    # the part of its wait inside the bound is lost from the report.
+    rows = await db.read_all(
         """
         SELECT j.user_id, u.email, u.display_name,
                SUM(MAX(0, MIN(j.finished_at, k.picked_at) - MAX(j.picked_at, k.queued_at))) AS wait_inflicted,
                COUNT(DISTINCT k.id) AS jobs_delayed
         FROM jobs j
-        JOIN jobs k ON k.user_id != j.user_id
-          AND k.queued_at < j.finished_at
+        JOIN jobs k ON k.queued_at < j.finished_at
+          AND k.queued_at >= j.picked_at - ?
+          AND k.user_id != j.user_id
           AND k.picked_at  > j.picked_at
         JOIN users u ON u.id = j.user_id
         WHERE j.picked_at IS NOT NULL AND j.finished_at IS NOT NULL
@@ -164,7 +176,7 @@ async def queue_impact(days: int = 30, db: Database = Depends(get_db)):
         GROUP BY j.user_id
         ORDER BY wait_inflicted DESC
         """,
-        (since,),
+        (MAX_WAIT_S, since),
     )
     return {"impact": [
         {"email": r["email"], "display_name": r["display_name"],
@@ -335,11 +347,23 @@ async def set_uncapped(user_id: int, body: UncappedFlag, db: Database = Depends(
 
 @router.post("/unload")
 async def force_unload(qm: QueueManager = Depends(get_queue)):
-    ok = await qm.up.unload_all()
-    if ok:
-        qm._loaded_model = None
-        await qm._broadcast()
-    return {"ok": ok}
+    """Frees VRAM now, and releases the model lock if there is one."""
+    return {"ok": await qm.force_unload()}
+
+
+class ModelLock(BaseModel):
+    model: str | None = None      # None releases the lock
+
+
+@router.post("/lock")
+async def set_model_lock(body: ModelLock, qm: QueueManager = Depends(get_queue)):
+    """Keep one model in VRAM: the idle timer stops unloading it (and puts it
+    back after another model's idle time), until it's unlocked or force-unloaded."""
+    try:
+        await qm.set_locked(body.model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"locked_model": qm.locked_model}
 
 
 @router.post("/jobs/{job_id}/kill")
@@ -349,11 +373,6 @@ async def kill_job(job_id: str, qm: QueueManager = Depends(get_queue)):
         raise HTTPException(404, "job not active")
     if job is qm._active:
         job._cancel.set()
-    elif job in qm._pending:
-        qm._pending.remove(job)
-        job.state = JobState.CANCELLED
-        job.finished_at = now()
-        await job._chunks.put(None)
-        await qm._persist_job(job)
-        await qm._broadcast()
+    else:
+        await qm.drop_queued(job)
     return {"ok": True}

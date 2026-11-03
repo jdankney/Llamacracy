@@ -73,6 +73,22 @@ class Upstream:
             log.warning("unload_all failed: %s", e)
             return False
 
+    async def touch(self, model_id: str, timeout: float = 600.0) -> bool:
+        """GET llama-server's /health through llama-swap's /upstream/<model>/.
+
+        Does no inference, but it is a request to that model's process, so
+        llama-swap resets its `ttl` clock (the backstop that would otherwise
+        unload a locked model). If the model isn't resident, llama-swap loads
+        it first: this is also how a locked model is preloaded, so the
+        caller sets a timeout that fits: seconds for a keepalive, a cold
+        start's worth for a preload."""
+        try:
+            r = await self._client.get(f"/upstream/{model_id}/health", timeout=timeout)
+            return r.status_code == 200
+        except httpx.HTTPError as e:
+            log.warning("touch(%s) failed: %s", model_id, e)
+            return False
+
     async def list_models(self) -> list[str]:
         r = await self._client.get("/v1/models", timeout=5.0)
         r.raise_for_status()

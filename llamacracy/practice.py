@@ -36,6 +36,7 @@ import operator
 import re
 import uuid
 from collections.abc import Awaitable, Callable
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -118,7 +119,13 @@ def _sig_figs(text: str) -> int | None:
 
 
 def _round_sig(x: float, n: int) -> float:
-    return 0.0 if x == 0 else round(x, n - 1 - math.floor(math.log10(abs(x))))
+    """x to n significant figures, halves rounded up (away from zero) as
+    people are taught: 12.5 -> 13, 2.675 -> 2.68. Python's round() rounds a
+    binary float's halves to even, which marked "13" wrong for 12.5."""
+    if x == 0:
+        return 0.0
+    exp = math.floor(math.log10(abs(x))) - (n - 1)
+    return float(Decimal(repr(x)).quantize(Decimal(1).scaleb(exp), rounding=ROUND_HALF_UP))
 
 
 def number_matches(answer: str, key: float, unit: str | None = None) -> bool | None:
@@ -270,6 +277,8 @@ def add_problem_tool(*, save: Callable[[dict], Awaitable[str]], compute: bool, q
         }, "required": ["question", "kind", "answer"]},
         run,
         lambda a: "Writing problem" + (f": {a['topic']}" if a.get("topic") else ""),
+        # the key stays server-side until they've tried (see _public)
+        private=frozenset({"answer", "solution", "code", "quote"}),
     )
 
 
@@ -344,8 +353,9 @@ async def answer(pid: str, body: AnswerIn, principal: Principal = Depends(get_pr
         if ok is None:
             raise HTTPException(400, "that isn't a number: type a value like 3.2, 16/5 or 3*pi/4")
     elif row["kind"] == "choice":
-        choices = json.loads(row["choices_json"])
-        ok = given == row["answer"] or given == str(choices.index(row["answer"]))
+        # the option's text, as the UI sends it. (An index used to count too,
+        # which graded "1" right when the right option was the second, "2".)
+        ok = given == row["answer"]
     else:
         # a written answer: shown the model answer, they mark it themselves
         return {**_public(row, await _attempts(db, pid)), "mark_yourself": True,

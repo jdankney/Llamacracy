@@ -14,7 +14,8 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
 BIN="$HOME/.local/bin"
-OAUTH2_PROXY_VERSION="v7.6.0"
+# 7.11.0+ fixes CVE-2025-54576 (skip_auth_routes matched against the query string)
+OAUTH2_PROXY_VERSION="v7.15.5"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!! \033[0m %s\n' "$*"; }
@@ -47,19 +48,26 @@ say "syncing python env"
 "$REPO/deploy/setup-sandbox.sh"     # the separate Python that run_python uses
 
 # --- 3. oauth2-proxy binary --------------------------------------------------
-if [ ! -x "$BIN/oauth2-proxy" ]; then
+# (re)installed whenever the binary there isn't this version, so bumping the
+# pin above upgrades an existing install on the next run
+if ! "$BIN/oauth2-proxy" --version 2>/dev/null | grep -qF "$OAUTH2_PROXY_VERSION "; then
   say "installing oauth2-proxy $OAUTH2_PROXY_VERSION"
   mkdir -p "$BIN"
   tmp="$(mktemp -d)"
-  curl -sSL -o "$tmp/o.tar.gz" \
-    "https://github.com/oauth2-proxy/oauth2-proxy/releases/download/${OAUTH2_PROXY_VERSION}/oauth2-proxy-${OAUTH2_PROXY_VERSION}.linux-amd64.tar.gz"
-  tar -xzf "$tmp/o.tar.gz" -C "$tmp" --strip-components=1
-  install -m755 "$tmp/oauth2-proxy" "$BIN/oauth2-proxy"
+  name="oauth2-proxy-${OAUTH2_PROXY_VERSION}.linux-amd64"
+  url="https://github.com/oauth2-proxy/oauth2-proxy/releases/download/${OAUTH2_PROXY_VERSION}"
+  curl -fsSL -o "$tmp/o.tar.gz" "$url/$name.tar.gz"
+  curl -fsSL -o "$tmp/sha256sum.txt" "$url/$name-sha256sum.txt"
+  tar -xzf "$tmp/o.tar.gz" -C "$tmp"
+  # the release's own checksum of the binary inside the archive
+  ( cd "$tmp" && sha256sum -c --quiet sha256sum.txt )
+  install -m755 "$tmp/$name/oauth2-proxy" "$BIN/oauth2-proxy"
   rm -rf "$tmp"
 fi
 
 # --- 4. local config files (all gitignored) ----------------------------------
 [ -f "$REPO/.env" ] || { cp "$REPO/.env.example" "$REPO/.env"; warn "created .env from example -- set ADMIN_EMAILS and your electricity rates"; }
+chmod 600 "$REPO/.env"
 
 [ -f "$REPO/bench/inventory.json" ] || {
   cp "$REPO/bench/inventory.example.json" "$REPO/bench/inventory.json"
@@ -68,11 +76,18 @@ fi
 
 [ -f "$REPO/deploy/oauth2-proxy.env" ] || {
   cp "$REPO/deploy/oauth2-proxy.env.example" "$REPO/deploy/oauth2-proxy.env"
-  fill_fqdn "$REPO/deploy/oauth2-proxy.env"
+  warn "created deploy/oauth2-proxy.env"
+}
+chmod 600 "$REPO/deploy/oauth2-proxy.env"      # cookie + client secrets
+# every run, not just the first: a run that couldn't find the FQDN, or had no
+# openssl, is finished by the next one instead of leaving placeholders behind
+fill_fqdn "$REPO/deploy/oauth2-proxy.env"
+if ! grep -q '^OAUTH2_PROXY_COOKIE_SECRET=.\+' "$REPO/deploy/oauth2-proxy.env"; then
   secret="$(openssl rand -base64 32 | tr -- '+/' '-_' | tr -d '=')"
   sed -i "s#^OAUTH2_PROXY_COOKIE_SECRET=.*#OAUTH2_PROXY_COOKIE_SECRET=${secret}#" "$REPO/deploy/oauth2-proxy.env"
-  warn "created deploy/oauth2-proxy.env with a fresh cookie secret"
-}
+  warn "generated a fresh cookie secret in deploy/oauth2-proxy.env"
+fi
+[ -f "$REPO/deploy/dex/config.yaml" ] && fill_fqdn "$REPO/deploy/dex/config.yaml"
 if [ ! -f "$REPO/deploy/dex/config.yaml" ]; then
   cp "$REPO/deploy/dex/config.yaml.example" "$REPO/deploy/dex/config.yaml"
   fill_fqdn "$REPO/deploy/dex/config.yaml"
@@ -80,7 +95,7 @@ if [ ! -f "$REPO/deploy/dex/config.yaml" ]; then
   sed -i "s#^\( *secret:\).*#\1 ${cs}#" "$REPO/deploy/dex/config.yaml"
   sed -i "s#^\(OAUTH2_PROXY_CLIENT_SECRET=\).*#\1${cs}#" "$REPO/deploy/oauth2-proxy.env"
   warn "created deploy/dex/config.yaml with a fresh client secret (matched into oauth2-proxy.env)"
-  warn "  -> add a staticPasswords entry per user (deploy/dex/gen-hash.sh 'password'), then:"
+  warn "  -> add a staticPasswords entry per user (deploy/dex/gen-hash.sh asks for each password), then:"
   warn "     systemctl --user restart llamacracy-dex"
 fi
 

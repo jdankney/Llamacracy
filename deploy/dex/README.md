@@ -20,7 +20,7 @@ mirrors it into `../oauth2-proxy.env`. What is left for you is the users:
 
 ```bash
 cd deploy/dex
-./gen-hash.sh 'alice-password'             # paste into a staticPasswords `hash:`
+./gen-hash.sh                              # type Alice's password; paste the hash into a staticPasswords `hash:`
 $EDITOR config.yaml                        # one entry per person
 systemctl --user restart llamacracy-dex
 curl -sf http://<your-fqdn>:5556/.well-known/openid-configuration | head -c 80

@@ -142,3 +142,40 @@ def test_exact_expressions_sympy_prints_are_read():
     vals = printed_values(out)
     for want in (0.5 - math.cos(1) / 2, math.pi - 2, 4 * math.sqrt(2) / 3):
         assert any(math.isclose(v, want) for v in vals), want
+
+
+def test_the_key_never_reaches_the_browser_before_they_try(compute_client):
+    import json
+    c, up = compute_client, compute_client.fake_upstream
+    course = _course(c, quantitative=True)
+    up.agent_steps = [
+        {"tool_calls": [("add_problem", {"question": "Q?", "kind": "number", "topic": "Fractions",
+                                         "answer": "8/3", "code": "print(8/3)",
+                                         "solution": "SECRET-SOLUTION", "quote": "SECRET-QUOTE"})]},
+        {"content": ["Here is a problem."]},
+    ]
+    ev = _chat(c, model="small", message="practice", course_id=course["id"], mode="practice")
+    shown = json.dumps([e for e in ev if e["type"] in ("tool_draft", "tool_start", "tool_end")])
+    conv = ev[0]["conversation_id"]
+    stored = json.dumps(c.get(f"/api/conversations/{conv}").json())
+    for secret in ("8/3", "print(8/3)", "SECRET-SOLUTION", "SECRET-QUOTE"):
+        assert secret not in shown and secret not in stored, secret
+    assert "Fractions" in shown                     # what's safe to show still is
+
+
+def test_a_choice_is_graded_by_its_text_not_its_position(agent_client):
+    c, up = agent_client, agent_client.fake_upstream
+    course = _course(c, name="Arithmetic")
+    up.agent_steps = [{"tool_calls": [("add_problem", {
+        "question": "1 + 1?", "kind": "choice", "answer": "2", "choices": ["1", "2", "3", "4"]})]},
+        {"content": ["One."]}]
+    ev = _chat(c, model="small", message="practice", course_id=course["id"], mode="practice")
+    pid = ev[-1]["tools"]["practice"][0]
+    assert c.post(f"/api/practice/{pid}/answer", json={"answer": "1"}).json()["status"] == "wrong"
+    assert c.post(f"/api/practice/{pid}/answer", json={"answer": "2"}).json()["status"] == "right"
+
+
+def test_halves_round_up_as_people_are_taught():
+    assert number_matches("13", 12.5) and not number_matches("12", 12.5)
+    assert number_matches("0.13", 0.125) and number_matches("2.68", 2.675)
+    assert number_matches("-13", -12.5) and number_matches("1.0e3", 1000.4)

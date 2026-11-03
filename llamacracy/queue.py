@@ -50,6 +50,13 @@ FINAL_NUDGE = ("(No more tool calls this turn. Write your final answer now from 
                "above; if they weren't enough, say what you found and what's still missing.)")
 CUT_NUDGE = ("(Your last tool call was cut off: the reply ran out of room before you finished "
              "writing it, so it didn't run. Don't say it ran or describe its output.)")
+# naming a new chat (QueueManager._name_chat)
+TITLE_ASK = ("Give this conversation a short title for a chat history list: 3 to 6 words, in "
+             "the conversation's language. Reply with the title only: no quotes, no full stop, "
+             "no explanation.")
+TITLE_MAX_TOKENS = 32
+TITLE_TIMEOUT_S = 20.0
+TITLE_MAX_CHARS = 60
 
 
 class JobState(enum.StrEnum):
@@ -81,6 +88,9 @@ class Job:
     # Agent turn: the model may call these tools, and the job keeps the slot
     # while it does (see _pump_agent). None = one plain inference.
     agent: Toolbox | None = None
+    # a new chat's first turn: once the reply is written, the same model names
+    # the chat. This is the stand-in title it has until then (see _name_chat).
+    title_from: str | None = None
     session_id: int | None = None       # session active at enqueue (set by metering)
     lane: str = "exclusive"
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -209,6 +219,20 @@ class QueueManager:
         self._bg: set[asyncio.Task] = set()   # fire-and-forget persists; kept referenced until done
         self._idle_poll_s = 10.0    # cheap local check; keeps a short IDLE_TTL responsive
         self._running_poll_s = 10.0
+        # The GPU slot. The worker holds it for a whole job; the idle monitor
+        # takes it to preload or keep alive the locked model, so neither can
+        # ever talk to llama-swap while the other is mid-request.
+        self._slot = asyncio.Lock()
+        # Admin lock: this model stays in VRAM. The idle timer reloads it
+        # instead of unloading, and a keepalive holds off llama-swap's ttl.
+        self.locked_model: str | None = None
+        self._keepalive_s = 60.0          # well inside llama-swap's ttl backstop
+        self._touched_at = 0.0
+        self._touch_retry_at = 0.0        # after a failed preload, wait before the next try
+        self._preload_now: str | None = None   # just locked: load it once the queue is empty
+        self._arrived = asyncio.Event()   # a job was submitted (cuts a preload short)
+        self._keepalive_timeout_s = 10.0
+        self._touch_backoff_s = 300.0
         # hook points filled in by metering
         self.check_limits = None       # async (user_id, model_id) -> LimitDecision | None
         self.finalize_billing = None   # async (job) -> None
@@ -219,6 +243,14 @@ class QueueManager:
         self._load_ewma = {r["model_id"]: r["ewma_load_seconds"] for r in rows}
         for m in self.reg.all():
             self._load_ewma.setdefault(m.key, m.seed_cold_load_s)
+        row = await self.db.fetch_one("SELECT value FROM app_settings WHERE key = 'locked_model'")
+        locked = json.loads(row["value"]) if row else None
+        if locked is not None and not self.lockable(locked):
+            # the model left the inventory since it was locked
+            log.warning("locked model %s is no longer in the inventory; lock released", locked)
+            await self._save_lock(None)
+            locked = None
+        self.locked_model = locked
         self._loaded_model = await self.up.loaded_model()
         self._tasks = [
             asyncio.create_task(self._worker(), name="queue-worker"),
@@ -265,6 +297,7 @@ class QueueManager:
         self._pending.append(job)
         await self._persist_job(job)
         self._wake.set()
+        self._arrived.set()
         await self._broadcast()
         log.info("job %s queued (user=%s model=%s pos=%d)",
                  job.id, job.owner_email, job.model_id, len(self._pending))
@@ -277,15 +310,42 @@ class QueueManager:
             job._cancel.set()
             return True
         if job in self._pending:
-            self._pending.remove(job)
-            job.state = JobState.CANCELLED
-            job.finished_at = now()
-            await self._emit(job, {"type": "cancelled"})
-            await job._chunks.put(None)
-            await self._persist_job(job)
-            await self._broadcast()
+            await self.drop_queued(job)
             return True
         return False
+
+    async def drop_queued(self, job: Job) -> None:
+        """Take a job that never ran out of the queue: the one way it's done
+        (a user's Stop, an admin's Kill, a deleted chat), so every waiter
+        hears the end of it -- the stream gets `cancelled` and its close, and
+        anything awaiting `_done` (compaction) is released."""
+        if job not in self._pending:
+            return
+        self._pending.remove(job)
+        job.state = JobState.CANCELLED
+        job.finished_at = now()
+        await self._emit(job, {"type": "cancelled"})
+        await job._chunks.put(None)
+        job._done.set()
+        await self._persist_job(job)
+        self._forget_later(job)
+        await self._broadcast()
+
+    async def drop_conversation(self, conv_id: str) -> None:
+        """A conversation is being deleted: its queued jobs go, and a running
+        one is stopped and cut loose from it, so its reply (or title) is
+        never written back into a conversation that no longer exists."""
+        for job in [j for j in self._pending if j.conversation_id == conv_id]:
+            await self.drop_queued(job)
+        job = self._active
+        if job is not None and job.conversation_id == conv_id:
+            job.conversation_id = None
+            job._cancel.set()
+
+    def _forget_later(self, job: Job, after_s: float = 120.0) -> None:
+        # finished jobs leave the index once a late cancel can't need them:
+        # they hold their whole payload (images, documents) until then
+        asyncio.get_running_loop().call_later(after_s, self._by_id.pop, job.id, None)
 
     def snapshot(self) -> dict:
         jobs = []
@@ -296,10 +356,16 @@ class QueueManager:
         return {
             "type": "queue",
             "loaded_model": self._loaded_model,
+            "locked_model": self.locked_model,
             "depth": len(self._pending) + (1 if self._active else 0),
             "jobs": jobs,
             "ts": now(),
         }
+
+    def jobs_of(self, user_id: int) -> int:
+        """How many of this user's jobs are queued or running."""
+        active = self._active is not None and self._active.user_id == user_id
+        return int(active) + sum(1 for j in self._pending if j.user_id == user_id)
 
     def position_of(self, job_id: str) -> int | None:
         if self._active and self._active.id == job_id:
@@ -336,31 +402,47 @@ class QueueManager:
             while not self._pending:
                 self._wake.clear()
                 await self._wake.wait()
-            job = self._pending.pop(0)
-            if job.state in TERMINAL:
-                continue
-            self._active = job
-            job.picked_at = now()
-            await self._broadcast()
+            # the job stays queued (and unbilled) while a preload holds the slot
+            async with self._slot:
+                if self._pending:
+                    try:
+                        await self._take(self._pending.pop(0))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 -- the worker must outlive any one job
+                        log.exception("queue worker: a job's cleanup failed")
+
+    async def _take(self, job: Job) -> None:
+        """Run one job in the slot, start to finish."""
+        if job.state in TERMINAL:
+            return
+        self._active = job
+        job.picked_at = now()
+        await self._broadcast()
+        try:
+            await self._run(job)
+        except UpstreamError as e:
+            job.state = JobState.ERROR
+            job.error = e.detail[:500]
+            await self._emit(job, {"type": "error", "detail": str(e)})
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.exception("job %s crashed", job.id)
+            job.state = JobState.ERROR
+            job.error = repr(e)
+            await self._emit(job, {"type": "error", "detail": repr(e)})
+        finally:
+            self._active = None
+            self._idle_since = time.time()
             try:
-                await self._run(job)
-            except UpstreamError as e:
-                job.state = JobState.ERROR
-                job.error = e.detail[:500]
-                await self._emit(job, {"type": "error", "detail": str(e)})
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                log.exception("job %s crashed", job.id)
-                job.state = JobState.ERROR
-                job.error = repr(e)
-                await self._emit(job, {"type": "error", "detail": repr(e)})
-            finally:
-                self._active = None
-                self._idle_since = time.time()
                 await self._finalize(job)
+            except Exception:  # noqa: BLE001 -- the waiters below must still hear the end
+                log.exception("finalizing job %s failed", job.id)
+            finally:
                 job._done.set()
                 await job._chunks.put(None)
+                self._forget_later(job)
                 await self._broadcast()
 
     async def _mark_generating(self, job: Job, t_start: float,
@@ -451,7 +533,7 @@ class QueueManager:
         for step in range(box.max_steps + 1):
             # stop calling tools while there is still room to answer: an
             # answer's worth, not the whole (thinking-sized) output budget
-            est_prompt = int(len(json.dumps(messages)) / 3.6)
+            est_prompt = _estimate_prompt(messages)
             room = min(budget - out_tokens, ANSWER_ROOM_TOKENS)
             final = (cut_off or step == box.max_steps or now() - t0 > box.deadline_s
                      or est_prompt + room > ctx
@@ -548,7 +630,8 @@ class QueueManager:
                                            "label": label, "said": said})
                     said = ""
                     rec = {"type": "tool", "id": c["id"], "name": c["name"], "label": label,
-                           "args": args, "ok": False, "summary": "cut off", "ms": 0}
+                           "args": box.shown_args(c["name"], args), "ok": False,
+                           "summary": "cut off", "ms": 0}
                     job.trail.append(rec)
                     await self._emit(job, {**rec, "type": "tool_end", "sources": []})
             if cut_off and not final and not job._cancel.is_set():
@@ -587,7 +670,8 @@ class QueueManager:
                 t_tool = now()
                 res = await box.run(c["name"], c["arguments"])
                 step_rec = {"type": "tool", "id": c["id"], "name": c["name"], "label": label,
-                            "args": args, "ok": res.ok, "summary": res.summary,
+                            "args": box.shown_args(c["name"], args), "ok": res.ok,
+                            "summary": res.summary,
                             "ms": round((now() - t_tool) * 1000), **res.extra}
                 seen += [(str(args.get("image") or "image"), u) for u in res.images]
                 job.trail.append(step_rec)
@@ -611,11 +695,12 @@ class QueueManager:
         program takes as long to write as a long answer, and without this the
         step only appears once it's finished. `tool_draft` carries the name
         and, for code, the newly written part of it."""
+        box = job.agent
         for i in sorted(calls):
             c = calls[i]
             if not c["name"]:
                 continue
-            code = _draft_code(c["arguments"])
+            code = _draft_code(c["arguments"]) if box is None or box.shows_code(c["name"]) else ""
             shown = drafts.get(i)
             if shown is None or len(code) > len(shown):
                 drafts[i] = code
@@ -671,6 +756,56 @@ class QueueManager:
             predicted_s = (sniff.timings.get("predicted_ms") or 0) / 1000.0
             job.gen_started_at = max(t_start, now() - predicted_s)
 
+    async def _name_chat(self, job: Job) -> None:
+        """A new chat's title, written by the model that just answered, while
+        it still holds the slot: no second model and no load, about a second.
+
+        The request is the conversation so far plus the reply and one more
+        question, so llama.cpp's prompt cache already holds all of it but the
+        question, and the chat's next turn still finds its history cached.
+        For that, the prompt must start the same as the turn's own did: an
+        agent turn's tools go along (with tool_choice "none"), since chat
+        templates write the tool list near the top. A picture is left out
+        rather than read again; its text stays, as the next turn's history
+        has it. Anything that goes wrong leaves the stand-in title; nothing
+        here can fail the reply."""
+        msgs = [{**m, "content": _text_of(m.get("content"))}
+                if isinstance(m.get("content"), list) else m
+                for m in job.payload.get("messages") or []]
+        convo = [*msgs, {"role": "assistant", "content": job.content},
+                 {"role": "user", "content": TITLE_ASK}]
+        payload = {"model": job.model_id, "messages": convo,
+                   "max_tokens": TITLE_MAX_TOKENS, "temperature": 0.3}
+        if job.agent is not None:
+            payload["tools"] = job.agent.schemas()
+            payload["tool_choice"] = "none"
+        m = self.reg.get(job.model_id)
+        if m is not None and m.thinking:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+        async def ask() -> str:
+            out: list[str] = []
+            async with contextlib.aclosing(self.up.stream_chat(payload)) as stream:
+                async for chunk in stream:
+                    if job._cancel.is_set():
+                        return ""
+                    out.append(chunk.content_delta or "")
+            return "".join(out)
+
+        try:
+            title = clean_title(await asyncio.wait_for(ask(), TITLE_TIMEOUT_S))
+        except Exception as e:  # noqa: BLE001 -- a title is never worth a failed reply
+            log.warning("naming chat %s failed: %r", job.conversation_id, e)
+            return
+        if not title or job.conversation_id is None:
+            return
+        # only over the stand-in: a title the user set meanwhile stays theirs
+        await self.db.execute(
+            "UPDATE conversations SET title = ? WHERE id = ? AND title = ?",
+            (title, job.conversation_id, job.title_from))
+        await self._emit(job, {"type": "title", "conversation_id": job.conversation_id,
+                               "title": title})
+
     def _default_thinking_off(self, job: Job) -> None:
         """Every request to a model that can reason says explicitly whether it
         should. Endpoints set it when the user asked; anything that didn't say
@@ -702,16 +837,13 @@ class QueueManager:
         sampler = GpuPowerSampler()
         pump = (self._pump_raw if job.raw_passthrough
                 else self._pump_agent if job.agent is not None else self._pump_chat)
-        await pump(job, t_start, sampler)
-
-        await sampler.stop()
-        job.gpu_watts_mean = sampler.mean
-
-        t_end = now()
-        job.finished_at = t_end
+        await self._pump_until_stopped(pump, job, t_start, sampler)
+        t_answered = now()
         if job.think_started_at is not None and job.think_ended_at is None:
-            job.think_ended_at = t_end     # thought right up to the end (or was cut off)
-        job.occupancy_seconds = t_end - t_start
+            job.think_ended_at = t_answered   # thought right up to the end (or was cut off)
+        # decided now: a Stop pressed while the chat is being named only stops
+        # the naming, it doesn't throw away the finished answer
+        cancelled = job._cancel.is_set()
 
         prompt_s = 0.0
         if job.last_timings:
@@ -719,13 +851,16 @@ class QueueManager:
         if job.cold_start and job.gen_started_at:
             job.load_seconds = max(0.0, (job.gen_started_at - t_start) - prompt_s)
             self._update_load_ewma(job.model_id, job.load_seconds)
+        elif job.cold_start:
+            # stopped (or failed) before the model was even up: all of it was
+            # loading, billed at the load rate -- not as generation
+            job.load_seconds = t_answered - t_start
         if job.gen_started_at:
-            job.gen_seconds = t_end - job.gen_started_at
+            # the title's second below is billed (the slot is held for it) but
+            # isn't generation: gen_seconds, and the tok/s made from it, stop here
+            job.gen_seconds = t_answered - job.gen_started_at
 
-        if job._cancel.is_set():
-            job.state = JobState.CANCELLED
-        else:
-            job.state = JobState.DONE
+        job.state = JobState.CANCELLED if cancelled else JobState.DONE
 
         if job.completion_tokens is None:
             # usage block missing (aborted / upstream quirk): estimate from
@@ -746,6 +881,39 @@ class QueueManager:
             "thinking_seconds": job.thinking_seconds,
             "tools": job.tools_record(),
         })
+        # The answer is complete and the UI has it: the new chat is named
+        # after that, so a Stop now can't take the reply off the screen. The
+        # title arrives as one more event before the stream closes.
+        if job.title_from is not None and job.content and not cancelled:
+            await self._name_chat(job)
+
+        await sampler.stop()
+        job.gpu_watts_mean = sampler.mean
+        job.finished_at = now()
+        job.occupancy_seconds = job.finished_at - t_start
+
+    async def _pump_until_stopped(self, pump, job: Job, t_start: float,
+                                  sampler: GpuPowerSampler) -> None:
+        """Run the pump, but let Stop (or an admin's Kill) end it at once.
+        The pumps only look at the cancel flag when a chunk arrives, and
+        during a cold load, a long prompt or a tool run none does for a long
+        time. Cancelling the task closes the upstream request (llama.cpp
+        stops) and kills a running sandbox."""
+        task = asyncio.create_task(pump(job, t_start, sampler))
+        stop = asyncio.create_task(job._cancel.wait())
+        try:
+            await asyncio.wait({task, stop}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        finally:
+            stop.cancel()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            return
+        task.result()       # the pump's own error, if it had one
 
     # -- finalisation ---------------------------------------------------------
     async def _finalize(self, job: Job) -> None:
@@ -822,27 +990,167 @@ class QueueManager:
         )
 
     # -- background tasks -------------------------------------------------
+    # -- admin lock ----------------------------------------------------------
+    def lockable(self, model_id: str) -> bool:
+        m = self.reg.get(model_id)
+        return m is not None and m.kind == "chat"
+
+    async def _save_lock(self, model_id: str | None) -> None:
+        if model_id is None:
+            await self.db.execute("DELETE FROM app_settings WHERE key = 'locked_model'")
+        else:
+            await self.db.execute(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES ('locked_model', ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (json.dumps(model_id), now()))
+
+    async def set_locked(self, model_id: str | None) -> None:
+        """Keep `model_id` in VRAM (None releases the lock). Jobs for other
+        models still swap it out as usual; once the queue has been idle for
+        IDLE_TTL, the idle monitor loads the locked model back instead of
+        leaving the GPU empty. Saved, so it outlives a restart."""
+        if model_id is not None and not self.lockable(model_id):
+            raise ValueError(f"unknown model: {model_id}")
+        await self._save_lock(model_id)
+        self.locked_model = model_id
+        self._touch_retry_at = 0.0
+        log.info("model lock -> %s", model_id)
+        await self._broadcast()
+        # an admin locking a model wants it now: load it on the monitor's next
+        # tick (once the queue is empty), not after the current model's idle TTL
+        self._preload_now = model_id if self._loaded_model != model_id else None
+
+    async def force_unload(self) -> bool:
+        """The admin's "free VRAM now": also releases the lock, or the idle
+        monitor would put the model straight back."""
+        if self.locked_model is not None:
+            await self.set_locked(None)
+        # not in the slot: like before the lock existed, this acts at once,
+        # even on a model that's mid-reply
+        ok = await self.up.unload_all()
+        if ok:
+            self._loaded_model = None
+            await self._broadcast()
+        return ok
+
+    async def _touch_locked(self, model_id: str) -> None:
+        """Preload the locked model, or just reset llama-swap's ttl if it's
+        already resident. Runs in the slot, and only on an empty queue.
+
+        A preload gives way: if a job arrives while it runs, the request is
+        dropped and the job goes ahead (it waited, unbilled, for a moment at
+        most). It's also bounded, so a model that hangs while loading can't
+        hold the queue: three times its usual load time, a minute at least."""
+        async with self._slot:
+            if self._active or self._pending or self.locked_model != model_id:
+                return
+            preload = self._loaded_model != model_id
+            if not preload:
+                ok = await self.up.touch(model_id, timeout=self._keepalive_timeout_s)
+                self._touched_at = time.time()
+                if not ok:
+                    self._touch_retry_at = time.time() + self._touch_backoff_s
+                return
+            log.info("idle -> loading locked model %s", model_id)
+            self._arrived.clear()
+            limit = max(60.0, 3 * self.load_estimate(model_id))
+            touch = asyncio.create_task(self.up.touch(model_id, timeout=limit))
+            arrived = asyncio.create_task(self._arrived.wait())
+            try:
+                await asyncio.wait({touch, arrived}, timeout=limit + 5,
+                                   return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                touch.cancel()          # shutting down: don't leave the request behind
+                raise
+            finally:
+                arrived.cancel()
+            if not touch.done():
+                # a job came in (or the load hung): let the queue have the GPU
+                touch.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await touch
+                if not self._arrived.is_set():
+                    self._touch_retry_at = time.time() + self._touch_backoff_s
+                return
+            self._touched_at = time.time()
+            if not touch.result():
+                self._touch_retry_at = time.time() + self._touch_backoff_s
+                return
+            if self._preload_now == model_id:
+                self._preload_now = None
+            # unlocked or force-unloaded meanwhile: /running has the truth
+            if self.locked_model == model_id:
+                self._loaded_model = model_id
+                await self._broadcast()
+
+    # -- background tasks -------------------------------------------------
     async def _idle_monitor(self) -> None:
         while True:
             await asyncio.sleep(self._idle_poll_s)
-            ttl = self.cfg.idle_ttl_effective_seconds
-            if self._active or self._pending:
-                continue
-            if self._loaded_model and time.time() - self._idle_since > ttl:
-                log.info("idle %.0fs -> unloading %s", ttl, self._loaded_model)
-                if await self.up.unload_all():
-                    self._loaded_model = None
-                    await self._broadcast()
+            try:
+                await self._idle_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 -- one bad tick mustn't end idle unloads for good
+                log.exception("idle monitor tick failed")
+
+    async def _idle_tick(self) -> None:
+        ttl = self.cfg.idle_ttl_effective_seconds
+        if self._active or self._pending:
+            return
+        idle_for = time.time() - self._idle_since
+        locked = self.locked_model
+        if locked is not None:
+            if self._loaded_model == locked:
+                if time.time() - self._touched_at >= self._keepalive_s:
+                    await self._touch_locked(locked)
+            elif ((self._loaded_model is None or idle_for > ttl
+                   or self._preload_now == locked)
+                  and time.time() >= self._touch_retry_at):
+                # another model has had its idle time: the locked one goes back in
+                await self._touch_locked(locked)
+            return
+        if self._loaded_model and idle_for > ttl:
+            log.info("idle %.0fs -> unloading %s", ttl, self._loaded_model)
+            if await self.up.unload_all():
+                self._loaded_model = None
+                await self._broadcast()
 
     async def _running_poller(self) -> None:
         while True:
             await asyncio.sleep(self._running_poll_s)
             if self._active:
                 continue
-            m = await self.up.loaded_model()
+            try:
+                m = await self.up.loaded_model()
+            except Exception:  # noqa: BLE001 -- a garbled /running mustn't stop the polling
+                log.exception("polling llama-swap /running failed")
+                continue
             if m != self._loaded_model:
                 self._loaded_model = m
                 await self._broadcast()
+
+
+IMAGE_TOKENS = 600       # what one picture costs in the prompt, roughly (the UI uses the same)
+
+
+def _estimate_prompt(messages: list[dict]) -> int:
+    """Rough prompt size in tokens. A picture counts as IMAGE_TOKENS, not as
+    the length of its base64: a phone photo's data URL alone would look
+    bigger than the whole context and end the turn before it could use a tool."""
+    pictures = 0
+
+    def strip(m: dict) -> dict:
+        nonlocal pictures
+        c = m.get("content")
+        if not isinstance(c, list):
+            return m
+        pictures += sum(1 for p in c if isinstance(p, dict) and p.get("type") == "image_url")
+        return {**m, "content": [p for p in c if not (isinstance(p, dict) and p.get("type") == "image_url")]}
+
+    text = json.dumps([strip(m) for m in messages])
+    return int(len(text) / 3.6) + pictures * IMAGE_TOKENS
 
 
 def _text_of(content) -> str:
@@ -893,6 +1201,25 @@ _LEAKED_CALL = re.compile(r"<tool_call>.*?(?:</tool_call>|$)|<function=[\w-]+>.*
 _TIMELY = re.compile(r"\b(latest|current(ly)?|recent(ly)?|today|now|nowadays|newest|new|this "
                      r"(year|month|week|semester|term)|20[2-9]\d|up[- ]to[- ]date|still|anymore)\b",
                      re.IGNORECASE)
+
+
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL)
+_TITLE_LABEL = re.compile(r"^\s*(?:chat |conversation )?title\s*[:\-–]\s*", re.IGNORECASE)
+
+
+def clean_title(raw: str) -> str:
+    """The model's answer, as a title: its first line, without the wrapping
+    models like to add ("Title:", quotes, bold, a full stop), at most
+    TITLE_MAX_CHARS. "" if nothing usable is left."""
+    t = _LEAKED_CALL.sub("", _THINK_BLOCK.sub("", raw or "").rsplit("</think>", 1)[-1])
+    line = next((x for x in t.splitlines() if x.strip()), "")
+    line = _TITLE_LABEL.sub("", line.replace("**", "").replace("__", ""))
+    line = re.sub(r"\s+", " ", line).strip().strip("*_#`\"'“”‘’«»「」 ").strip()
+    line = line.rstrip(".,;:。").strip()
+    if len(line) > TITLE_MAX_CHARS:
+        cut = line[:TITLE_MAX_CHARS + 1].rsplit(" ", 1)[0]
+        line = (cut if len(cut) >= TITLE_MAX_CHARS // 2 else line[:TITLE_MAX_CHARS]).rstrip() + "…"
+    return line if len(line) >= 2 else ""
 
 
 def _echo_args(raw: str) -> str:

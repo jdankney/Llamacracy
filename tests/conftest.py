@@ -35,6 +35,10 @@ class FakeUpstream:
         self.usage = {"prompt_tokens": 5, "completion_tokens": 3}
         self.timings = {"prompt_ms": 20.0, "predicted_ms": 30.0}
         self.unload_calls = 0
+        self.touches: list[str] = []
+        self.touch_ok = True
+        # what it answers when asked to name a chat (queue._name_chat)
+        self.title_deltas: list[str] = ["Greeting", " the user"]
         self.tool_calls: list[dict] | None = None
         self.thinking: dict[str, list[str]] = {}
         self.seen_payload: dict | None = None
@@ -61,6 +65,13 @@ class FakeUpstream:
         self.loaded = None
         return True
 
+    async def touch(self, model_id, timeout=600.0):
+        # llama-swap's /upstream/<model>/health: loads the model if needed
+        self.touches.append(model_id)
+        if self.touch_ok:
+            self.loaded = model_id
+        return self.touch_ok
+
     async def stream_chat(self, payload) -> AsyncIterator:
         from llamacracy.upstream import StreamChunk
 
@@ -69,6 +80,14 @@ class FakeUpstream:
         model = payload.get("model")
         deltas = self.script.get(model, ["hello", " world"])
         self.loaded = model
+        from llamacracy.queue import TITLE_ASK
+        last = (payload.get("messages") or [{}])[-1].get("content")
+        if isinstance(last, str) and last.startswith(TITLE_ASK):
+            for d in self.title_deltas:
+                await asyncio.sleep(self.delay)
+                yield StreamChunk(raw={}, content_delta=d)
+            yield StreamChunk(raw={}, usage={"prompt_tokens": 9, "completion_tokens": 4})
+            return
         if payload.get("tools") and self.agent_steps:
             step = self.agent_steps.pop(0)
             if payload.get("tool_choice") == "none":
