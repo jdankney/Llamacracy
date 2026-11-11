@@ -368,3 +368,54 @@ def test_a_picture_counts_as_a_pictures_worth_of_prompt():
     est = _estimate_prompt(msgs)
     assert IMAGE_TOKENS <= est < IMAGE_TOKENS + 100
     assert _estimate_prompt([{"role": "user", "content": "x" * 3600}]) >= 1000
+
+
+async def _conversation(db: Database, user: int = 1) -> tuple[str, int]:
+    await db.execute(
+        "INSERT INTO conversations (id, user_id, title, model_id, created_at, updated_at) "
+        "VALUES ('c1', ?, 't', 'small', 0, 0)", (user,))
+    mid = await db.insert(
+        "INSERT INTO messages (conversation_id, role, content, created_at) "
+        "VALUES ('c1', 'user', 'hi', 0)")
+    return "c1", mid
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_reply_keeps_what_was_written(tmp_db_path):
+    up = FakeUpstream()
+    up.delay = 0.05
+    up.script = {"small": ["tok "] * 40}
+    qm = await _make_qm(tmp_db_path, up)
+    try:
+        conv, mid = await _conversation(qm.db)
+        a = _job(user=1, conversation_id=conv, parent_message_id=mid)
+        await qm.submit(a)
+        await asyncio.sleep(0.2)
+        assert await qm.cancel(a.id, user_id=1) is True
+        events = await _drain(a)
+        assert events[-1]["type"] == "done" and events[-1]["state"] == "cancelled"
+        row = await qm.db.fetch_one(
+            "SELECT content, stopped, parent_id FROM messages WHERE role = 'assistant'")
+        assert row["content"].startswith("tok tok") and len(row["content"]) < 160
+        assert row["stopped"] == 1 and row["parent_id"] == mid
+        shown = await qm.db.fetch_one("SELECT active_child_id FROM messages WHERE id = ?", (mid,))
+        assert shown["active_child_id"] is not None
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_reply_stopped_before_its_first_word_saves_nothing(tmp_db_path):
+    up = FakeUpstream()
+    up.delay = 0.3
+    qm = await _make_qm(tmp_db_path, up)
+    try:
+        conv, mid = await _conversation(qm.db)
+        a = _job(user=1, conversation_id=conv, parent_message_id=mid)
+        await qm.submit(a)
+        await asyncio.sleep(0.05)
+        assert await qm.cancel(a.id, user_id=1) is True
+        await _drain(a)
+        assert await qm.db.fetch_one("SELECT id FROM messages WHERE role = 'assistant'") is None
+    finally:
+        await qm.stop()

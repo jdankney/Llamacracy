@@ -79,3 +79,13 @@ def test_linear_conversations_migrate_to_one_branch(tmp_path):
     # and it caught up with later columns: study sessions
     assert "course_id" in [r[1] for r in db._conn.execute("PRAGMA table_info(conversations)")]
     db.close()
+
+
+def test_history_merges_messages_left_without_a_reply():
+    # 1 was stopped before any answer, 3 only thought: three user turns in a
+    # row would break chat templates that insist on user/assistant alternating
+    rows = [_m(1, None, 2), _m(2, 1, 3), {**_m(3, 2, 4, "assistant"), "content": ""},
+            _m(4, 3, 5), _m(5, 4, None, "assistant")]
+    assert threads.history(rows) == [
+        {"role": "user", "content": "m1\n\nm2\n\nm4"},
+        {"role": "assistant", "content": "m5"}]

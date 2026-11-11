@@ -32,7 +32,7 @@ log = logging.getLogger("llamacracy.threads")
 _COLS = (
     "id, role, content, model_id, prompt_tokens, completion_tokens, usage_estimated, "
     "search_json, image_upload_id, doc_ids_json, tools_json, reasoning, thinking_seconds, parent_id, "
-    "active_child_id, context_summary, created_at"
+    "active_child_id, context_summary, stopped, created_at"
 )
 
 
@@ -89,14 +89,25 @@ def history(path: list[dict], documents: dict[str, str] | None = None) -> list[d
     """What the model is sent for a path: the latest summary on it (if any)
     standing in for everything up to its boundary, then the rest verbatim.
     A reply with no text (all thinking, nothing answered) is left out.
+    Turns by the same speaker that end up next to each other (a message whose
+    reply was stopped before its first word, or failed, then the next one)
+    are sent as one: several chat templates refuse a prompt that doesn't
+    alternate between user and assistant.
 
     `documents` maps upload id -> the block documents.render_for_prompt made
     of it; a message's attached documents go back in ahead of its text, so
     they stay in the conversation for as long as the message itself does."""
     _, summary = summary_point(path)
     after = after_summary(path)
-    out = [{"role": r["role"], "content": _with_documents(r, documents or {})}
-           for r in after if r["content"]]
+    out: list[dict] = []
+    for r in after:
+        if not r["content"]:
+            continue
+        content = _with_documents(r, documents or {})
+        if out and out[-1]["role"] == r["role"]:
+            out[-1]["content"] += "\n\n" + content
+        else:
+            out.append({"role": r["role"], "content": content})
     if summary:
         out.insert(0, {
             "role": "system",

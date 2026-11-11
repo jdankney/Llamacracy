@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS conversations (
     id           TEXT PRIMARY KEY,          -- uuid hex, used in URLs
     user_id      INTEGER NOT NULL REFERENCES users(id),
-    title        TEXT NOT NULL DEFAULT '',  -- first 50 chars of first user message
+    title        TEXT NOT NULL DEFAULT '',  -- the first message's start, until the model or the user names it
     model_id     TEXT NOT NULL,
     -- Legacy: compaction used to live here, one per conversation. It now
     -- lives on the boundary message (messages.context_summary) so that each
@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS messages (
     -- set on the message where history was compacted: stands in for it and
     -- everything above it, on every path through it
     context_summary   TEXT,
+    -- 1: an (assistant) reply the user stopped part-way; what was written is kept
+    stopped           INTEGER NOT NULL DEFAULT 0,
     created_at        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation ON messages(conversation_id, id);

@@ -40,6 +40,10 @@ loading models. No cloud APIs, no Docker for the app itself.
   flip between versions.
 - Attach documents (PDF, Word, LibreOffice, Excel, PowerPoint, text, CSV,
   code) on any model, and photos on models with vision.
+- Retry any reply, on the same model or another, and keep both answers.
+  Stop keeps what was written so far.
+- Search your chats by title or by anything said in them, rename them, and
+  download one as Markdown.
 - Fold a long conversation's older part into a summary on request.
 - Chats name themselves after the first reply, and every message shows its
   date and time.
