@@ -98,6 +98,8 @@ const ICONS = {
   download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
   folder: 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
   lock: 'M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5z',
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  retry: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5',
 };
 const icon = (name, cls = '') => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -409,6 +411,8 @@ const S = {
   apiKeys: [], newApiKey: null, apiKeyLabel: '',
   compacting: false,
   draft: '',            // composer text survives re-renders (model switch, stream end, ...)
+  convQuery: '',        // the sidebar's search box, and what the server found for it
+  convHits: null,       // null: not searched (yet); else [{ id, title, snippet }]
   stick: true,          // thread is scrolled to the bottom -> keep following new tokens
   // study: the courses, the one open (with its materials and sessions), and
   // which of chat / study the conversation state belongs to right now; the
@@ -456,6 +460,9 @@ function render() {
   // reading further up stays where they were
   const was = document.getElementById('thread');
   const keepTop = was && !S.stick ? was.scrollTop : null;
+  // ...and someone typing in the sidebar's search keeps their cursor
+  const box = document.activeElement?.id === 'conv-search' ? document.activeElement : null;
+  const caret = box ? [box.selectionStart, box.selectionEnd] : null;
   const study = S.view === 'study';
   const main = S.view === 'usage' ? usageView()
     : S.view === 'help' ? helpView()
@@ -482,6 +489,10 @@ function render() {
       _threadResize = new ResizeObserver(() => { if (S.stick) scrollThread(true); });
       _threadResize.observe(inner);
     }
+  }
+  if (caret) {
+    const again = document.getElementById('conv-search');
+    if (again) { again.focus(); again.setSelectionRange(...caret); }
   }
   syncUrl();
 }
@@ -618,30 +629,139 @@ function sourceLine() {
     h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Source code'),
     h('span', { class: 'faint' }, '· AGPL-3.0'));
 }
+// One row of the sidebar: a chat, a study session, or a search result (which
+// also shows the line that matched). The ⋯ button holds what you can do to it.
+function convRow(c, { snippet = null } = {}) {
+  return h('div', {
+    class: 'conv' + (S.conv?.id === c.id ? ' is-active' : '') + (snippet ? ' has-snippet' : ''),
+    role: 'button', tabindex: 0, title: c.title || 'untitled',
+    onclick: () => openConv(c.id),
+    onkeydown: e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openConv(c.id); } },
+  },
+    h('span', { class: 'conv-text' },
+      h('span', { class: 'title' }, c.title || 'untitled'),
+      snippet ? h('span', { class: 'snippet' }, snippet) : null),
+    h('button', {
+      class: 'del', 'aria-label': `More: ${c.title || 'untitled'}`, 'aria-haspopup': 'menu', title: 'Rename, download, delete',
+      onclick: e => {
+        e.stopPropagation();
+        popMenu(e.currentTarget, [
+          ['pen', 'Rename', () => renameConv(c)],
+          ['download', 'Download', () => downloadConv(c.id)],
+          ['trash', 'Delete', () => delConv(c.id), 'danger'],
+        ]);
+      },
+    }, icon('more', 'icon-sm')));
+}
+// The chat list, or what the search box found. Titles filter as you type;
+// the server's answer (which also looks inside the messages) replaces that.
+function convListKids() {
+  const q = S.convQuery.trim();
+  if (q) {
+    const hits = S.convHits
+      || S.conversations.filter(c => (c.title || '').toLowerCase().includes(q.toLowerCase()));
+    return [
+      h('div', { class: 'group' }, S.convHits ? `${hits.length} ${hits.length === 1 ? 'match' : 'matches'}` : 'Searching…'),
+      hits.length ? hits.map(c => convRow(c, { snippet: c.snippet }))
+        : S.convHits ? h('div', { class: 'empty-note', style: 'padding:6px 10px' }, `Nothing in your chats mentions "${q}".`) : null,
+    ];
+  }
+  if (!S.conversations.length) return [h('div', { class: 'empty-note', style: 'padding:12px 10px' }, 'No conversations yet.')];
+  return convGroups().map(([label, cs]) => [h('div', { class: 'group' }, label), cs.map(c => convRow(c))]);
+}
+function renderConvList() {
+  const el = document.getElementById('conv-list');
+  if (el) el.replaceChildren(...convListKids().flat(Infinity).filter(Boolean));
+  const x = document.getElementById('conv-search-clear'); if (x) x.hidden = !S.convQuery;
+}
+let _searchTimer = null;
+function setConvQuery(q) {
+  S.convQuery = q; S.convHits = null;
+  clearTimeout(_searchTimer);
+  const asked = q.trim();
+  if (asked.length >= 2) _searchTimer = setTimeout(async () => {
+    try {
+      const r = await api.get('/api/conversations/search?q=' + encodeURIComponent(asked));
+      if (S.convQuery.trim() !== asked) return;      // they kept typing
+      S.convHits = r.results;
+    } catch { if (S.convQuery.trim() === asked) S.convHits = []; }
+    renderConvList();
+  }, 250);
+  renderConvList();
+}
+function focusConvSearch() {
+  if (S.view !== 'chat') setView('chat');
+  if (S.view !== 'chat') return;
+  if (!S.sidebarOpen && !matchMedia('(min-width: 768px)').matches) { S.sidebarOpen = true; render(); }
+  const box = document.getElementById('conv-search');
+  if (box) { box.focus(); box.select(); }
+}
 function sidebar() {
   return [
     S.sidebarOpen ? h('div', { class: 'backdrop', onclick: () => { S.sidebarOpen = false; render(); } }) : null,
     h('aside', { class: 'sidebar' + (S.sidebarOpen ? ' is-open' : ''), 'aria-label': 'Conversations' },
       h('div', { class: 'sidebar-top' },
-        h('button', { class: 'btn', onclick: newChat }, icon('plus'), 'New chat')),
-      h('div', { class: 'convs' },
-        S.conversations.length ? convGroups().map(([label, cs]) => [
-          h('div', { class: 'group' }, label),
-          cs.map(c => h('div', {
-            class: 'conv' + (S.conv?.id === c.id ? ' is-active' : ''),
-            role: 'button', tabindex: 0, title: c.title || 'untitled',
-            onclick: () => openConv(c.id),
-            onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openConv(c.id); } },
-          },
-            h('span', { class: 'title' }, c.title || 'untitled'),
-            h('button', {
-              class: 'del', 'aria-label': 'Delete conversation', title: 'Delete',
-              onclick: e => { e.stopPropagation(); delConv(c.id); },
-            }, icon('trash', 'icon-sm')))),
-        ]) : h('div', { class: 'empty-note', style: 'padding:12px 10px' }, 'No conversations yet.')),
+        h('button', { class: 'btn', onclick: newChat }, icon('plus'), 'New chat'),
+        h('div', { class: 'conv-search' },
+          icon('search', 'icon-sm'),
+          h('input', {
+            id: 'conv-search', class: 'input', type: 'search', value: S.convQuery, autocomplete: 'off',
+            placeholder: 'Search chats', 'aria-label': 'Search your chats',
+            title: 'Search titles and messages (Ctrl+K)',
+            oninput: e => setConvQuery(e.target.value),
+            onkeydown: e => {
+              if (e.key === 'Escape' && S.convQuery) { e.stopPropagation(); e.target.value = ''; setConvQuery(''); }
+            },
+          }),
+          h('button', {
+            id: 'conv-search-clear', type: 'button', class: 'clear', 'aria-label': 'Clear search', title: 'Clear',
+            hidden: !S.convQuery,
+            onclick: () => { const b = document.getElementById('conv-search'); b.value = ''; setConvQuery(''); b.focus(); },
+          }, icon('x', 'icon-sm')))),
+      h('div', { id: 'conv-list', class: 'convs' }, convListKids()),
       h('div', { id: 'sidebar-foot', class: 'sidebar-foot' }, ...sidebarFootKids()),
     ),
   ];
+}
+// A small menu under a button: [icon, label, action, tone?] rows. It lives on
+// <body> so the sidebar's scrolling can't clip it, and closes on any click,
+// Escape, or scrolling the list it belongs to.
+let _closeMenu = null;
+function popMenu(anchor, items) {
+  _closeMenu?.();
+  const menu = h('div', { class: 'menu', role: 'menu' },
+    items.map(([ic, label, act, tone]) => h('button', {
+      type: 'button', role: 'menuitem', class: tone === 'danger' ? 'is-danger' : '',
+      onclick: () => { close(); act(); },
+    }, icon(ic, 'icon-sm'), label)));
+  const onKey = e => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); anchor.focus(); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const btns = [...menu.children], i = btns.indexOf(document.activeElement);
+      btns[(i + (e.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length].focus();
+    }
+  };
+  const onAway = e => { if (!menu.contains(e.target)) close(); };
+  // only the list it hangs off: a reply streaming in scrolls the thread all the time
+  const onScroll = e => { if (e.target.contains?.(anchor)) close(); };
+  function close() {
+    menu.remove(); _closeMenu = null;
+    document.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('pointerdown', onAway, true);
+    window.removeEventListener('scroll', onScroll, true);
+    window.removeEventListener('resize', close);
+  }
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8) + 'px';
+  menu.style.left = Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8)) + 'px';
+  document.addEventListener('keydown', onKey, true);
+  document.addEventListener('pointerdown', onAway, true);
+  window.addEventListener('scroll', onScroll, true);
+  window.addEventListener('resize', close);
+  _closeMenu = close;
+  menu.firstChild.focus();
 }
 
 /* ---------------------------------------------------------------- study */
@@ -742,15 +862,7 @@ function studySidebar() {
       h('div', { class: 'convs' }, c ? [
         h('button', { class: 'conv conv-back', onclick: allCourses }, icon('left', 'icon-sm'), h('span', { class: 'title' }, 'All courses')),
         h('div', { class: 'group', title: c.name }, c.name),
-        c.sessions.length ? c.sessions.map(s => h('div', {
-          class: 'conv' + (S.conv?.id === s.id ? ' is-active' : ''),
-          role: 'button', tabindex: 0, title: s.title || 'untitled',
-          onclick: () => openConv(s.id),
-          onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openConv(s.id); } },
-        },
-          h('span', { class: 'title' }, s.title || 'untitled'),
-          h('button', { class: 'del', 'aria-label': 'Delete session', title: 'Delete', onclick: e => { e.stopPropagation(); delConv(s.id); } },
-            icon('trash', 'icon-sm'))))
+        c.sessions.length ? c.sessions.map(x => convRow(x))
           : h('div', { class: 'empty-note', style: 'padding:6px 10px' }, 'No sessions yet.'),
       ] : S.courses.length ? S.courses.map(x => h('div', {
         class: 'conv', role: 'button', tabindex: 0, title: x.name,
@@ -1033,6 +1145,14 @@ function startEdit(m) {
   const t = document.getElementById('edit-box');
   if (t) { autosize(t); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
 }
+// Ask again: the same message goes out as a new version of itself (to the
+// model picked now, which may be a different one), so the answer it already
+// has is kept and the ‹ 1 / 2 › arrows flip between the two.
+function retryBtn(u, title = 'Ask this again, with the model picked below. This answer is kept: the arrows under your message flip between them') {
+  if (S.active || !u || u.role !== 'user' || u.id == null) return null;
+  return h('button', { type: 'button', class: 'btn btn-ghost btn-sm', title,
+    onclick: () => sendMessage(null, { text: u.content, editOf: u.id }) }, icon('retry', 'icon-sm'), 'Retry');
+}
 function msgBubble(m) {
   if (m.role === 'user') {
     // (m.id is undefined on a just-sent message: never let that match "not editing")
@@ -1050,6 +1170,8 @@ function msgBubble(m) {
           type: 'button', class: 'btn btn-ghost btn-sm', title: 'Edit and resend (keeps the original)',
           onclick: () => startEdit(m),
         }, icon('pen', 'icon-sm'), 'Edit') : null,
+        // nothing came back (it was stopped early, or failed): offer another go
+        m === S.messages.at(-1) ? retryBtn(m, 'This message has no answer. Send it again') : null,
         copyBtn(m.content)));
   }
   return h('div', { class: 'msg msg-assistant' },
@@ -1073,7 +1195,9 @@ function msgBubble(m) {
     sourcesList(m.tools?.sources, m.content),
     m.tools?.files?.length ? h('div', { class: 'doc-chips reply-files' }, m.tools.files.map(fileChip)) : null,
     h('div', { class: 'msg-foot' },
+      m.stopped ? h('span', { class: 'stopped', title: 'This reply was stopped before it finished' }, icon('stop', 'icon-sm'), 'Stopped') : null,
       h('span', { class: 'meta' }, tokenMeta(m)),
+      retryBtn(S.messages[S.messages.indexOf(m) - 1]),
       copyBtn(m.content)));
 }
 // "Thought for 1m 26s": the model's reasoning, folded away under one line
@@ -1106,7 +1230,7 @@ function searchChip(sr) {
 }
 function activeBubble() {
   const a = S.active;
-  const status = a.state === 'queued' ? (a.position > 0 ? `Queued · position ${a.position}` : 'Queued')
+  const status = a.stopping ? 'Stopping…' : a.state === 'queued' ? (a.position > 0 ? `Queued · position ${a.position}` : 'Queued')
     : a.state === 'loading_model' ? `Loading ${modelName(a.model)}${a.eta ? ` · ~${Math.round(a.eta)}s` : ''}`
     : a.state === 'generating' ? (a.trail?.some(x => x.running) ? 'Working' : 'Generating') : a.state;
   return h('div', { class: 'msg msg-assistant', id: 'active-msg' },
@@ -1747,7 +1871,7 @@ function composer() {
           id: 'composer', rows: 1, value: S.draft,
           placeholder: S.view === 'study' && S.course ? `Ask about ${S.course.name}…` : 'Message Llamacracy…',
           'aria-label': 'Message',
-          oninput: e => { S.draft = e.target.value; autosize(e.target); refreshCtx(); },
+          oninput: e => { S.draft = e.target.value; saveDraft(); autosize(e.target); refreshCtx(); },
           onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(e); } },
           // a pasted screenshot or file attaches instead of vanishing
           onpaste: e => { const f = [...(e.clipboardData?.files || [])]; if (f.length) { e.preventDefault(); addFiles(f); } },
@@ -2334,7 +2458,7 @@ function helpView() {
         tool('pen', 'Files', 'Lets the model save its work as files you can open and download, and change them when you ask. Stays on in a chat once it has files.'),
         tool('clip', 'Attach', 'Adds a document (any model) or a photo (models that can see). Dragging a file onto the message box, or pasting a screenshot, does the same.'),
         tool('compress', 'Compact', 'In a very long chat, folds the older part into a short summary so there\'s room to keep going. Nothing is deleted.'),
-        tool('stop', 'Stop', 'Cuts a reply short and hands the computer straight back to whoever\'s next.')))),
+        tool('stop', 'Stop', 'Cuts a reply short and hands the computer straight back to whoever\'s next. What it had written so far stays in the chat, marked Stopped.')))),
     h('p', { class: 'muted' },
       'The little circle next to them fills up as a conversation gets long. When it turns ' +
       'amber or red, start a new chat or hit Compact.'),
@@ -2348,6 +2472,21 @@ function helpView() {
       'the message, like ‹ 1 / 2 ›, to flip between the versions. Each version keeps its own ' +
       'follow-ups, so you can try a question two ways and compare. Editing sends a new request, ' +
       'so it uses credits like any other reply.'),
+    h('p', {},
+      'Not happy with an answer? Retry, under any reply, asks the same thing again and keeps ' +
+      'both answers, with the same arrows to flip between them. It goes to whichever model ' +
+      'is picked at the time, so it\'s also how you get a second opinion from another model.'),
+
+    h('h2', {}, 'Finding and keeping chats'),
+    h('p', {},
+      'The search box above your chats looks through their titles and everything said in ' +
+      'them, and shows the line that matched. The ⋯ next to a chat renames it, downloads it ' +
+      'as a Markdown file you can open anywhere, or deletes it.'),
+    h('p', { class: 'muted' },
+      h('kbd', {}, 'Ctrl'), ' ', h('kbd', {}, 'K'), ' jumps to the search box, and ',
+      h('kbd', {}, 'Ctrl'), ' ', h('kbd', {}, 'Shift'), ' ', h('kbd', {}, 'O'),
+      ' starts a new chat (', h('kbd', {}, '⌘'), ' on a Mac). A message you were ',
+      'still writing is there when you come back.'),
 
     h('h2', {}, 'Make it yours'),
     h('p', {},
@@ -2444,6 +2583,7 @@ async function boot() {
     S.view = S.ctx = 'study'; S.pickerModel = studyModelFor(null);
     S.routing = true;               // the address is read below; don't rewrite it first
   }
+  try { S.draft = localStorage.getItem(DRAFT_KEY) || ''; } catch { /* private mode etc. */ }
   render();                       // paint the shell as soon as we can
   focusComposer();
   try { S.conversations = (await api.get('/api/conversations')).conversations; } catch {}
@@ -2456,6 +2596,17 @@ async function boot() {
 }
 async function loadUsage() {
   try { S.usage = await api.get('/api/usage'); renderTopbar(); if (S.view === 'usage') render(); } catch {}
+}
+
+// A half-written message survives a reload or a closed tab: kept in this
+// browser only (never sent anywhere until Send), and cleared once it's sent.
+const DRAFT_KEY = 'llamacracy.draft';
+let _draftTimer = null;
+function saveDraft() {
+  clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(() => {
+    try { S.draft ? localStorage.setItem(DRAFT_KEY, S.draft) : localStorage.removeItem(DRAFT_KEY); } catch { /* private mode etc. */ }
+  }, 300);
 }
 
 function newChat() {
@@ -2525,6 +2676,7 @@ async function delConv(id) {
     `"${c?.title || 'untitled'}" and any attached images will be removed. This can't be undone.`, 'Delete')) return;
   try { await api.del('/api/conversations/' + id); } catch (e) { flashError(e.message); return; }
   S.conversations = S.conversations.filter(x => x.id !== id);
+  if (S.convHits) S.convHits = S.convHits.filter(x => x.id !== id);
   if (S.course) S.course.sessions = sessions.filter(x => x.id !== id);
   if (S.conv?.id !== id) render();
   else if (session) newSession();
@@ -2569,7 +2721,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
       S.conv.compact_boundary_id = null; S.conv.context_summary = null;
     }
   } else {
-    S.draft = '';
+    S.draft = ''; saveDraft();
     img = S.pendingImage; S.pendingImage = null;
     docs = S.pendingDocs; S.pendingDocs = [];
     S.messages.push({ role: 'user', content: text, image: img ? { url: img.url } : undefined, documents: docs, created_at: Date.now() / 1000 });
@@ -2670,7 +2822,10 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
         render();
       }
       else if (ev.type === 'done') {
-        S.messages.push({
+        // stopped part-way: what was written stays (the server keeps it too);
+        // stopped before the first word, there is nothing to show
+        const stopped = ev.state === 'cancelled';
+        if (!stopped || S.active.text.trim()) S.messages.push({
           // ev.model is the model actually dispatched (may be a model's
           // -vision variant if this turn carried an image), not just the
           // picker's selection -- matches what's persisted server-side.
@@ -2678,7 +2833,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
           reasoning: S.active.reasoning || null, thinking_seconds: ev.thinking_seconds,
           tools: ev.tools || null,
           prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens,
-          usage_estimated: ev.usage_estimated, created_at: Date.now() / 1000,
+          usage_estimated: ev.usage_estimated, created_at: Date.now() / 1000, stopped,
         });
         S.active = null; loadUsage(); render();
       } else if (ev.type === 'error') { flashError(ev.detail || 'Generation error'); S.active = null; render(); }
@@ -2690,7 +2845,7 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
       // the send never made it into the queue: hand the text back so it
       // isn't lost, and drop the optimistic bubble
       if (!accepted && !editing) {
-        S.messages.pop(); S.draft = text; S.pendingImage = img; S.pendingDocs = docs;
+        S.messages.pop(); S.draft = text; saveDraft(); S.pendingImage = img; S.pendingDocs = docs;
       }
       if (!accepted && editing) {
         // put the branch back as it was and reopen the edit, text intact
@@ -2710,10 +2865,45 @@ async function sendMessage(e, { text: editText = null, editOf = null } = {}) {
   S.active = S.active || null; render();
   refreshConv();
 }
+// Stop asks the server to end the job and lets the stream finish by itself:
+// its last event carries what was written so far, which stays in the chat.
+// If that doesn't come (or Stop is pressed again), the connection is dropped,
+// which stops the job too.
 async function cancelActive() {
-  if (S.active?.jobId) { try { await api.post(`/api/jobs/${S.active.jobId}/cancel`); } catch {} }
-  if (aborter) aborter.abort();
-  S.active = null; render();
+  const a = S.active;
+  if (!a) return;
+  const letGo = () => { if (S.active === a) { aborter?.abort(); S.active = null; render(); } };
+  if (a.stopping || !a.jobId) return letGo();
+  a.stopping = true; render();
+  try { await api.post(`/api/jobs/${a.jobId}/cancel`); } catch { return letGo(); }
+  setTimeout(letGo, 4000);
+}
+async function renameConv(c) {
+  const input = h('input', { class: 'input', value: c.title || '', maxlength: 120, autofocus: true, 'aria-label': 'Title' });
+  const save = async () => {
+    const title = input.value.trim().replace(/\s+/g, ' ');
+    if (!title || title === c.title) return close();
+    try {
+      const r = await api.patch('/api/conversations/' + c.id, { title });
+      for (const x of [S.conv, ...S.conversations, ...(S.convHits || []), ...(S.course?.sessions || [])])
+        if (x?.id === c.id) x.title = r.title;
+      close(); render();
+    } catch (e) { flashError(e.message); }
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+  const close = modal([
+    h('h3', {}, 'Rename'),
+    h('div', { class: 'form-field' }, input),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn btn-ghost', onclick: () => close() }, 'Cancel'),
+      h('button', { class: 'btn btn-primary', onclick: save }, 'Save')),
+  ], null, 'modal-form');
+  input.select();
+}
+// the branch on screen as a Markdown file (the server sends it as a download)
+function downloadConv(id) {
+  const a = h('a', { href: `/api/conversations/${id}/export.md`, download: '' });
+  document.body.append(a); a.click(); a.remove();
 }
 
 /* ------------------------------------------------------------------ admin */
@@ -2985,8 +3175,14 @@ function limitModal(detail) {
   ]);
 }
 
-// global keys: Escape closes the drawer / context panel
+// global keys: Ctrl/Cmd+K searches chats, Ctrl/Cmd+Shift+O starts a new one,
+// Escape closes the drawer / context panel
 document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && S.me && !document.querySelector('.overlay')) {
+    const k = e.key.toLowerCase();
+    if (k === 'k' && !e.shiftKey) { e.preventDefault(); focusConvSearch(); return; }
+    if (k === 'o' && e.shiftKey) { e.preventDefault(); newChat(); return; }
+  }
   if (e.key !== 'Escape') return;
   if (S.sidebarOpen) { S.sidebarOpen = false; render(); }
   else if (S.ctxOpen) { S.ctxOpen = false; refreshCtx(0); }

@@ -930,7 +930,11 @@ class QueueManager:
         await self._persist_job(job)
         # a reply that spent its whole budget thinking still gets saved: the
         # user paid for that reasoning and should be able to read it
-        if job.conversation_id and job.state == JobState.DONE and (job.content or job.reasoning):
+        # ...and so does one that was stopped part-way: what was written stays
+        # in the chat, marked as stopped, instead of vanishing on the next load
+        keep = ((job.state == JobState.DONE and (job.content or job.reasoning))
+                or (job.state == JobState.CANCELLED and job.content))
+        if job.conversation_id and keep:
             await self._persist_assistant_message(job)
 
     async def _persist_job(self, job: Job) -> None:
@@ -965,8 +969,8 @@ class QueueManager:
         await self.db.execute(
             "INSERT INTO messages (conversation_id, role, content, model_id, "
             "  prompt_tokens, completion_tokens, usage_estimated, reasoning, "
-            "  thinking_seconds, tools_json, parent_id, created_at) "
-            "VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  thinking_seconds, tools_json, parent_id, stopped, created_at) "
+            "VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             # an agent reply's prompt_tokens is the conversation it started
             # from, not the sum over its steps: that is what the UI's context
             # ring needs (the jobs row keeps the full count for billing)
@@ -974,7 +978,7 @@ class QueueManager:
              job.context_tokens if tools else job.prompt_tokens,
              job.completion_tokens, int(job.usage_estimated), job.reasoning or None,
              job.thinking_seconds, json.dumps(tools) if tools else None,
-             job.parent_message_id, now()),
+             job.parent_message_id, int(job.state == JobState.CANCELLED), now()),
         )
         # the reply becomes what's shown under the message it answers, even if
         # the user flipped to another branch while it was being written

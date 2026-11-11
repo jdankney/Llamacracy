@@ -487,8 +487,40 @@ reasoning, so you can tell which ones to keep when you adapt it. The
   it: a fork from above the cut keeps its full history rather than
   inheriting a summary of messages it never had. Older, linear
   conversations are migrated to single-branch trees at startup. Only your
-  own messages can be edited; there is no "regenerate" for replies (yet),
-  though the tree would take one without changes.
+  own messages can be edited.
+- **Retry is an edit that changes nothing.** Asking again sends the same
+  message as a new version of itself, so the first answer is kept and the
+  same `‹ 1 / 2 ›` arrows flip between the two. A second reply hung under
+  the one message was the other way to do it, and the tree would take it,
+  but a turn's files are tied to its user message: two replies to one
+  message would share a workspace, and each would show the other's writes.
+  As its own version, a retry gets its own files, practice set and
+  compaction like any other branch. It goes to the model picked at the
+  time, which makes it the way to put one question to two models.
+- **A stopped reply is kept.** What was written when Stop was pressed (or
+  the tab closed) is saved as the reply, marked `stopped`, and sent as
+  history like any other: the user read it and paid for it. Stop asks the
+  server to end the job and lets the stream finish by itself, since its
+  last event carries the partial reply; the connection is only dropped if
+  that doesn't arrive. A reply stopped before its first word saves
+  nothing, which leaves a message with no answer under it, as a failed job
+  does. The next message is then sent together with it as one turn
+  (`threads.history` joins neighbouring turns by the same speaker), because
+  several chat templates refuse a prompt that doesn't alternate.
+- **Search is a substring scan, not an index.** The sidebar's search runs
+  `LIKE` over the person's own titles and messages on a read-only
+  connection in a worker thread, as the admin reports do. A few friends'
+  chats are megabytes, so it answers in milliseconds, and an FTS5 table
+  would be a second copy of every message to keep in step through edits
+  and deletes. It matches on every branch, not only the one showing, and
+  is case-insensitive for ASCII only (SQLite's `LIKE`).
+- **A chat downloads as Markdown**: the branch on screen, who said what,
+  the names of attached files and the numbered sources, without the
+  thinking or the tool trail. It's a download (`Content-Disposition:
+  attachment`), never a page, like every other file the app serves.
+- **A draft is kept in the browser.** The message box is saved to
+  `localStorage` as it's typed and cleared on send, so a reload or a closed
+  tab doesn't lose it. It never reaches the server until Send.
 - **Search is a toggle; with it on, a capable model drives it.** A model
   marked `tools: true` in the inventory runs the agent loop (see Inference
   layer): it writes its own queries, searches again when the first try

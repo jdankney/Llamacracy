@@ -12,13 +12,15 @@ import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from . import documents, practice, sandbox, study, threads
 from .admin import router as admin_router
@@ -413,6 +415,109 @@ async def _describe_documents(db: Database, ids: list[str], user_id: int) -> dic
     return {r["id"]: documents.describe(r) for r in rows}
 
 
+# How much of a message a search result shows around the words that matched
+_SNIPPET_BEFORE, _SNIPPET_AFTER = 40, 110
+
+
+def _snippet(text: str, q: str) -> str:
+    at = text.lower().find(q.lower())
+    if at < 0:
+        return ""
+    start, end = max(0, at - _SNIPPET_BEFORE), min(len(text), at + len(q) + _SNIPPET_AFTER)
+    cut = " ".join(text[start:end].split())
+    return ("…" if start else "") + cut + ("…" if end < len(text) else "")
+
+
+@app.get("/api/conversations/search")
+async def search_conversations(q: str = Query(max_length=100),
+                               principal: Principal = Depends(get_principal),
+                               db: Database = Depends(get_db)):
+    """The caller's chats whose title, or anything said in them (on any
+    branch), contains `q`. Plain substring matching, any case (for ASCII;
+    SQLite's LIKE), newest first, with a line of the first message that
+    matched. Study sessions are found under their course, not here."""
+    q = q.strip()
+    if not q:
+        raise HTTPException(422, "nothing to search for")
+    like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    said = ("FROM messages m WHERE m.conversation_id = c.id "
+            "AND m.role IN ('user', 'assistant') AND m.content LIKE ? ESCAPE '\\'")
+    # a scan of every message this person has: off the event loop, like the
+    # admin's reports, so nobody's reply stutters while it runs
+    rows = await db.read_all(
+        f"SELECT c.id, c.title, c.model_id, c.updated_at, "
+        f"  (SELECT m.content {said} ORDER BY m.id LIMIT 1) AS hit "
+        f"FROM conversations c WHERE c.user_id = ? AND c.course_id IS NULL "
+        f"  AND (c.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 {said})) "
+        f"ORDER BY c.updated_at DESC LIMIT 30",
+        (like, principal.user_id, like, like))
+    return {"results": [{"id": r["id"], "title": r["title"], "model_id": r["model_id"],
+                         "updated_at": r["updated_at"], "snippet": _snippet(r["hit"] or "", q)}
+                        for r in rows]}
+
+
+class RenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _one_line(cls, v):
+        return " ".join(v.split()) if isinstance(v, str) else v
+
+
+@app.patch("/api/conversations/{conv_id}")
+async def rename_conversation(conv_id: str, req: RenameRequest,
+                              principal: Principal = Depends(get_principal),
+                              db: Database = Depends(get_db)):
+    """Give a chat (or a study session) a title of the user's own. The
+    model's naming only ever replaces the stand-in title, so this one stays.
+    The chat keeps its place in the list: renaming isn't activity."""
+    await _owned_conversation(db, conv_id, principal.user_id)
+    await db.execute("UPDATE conversations SET title = ? WHERE id = ?", (req.title, conv_id))
+    return {"id": conv_id, "title": req.title}
+
+
+@app.get("/api/conversations/{conv_id}/export.md")
+async def export_conversation(conv_id: str,
+                              principal: Principal = Depends(get_principal),
+                              db: Database = Depends(get_db),
+                              reg: Registry = Depends(get_registry)):
+    """The branch on screen as a Markdown file: the words, who said them, the
+    names of attached files and the numbered sources. Thinking and the trail
+    of tool steps are left out. Always a download, never rendered here."""
+    conv = await _owned_conversation(db, conv_id, principal.user_id)
+    path = threads.active_path(conv["active_root_id"], await threads.load(db, conv_id))
+    docs = await _describe_documents(db, threads.document_ids(path), principal.user_id)
+    title = conv["title"] or "Untitled chat"
+    out = [f"# {title}", "", f"_Saved from Llamacracy on {date.today().isoformat()}._"]
+    for m in path:
+        if m["role"] == "user":
+            who = "You"
+        else:
+            model = reg.get(m["model_id"]) if m["model_id"] else None
+            who = model.display if model else (m["model_id"] or "Assistant")
+        out += ["", f"## {who}", ""]
+        names = [docs[i]["filename"] for i in documents.doc_ids(m) if i in docs]
+        if m["image_upload_id"]:
+            names.insert(0, "a photo")
+        if names:
+            out += [f"_Attached: {', '.join(names)}_", ""]
+        out.append(m["content"].strip() or "_(no answer)_")
+        if m.get("stopped"):
+            out += ["", "_(stopped before it finished)_"]
+        try:
+            sources = (json.loads(m["tools_json"]) if m["tools_json"] else {}).get("sources") or []
+        except ValueError:
+            sources = []
+        if sources:
+            out += ["", "Sources:", ""]
+            out += [f"{s.get('n')}. [{s.get('title') or s.get('url')}]({s.get('url')})" for s in sources]
+    body = "\n".join(out) + "\n"
+    return Response(body.encode("utf-8"), media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": _attachment(f"{title}.md"),
+                             "X-Content-Type-Options": "nosniff"})
+
+
 @app.get("/api/conversations/{conv_id}")
 async def conversation_detail(conv_id: str,
                               principal: Principal = Depends(get_principal),
@@ -442,7 +547,6 @@ async def workspace_file(conv_id: str, file_id: int, download: bool = False,
 
 
 def _attachment(name: str) -> str:
-    from urllib.parse import quote
     safe = re.sub(r'[^\w.\- ]', "_", name) or "file.txt"
     return f"attachment; filename=\"{safe}\"; filename*=UTF-8''{quote(name)}"
 
@@ -1002,6 +1106,11 @@ async def chat(req: ChatRequest,
     if search_outcome and search_outcome.ok and search_outcome.results:
         prompt_content = search_outcome.to_prompt_block() + req.message
     prompt_content = "".join(doc_blocks[i] for i in doc_ids) + prompt_content
+    if history and history[-1]["role"] == "user":
+        # the message before this one never got a reply (it was stopped before
+        # the first word, or failed): the two go as one turn, since several
+        # chat templates refuse two user turns in a row
+        prompt_content = history.pop()["content"] + "\n\n" + prompt_content
 
     # The image is sent for THIS turn only -- past turns' images aren't
     # resent on every follow-up (that would re-pay their full prompt-eval

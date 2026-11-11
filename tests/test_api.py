@@ -1458,3 +1458,89 @@ def test_one_person_can_only_have_a_few_jobs_in_flight(client):
         for b in blockers:
             if b in qm._pending:
                 qm._pending.remove(b)
+
+
+# --------------------------------------------------------------------------- #
+# managing chats: rename, search, download, and a message left unanswered
+# --------------------------------------------------------------------------- #
+def test_renaming_a_chat(client):
+    cid = _chat(client, model="small", message="hi")[0]["conversation_id"]
+    r = client.patch(f"/api/conversations/{cid}", json={"title": "  Sourdough\n notes  "})
+    assert r.status_code == 200 and r.json()["title"] == "Sourdough notes"
+    assert client.get("/api/conversations").json()["conversations"][0]["title"] == "Sourdough notes"
+    assert client.patch(f"/api/conversations/{cid}", json={"title": "   "}).status_code == 422
+    assert client.patch(f"/api/conversations/{cid}", json={"title": "x" * 500}).status_code == 422
+    assert client.patch("/api/conversations/nope", json={"title": "x"}).status_code == 404
+
+
+@pytest.mark.env(SMART_TITLES="1")
+def test_a_title_you_set_is_not_replaced_by_the_models(client):
+    # naming only replaces the stand-in title, so it loses to a rename
+    cid = _chat(client, model="small", message="hi")[0]["conversation_id"]
+    assert _conv(client, cid)["conversation"]["title"] == "Greeting the user"
+    client.patch(f"/api/conversations/{cid}", json={"title": "Mine"})
+    _chat(client, model="small", message="more", conversation_id=cid)
+    assert _conv(client, cid)["conversation"]["title"] == "Mine"
+
+
+def test_searching_chats_by_title_and_by_what_was_said(client):
+    up = client.fake_upstream
+    up.script["small"] = ["Feed the starter twice a day until it doubles."]
+    a = _chat(client, model="small", message="my bread is flat")[0]["conversation_id"]
+    up.script["small"] = ["Paris."]
+    b = _chat(client, model="small", message="capital of France?")[0]["conversation_id"]
+
+    def search(q):
+        r = client.get("/api/conversations/search", params={"q": q})
+        assert r.status_code == 200
+        return r.json()["results"]
+
+    hit = search("STARTER")                      # in a reply, any case
+    assert [x["id"] for x in hit] == [a]
+    assert "starter" in hit[0]["snippet"] and hit[0]["title"] == "my bread is flat"
+    assert [x["id"] for x in search("capital")] == [b]       # in the title (and the message)
+    assert search("100%") == [] and search("_") == []        # LIKE wildcards are plain text
+    assert search("zebra") == []
+    assert client.get("/api/conversations/search", params={"q": " "}).status_code == 422
+
+
+def test_search_only_finds_your_own_chats(client):
+    _chat(client, model="small", message="secret plans")
+    client.db._conn.execute("INSERT INTO users (id, oidc_sub, email, created_at) "
+                            "VALUES (77, 'someone-else', 'else@x', 0)")
+    client.db._conn.execute("UPDATE conversations SET user_id = 77")
+    assert client.get("/api/conversations/search", params={"q": "secret"}).json()["results"] == []
+
+
+def test_downloading_a_chat_as_markdown(client):
+    up = client.fake_upstream
+    cid = _chat(client, model="small", message="one")[0]["conversation_id"]
+    up.script["small"] = ["reply two"]
+    _chat(client, model="small", message="two", conversation_id=cid)
+    two = _conv(client, cid)["messages"][2]
+    up.script["small"] = ["reply TWO"]
+    _chat(client, model="small", message="TWO", conversation_id=cid, edit_of=two["id"])
+    client.patch(f"/api/conversations/{cid}", json={"title": "Counting: 1/2"})
+
+    r = client.get(f"/api/conversations/{cid}/export.md")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert 'filename="Counting_ 1_2.md"' in r.headers["content-disposition"]
+    text = r.text
+    assert text.startswith("# Counting: 1/2\n")
+    # the branch on screen, in order, each turn under who said it
+    assert text.index("## You") < text.index("one") < text.index("## Small") < text.index("hello world")
+    assert "TWO" in text and "reply TWO" in text and "reply two" not in text
+    assert client.get("/api/conversations/nope/export.md").status_code == 404
+
+
+def test_a_message_left_unanswered_is_sent_with_the_next_one(client):
+    # a reply that was stopped or failed leaves a user message with nothing
+    # under it; the next send must not put two user turns in a row
+    cid = _chat(client, model="small", message="one")[0]["conversation_id"]
+    client.db._conn.execute("DELETE FROM messages WHERE role = 'assistant'")
+    client.db._conn.execute("UPDATE messages SET active_child_id = NULL")
+    _chat(client, model="small", message="two", conversation_id=cid)
+    assert client.fake_upstream.seen_payload["messages"] == [
+        {"role": "user", "content": "one\n\ntwo"}]
+    assert _texts(_conv(client, cid)) == ["one", "two", "hello world"]

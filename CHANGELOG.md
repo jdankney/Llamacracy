@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+Finding, naming and keeping chats, and replies that survive Stop.
+
+### Added
+
+- **Search your chats.** A box above the chat list looks through titles and
+  everything said in them, and shows the line that matched. `Ctrl+K` (`⌘K`)
+  jumps to it.
+- **Rename and download.** The `⋯` next to a chat (or a study session)
+  renames it, downloads it as a Markdown file, or deletes it. A title you
+  set is never replaced by the model's.
+- **Retry.** Under any reply: asks the same thing again and keeps both
+  answers, with the `‹ 1 / 2 ›` arrows to flip between them. It uses the
+  model picked at the time, so it's also how to ask a second model.
+- **Stop keeps what was written.** A reply you stop stays in the chat,
+  marked Stopped, instead of disappearing on the next load.
+- **Drafts survive a reload.** A message you were still writing is in the
+  box when you come back (kept in the browser, cleared on send).
+- `Ctrl+Shift+O` starts a new chat.
+
+### Fixed
+
+- **A message whose reply never came could break the next one.** After a
+  reply was stopped before its first word, or failed, the next message
+  was sent as a second user turn in a row, which several chat templates
+  refuse. The two now go as one turn.
+- Pressing Enter on a chat's delete button also opened the chat.
+
+### Upgrading
+
+Nothing to do: the one new column (`messages.stopped`) is added at startup.
+
 ## 0.4.0 (2026-11-03)
 
 Lock a model in VRAM, chats that name themselves, timestamps, and a
